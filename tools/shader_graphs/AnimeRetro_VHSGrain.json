@@ -1,0 +1,1381 @@
+{
+ "graph": {
+  "connections": [
+   {
+    "inNodeId": 2,
+    "inPortIndex": 0,
+    "outNodeId": 0,
+    "outPortIndex": 0
+   },
+   {
+    "inNodeId": 2,
+    "inPortIndex": 1,
+    "outNodeId": 1,
+    "outPortIndex": 0
+   },
+   {
+    "inNodeId": 4,
+    "inPortIndex": 0,
+    "outNodeId": 2,
+    "outPortIndex": 0
+   },
+   {
+    "inNodeId": 4,
+    "inPortIndex": 1,
+    "outNodeId": 3,
+    "outPortIndex": 0
+   },
+   {
+    "inNodeId": 7,
+    "inPortIndex": 0,
+    "outNodeId": 5,
+    "outPortIndex": 0
+   },
+   {
+    "inNodeId": 7,
+    "inPortIndex": 1,
+    "outNodeId": 6,
+    "outPortIndex": 0
+   },
+   {
+    "inNodeId": 8,
+    "inPortIndex": 0,
+    "outNodeId": 7,
+    "outPortIndex": 0
+   },
+   {
+    "inNodeId": 10,
+    "inPortIndex": 0,
+    "outNodeId": 8,
+    "outPortIndex": 0
+   },
+   {
+    "inNodeId": 10,
+    "inPortIndex": 1,
+    "outNodeId": 9,
+    "outPortIndex": 0
+   },
+   {
+    "inNodeId": 11,
+    "inPortIndex": 0,
+    "outNodeId": 4,
+    "outPortIndex": 0
+   },
+   {
+    "inNodeId": 11,
+    "inPortIndex": 1,
+    "outNodeId": 10,
+    "outPortIndex": 0
+   },
+   {
+    "inNodeId": 14,
+    "inPortIndex": 0,
+    "outNodeId": 12,
+    "outPortIndex": 0
+   },
+   {
+    "inNodeId": 14,
+    "inPortIndex": 1,
+    "outNodeId": 13,
+    "outPortIndex": 0
+   },
+   {
+    "inNodeId": 15,
+    "inPortIndex": 0,
+    "outNodeId": 14,
+    "outPortIndex": 0
+   },
+   {
+    "inNodeId": 15,
+    "inPortIndex": 1,
+    "outNodeId": 16,
+    "outPortIndex": 0
+   },
+   {
+    "inNodeId": 15,
+    "inPortIndex": 2,
+    "outNodeId": 17,
+    "outPortIndex": 0
+   },
+   {
+    "inNodeId": 15,
+    "inPortIndex": 3,
+    "outNodeId": 18,
+    "outPortIndex": 0
+   },
+   {
+    "inNodeId": 15,
+    "inPortIndex": 4,
+    "outNodeId": 19,
+    "outPortIndex": 0
+   },
+   {
+    "inNodeId": 20,
+    "inPortIndex": 0,
+    "outNodeId": 15,
+    "outPortIndex": 0
+   },
+   {
+    "inNodeId": 20,
+    "inPortIndex": 1,
+    "outNodeId": 21,
+    "outPortIndex": 0
+   },
+   {
+    "inNodeId": 20,
+    "inPortIndex": 2,
+    "outNodeId": 22,
+    "outPortIndex": 0
+   },
+   {
+    "inNodeId": 25,
+    "inPortIndex": 0,
+    "outNodeId": 23,
+    "outPortIndex": 0
+   },
+   {
+    "inNodeId": 25,
+    "inPortIndex": 1,
+    "outNodeId": 24,
+    "outPortIndex": 0
+   },
+   {
+    "inNodeId": 25,
+    "inPortIndex": 2,
+    "outNodeId": 20,
+    "outPortIndex": 0
+   },
+   {
+    "inNodeId": 26,
+    "inPortIndex": 0,
+    "outNodeId": 11,
+    "outPortIndex": 0
+   },
+   {
+    "inNodeId": 26,
+    "inPortIndex": 1,
+    "outNodeId": 25,
+    "outPortIndex": 0
+   },
+   {
+    "inNodeId": 30,
+    "inPortIndex": 0,
+    "outNodeId": 28,
+    "outPortIndex": 0
+   },
+   {
+    "inNodeId": 30,
+    "inPortIndex": 1,
+    "outNodeId": 29,
+    "outPortIndex": 0
+   },
+   {
+    "inNodeId": 32,
+    "inPortIndex": 0,
+    "outNodeId": 28,
+    "outPortIndex": 0
+   },
+   {
+    "inNodeId": 32,
+    "inPortIndex": 1,
+    "outNodeId": 31,
+    "outPortIndex": 0
+   },
+   {
+    "inNodeId": 33,
+    "inPortIndex": 0,
+    "outNodeId": 30,
+    "outPortIndex": 0
+   },
+   {
+    "inNodeId": 33,
+    "inPortIndex": 1,
+    "outNodeId": 32,
+    "outPortIndex": 0
+   },
+   {
+    "inNodeId": 34,
+    "inPortIndex": 0,
+    "outNodeId": 27,
+    "outPortIndex": 0
+   },
+   {
+    "inNodeId": 34,
+    "inPortIndex": 1,
+    "outNodeId": 35,
+    "outPortIndex": 0
+   },
+   {
+    "inNodeId": 34,
+    "inPortIndex": 2,
+    "outNodeId": 33,
+    "outPortIndex": 0
+   },
+   {
+    "inNodeId": 36,
+    "inPortIndex": 0,
+    "outNodeId": 34,
+    "outPortIndex": 0
+   },
+   {
+    "inNodeId": 36,
+    "inPortIndex": 1,
+    "outNodeId": 37,
+    "outPortIndex": 0
+   },
+   {
+    "inNodeId": 39,
+    "inPortIndex": 0,
+    "outNodeId": 36,
+    "outPortIndex": 0
+   },
+   {
+    "inNodeId": 39,
+    "inPortIndex": 1,
+    "outNodeId": 38,
+    "outPortIndex": 0
+   },
+   {
+    "inNodeId": 41,
+    "inPortIndex": 0,
+    "outNodeId": 40,
+    "outPortIndex": 0
+   },
+   {
+    "inNodeId": 41,
+    "inPortIndex": 1,
+    "outNodeId": 38,
+    "outPortIndex": 0
+   },
+   {
+    "inNodeId": 42,
+    "inPortIndex": 0,
+    "outNodeId": 39,
+    "outPortIndex": 0
+   },
+   {
+    "inNodeId": 42,
+    "inPortIndex": 1,
+    "outNodeId": 41,
+    "outPortIndex": 0
+   },
+   {
+    "inNodeId": 43,
+    "inPortIndex": 0,
+    "outNodeId": 42,
+    "outPortIndex": 0
+   },
+   {
+    "inNodeId": 43,
+    "inPortIndex": 1,
+    "outNodeId": 42,
+    "outPortIndex": 0
+   },
+   {
+    "inNodeId": 43,
+    "inPortIndex": 2,
+    "outNodeId": 42,
+    "outPortIndex": 0
+   },
+   {
+    "inNodeId": 44,
+    "inPortIndex": 0,
+    "outNodeId": 26,
+    "outPortIndex": 0
+   },
+   {
+    "inNodeId": 44,
+    "inPortIndex": 1,
+    "outNodeId": 43,
+    "outPortIndex": 0
+   },
+   {
+    "inNodeId": 45,
+    "inPortIndex": 0,
+    "outNodeId": 46,
+    "outPortIndex": 0
+   },
+   {
+    "inNodeId": 45,
+    "inPortIndex": 1,
+    "outNodeId": 47,
+    "outPortIndex": 0
+   },
+   {
+    "inNodeId": 49,
+    "inPortIndex": 0,
+    "outNodeId": 45,
+    "outPortIndex": 0
+   },
+   {
+    "inNodeId": 49,
+    "inPortIndex": 1,
+    "outNodeId": 48,
+    "outPortIndex": 0
+   },
+   {
+    "inNodeId": 51,
+    "inPortIndex": 0,
+    "outNodeId": 50,
+    "outPortIndex": 0
+   },
+   {
+    "inNodeId": 51,
+    "inPortIndex": 1,
+    "outNodeId": 48,
+    "outPortIndex": 0
+   },
+   {
+    "inNodeId": 52,
+    "inPortIndex": 0,
+    "outNodeId": 49,
+    "outPortIndex": 0
+   },
+   {
+    "inNodeId": 52,
+    "inPortIndex": 1,
+    "outNodeId": 51,
+    "outPortIndex": 0
+   },
+   {
+    "inNodeId": 53,
+    "inPortIndex": 0,
+    "outNodeId": 52,
+    "outPortIndex": 0
+   },
+   {
+    "inNodeId": 53,
+    "inPortIndex": 1,
+    "outNodeId": 52,
+    "outPortIndex": 0
+   },
+   {
+    "inNodeId": 53,
+    "inPortIndex": 2,
+    "outNodeId": 52,
+    "outPortIndex": 0
+   },
+   {
+    "inNodeId": 54,
+    "inPortIndex": 0,
+    "outNodeId": 44,
+    "outPortIndex": 0
+   },
+   {
+    "inNodeId": 54,
+    "inPortIndex": 1,
+    "outNodeId": 53,
+    "outPortIndex": 0
+   },
+   {
+    "inNodeId": 56,
+    "inPortIndex": 0,
+    "outNodeId": 55,
+    "outPortIndex": 0
+   },
+   {
+    "inNodeId": 56,
+    "inPortIndex": 1,
+    "outNodeId": 57,
+    "outPortIndex": 0
+   },
+   {
+    "inNodeId": 59,
+    "inPortIndex": 0,
+    "outNodeId": 58,
+    "outPortIndex": 0
+   },
+   {
+    "inNodeId": 59,
+    "inPortIndex": 1,
+    "outNodeId": 60,
+    "outPortIndex": 0
+   },
+   {
+    "inNodeId": 61,
+    "inPortIndex": 0,
+    "outNodeId": 56,
+    "outPortIndex": 0
+   },
+   {
+    "inNodeId": 61,
+    "inPortIndex": 1,
+    "outNodeId": 59,
+    "outPortIndex": 0
+   },
+   {
+    "inNodeId": 62,
+    "inPortIndex": 0,
+    "outNodeId": 54,
+    "outPortIndex": 0
+   },
+   {
+    "inNodeId": 62,
+    "inPortIndex": 1,
+    "outNodeId": 61,
+    "outPortIndex": 0
+   },
+   {
+    "inNodeId": 63,
+    "inPortIndex": 0,
+    "outNodeId": 62,
+    "outPortIndex": 0
+   }
+  ],
+  "nodes": [
+   {
+    "id": 0,
+    "internal-data": {
+     "model-name": "SampleTexture2D",
+     "params": [
+      ""
+     ],
+     "reference": "baseMap"
+    },
+    "label": "",
+    "labelVisible": true,
+    "position": {
+     "x": 0,
+     "y": 0
+    }
+   },
+   {
+    "id": 1,
+    "internal-data": {
+     "model-name": "Color",
+     "params": [
+      "1.0",
+      "1.0",
+      "1.0"
+     ],
+     "reference": "baseColor"
+    },
+    "label": "",
+    "labelVisible": true,
+    "position": {
+     "x": 240,
+     "y": 0
+    }
+   },
+   {
+    "id": 2,
+    "internal-data": {
+     "model-name": "MultiplyV3",
+     "params": [],
+     "reference": ""
+    },
+    "label": "",
+    "labelVisible": true,
+    "position": {
+     "x": 480,
+     "y": 0
+    }
+   },
+   {
+    "id": 3,
+    "internal-data": {
+     "model-name": "Float",
+     "params": [
+      "0.7"
+     ],
+     "reference": "saturation"
+    },
+    "label": "",
+    "labelVisible": true,
+    "position": {
+     "x": 720,
+     "y": 0
+    }
+   },
+   {
+    "id": 4,
+    "internal-data": {
+     "model-name": "Desaturate",
+     "params": [],
+     "reference": ""
+    },
+    "label": "",
+    "labelVisible": true,
+    "position": {
+     "x": 960,
+     "y": 0
+    }
+   },
+   {
+    "id": 5,
+    "internal-data": {
+     "model-name": "Time",
+     "params": [],
+     "reference": ""
+    },
+    "label": "",
+    "labelVisible": true,
+    "position": {
+     "x": 1200,
+     "y": 0
+    }
+   },
+   {
+    "id": 6,
+    "internal-data": {
+     "model-name": "Float",
+     "params": [
+      "1.5"
+     ],
+     "reference": "wobbleSpeed"
+    },
+    "label": "",
+    "labelVisible": true,
+    "position": {
+     "x": 1440,
+     "y": 0
+    }
+   },
+   {
+    "id": 7,
+    "internal-data": {
+     "model-name": "MultiplyF",
+     "params": [],
+     "reference": ""
+    },
+    "label": "",
+    "labelVisible": true,
+    "position": {
+     "x": 0,
+     "y": 140
+    }
+   },
+   {
+    "id": 8,
+    "internal-data": {
+     "model-name": "SineF",
+     "params": [],
+     "reference": ""
+    },
+    "label": "",
+    "labelVisible": true,
+    "position": {
+     "x": 240,
+     "y": 140
+    }
+   },
+   {
+    "id": 9,
+    "internal-data": {
+     "model-name": "Float",
+     "params": [
+      "6.0"
+     ],
+     "reference": "wobbleDegrees"
+    },
+    "label": "",
+    "labelVisible": true,
+    "position": {
+     "x": 480,
+     "y": 140
+    }
+   },
+   {
+    "id": 10,
+    "internal-data": {
+     "model-name": "MultiplyF",
+     "params": [],
+     "reference": ""
+    },
+    "label": "",
+    "labelVisible": true,
+    "position": {
+     "x": 720,
+     "y": 140
+    }
+   },
+   {
+    "id": 11,
+    "internal-data": {
+     "model-name": "HueRotate",
+     "params": [],
+     "reference": ""
+    },
+    "label": "",
+    "labelVisible": true,
+    "position": {
+     "x": 960,
+     "y": 140
+    }
+   },
+   {
+    "id": 12,
+    "internal-data": {
+     "model-name": "Normal",
+     "params": [],
+     "reference": ""
+    },
+    "label": "",
+    "labelVisible": true,
+    "position": {
+     "x": 1200,
+     "y": 140
+    }
+   },
+   {
+    "id": 13,
+    "internal-data": {
+     "model-name": "SunDirection",
+     "params": [],
+     "reference": ""
+    },
+    "label": "",
+    "labelVisible": true,
+    "position": {
+     "x": 1440,
+     "y": 140
+    }
+   },
+   {
+    "id": 14,
+    "internal-data": {
+     "model-name": "DotV3",
+     "params": [],
+     "reference": ""
+    },
+    "label": "",
+    "labelVisible": true,
+    "position": {
+     "x": 0,
+     "y": 280
+    }
+   },
+   {
+    "id": 15,
+    "internal-data": {
+     "model-name": "Remap",
+     "params": [],
+     "reference": ""
+    },
+    "label": "",
+    "labelVisible": true,
+    "position": {
+     "x": 240,
+     "y": 280
+    }
+   },
+   {
+    "id": 16,
+    "internal-data": {
+     "model-name": "Float",
+     "params": [
+      "-1.0"
+     ],
+     "reference": ""
+    },
+    "label": "",
+    "labelVisible": true,
+    "position": {
+     "x": 480,
+     "y": 280
+    }
+   },
+   {
+    "id": 17,
+    "internal-data": {
+     "model-name": "Float",
+     "params": [
+      "1.0"
+     ],
+     "reference": ""
+    },
+    "label": "",
+    "labelVisible": true,
+    "position": {
+     "x": 720,
+     "y": 280
+    }
+   },
+   {
+    "id": 18,
+    "internal-data": {
+     "model-name": "Float",
+     "params": [
+      "0.0"
+     ],
+     "reference": ""
+    },
+    "label": "",
+    "labelVisible": true,
+    "position": {
+     "x": 960,
+     "y": 280
+    }
+   },
+   {
+    "id": 19,
+    "internal-data": {
+     "model-name": "Float",
+     "params": [
+      "1.0"
+     ],
+     "reference": ""
+    },
+    "label": "",
+    "labelVisible": true,
+    "position": {
+     "x": 1200,
+     "y": 280
+    }
+   },
+   {
+    "id": 20,
+    "internal-data": {
+     "model-name": "CelBands",
+     "params": [],
+     "reference": ""
+    },
+    "label": "",
+    "labelVisible": true,
+    "position": {
+     "x": 1440,
+     "y": 280
+    }
+   },
+   {
+    "id": 21,
+    "internal-data": {
+     "model-name": "Float",
+     "params": [
+      "2.0"
+     ],
+     "reference": "bands"
+    },
+    "label": "",
+    "labelVisible": true,
+    "position": {
+     "x": 0,
+     "y": 420
+    }
+   },
+   {
+    "id": 22,
+    "internal-data": {
+     "model-name": "Float",
+     "params": [
+      "0.2"
+     ],
+     "reference": "softness"
+    },
+    "label": "",
+    "labelVisible": true,
+    "position": {
+     "x": 240,
+     "y": 420
+    }
+   },
+   {
+    "id": 23,
+    "internal-data": {
+     "model-name": "Color",
+     "params": [
+      "0.45",
+      "0.42",
+      "0.5"
+     ],
+     "reference": "shadowColor"
+    },
+    "label": "",
+    "labelVisible": true,
+    "position": {
+     "x": 480,
+     "y": 420
+    }
+   },
+   {
+    "id": 24,
+    "internal-data": {
+     "model-name": "Color",
+     "params": [
+      "1.0",
+      "1.0",
+      "1.0"
+     ],
+     "reference": ""
+    },
+    "label": "",
+    "labelVisible": true,
+    "position": {
+     "x": 720,
+     "y": 420
+    }
+   },
+   {
+    "id": 25,
+    "internal-data": {
+     "model-name": "LerpV3",
+     "params": [],
+     "reference": ""
+    },
+    "label": "",
+    "labelVisible": true,
+    "position": {
+     "x": 960,
+     "y": 420
+    }
+   },
+   {
+    "id": 26,
+    "internal-data": {
+     "model-name": "MultiplyV3",
+     "params": [],
+     "reference": ""
+    },
+    "label": "",
+    "labelVisible": true,
+    "position": {
+     "x": 1200,
+     "y": 420
+    }
+   },
+   {
+    "id": 27,
+    "internal-data": {
+     "model-name": "ScreenPosition",
+     "params": [],
+     "reference": ""
+    },
+    "label": "",
+    "labelVisible": true,
+    "position": {
+     "x": 1440,
+     "y": 420
+    }
+   },
+   {
+    "id": 28,
+    "internal-data": {
+     "model-name": "Time",
+     "params": [],
+     "reference": ""
+    },
+    "label": "",
+    "labelVisible": true,
+    "position": {
+     "x": 0,
+     "y": 560
+    }
+   },
+   {
+    "id": 29,
+    "internal-data": {
+     "model-name": "Float",
+     "params": [
+      "7.0"
+     ],
+     "reference": ""
+    },
+    "label": "",
+    "labelVisible": true,
+    "position": {
+     "x": 240,
+     "y": 560
+    }
+   },
+   {
+    "id": 30,
+    "internal-data": {
+     "model-name": "MultiplyF",
+     "params": [],
+     "reference": ""
+    },
+    "label": "",
+    "labelVisible": true,
+    "position": {
+     "x": 480,
+     "y": 560
+    }
+   },
+   {
+    "id": 31,
+    "internal-data": {
+     "model-name": "Float",
+     "params": [
+      "3.0"
+     ],
+     "reference": ""
+    },
+    "label": "",
+    "labelVisible": true,
+    "position": {
+     "x": 720,
+     "y": 560
+    }
+   },
+   {
+    "id": 32,
+    "internal-data": {
+     "model-name": "MultiplyF",
+     "params": [],
+     "reference": ""
+    },
+    "label": "",
+    "labelVisible": true,
+    "position": {
+     "x": 960,
+     "y": 560
+    }
+   },
+   {
+    "id": 33,
+    "internal-data": {
+     "model-name": "Combine2",
+     "params": [],
+     "reference": ""
+    },
+    "label": "",
+    "labelVisible": true,
+    "position": {
+     "x": 1200,
+     "y": 560
+    }
+   },
+   {
+    "id": 34,
+    "internal-data": {
+     "model-name": "TilingAndOffset",
+     "params": [],
+     "reference": ""
+    },
+    "label": "",
+    "labelVisible": true,
+    "position": {
+     "x": 1440,
+     "y": 560
+    }
+   },
+   {
+    "id": 35,
+    "internal-data": {
+     "model-name": "Vector2",
+     "params": [
+      "1.0",
+      "1.0"
+     ],
+     "reference": ""
+    },
+    "label": "",
+    "labelVisible": true,
+    "position": {
+     "x": 0,
+     "y": 700
+    }
+   },
+   {
+    "id": 36,
+    "internal-data": {
+     "model-name": "WhiteNoise",
+     "params": [],
+     "reference": ""
+    },
+    "label": "",
+    "labelVisible": true,
+    "position": {
+     "x": 240,
+     "y": 700
+    }
+   },
+   {
+    "id": 37,
+    "internal-data": {
+     "model-name": "Float",
+     "params": [
+      "240.0"
+     ],
+     "reference": "grainScale"
+    },
+    "label": "",
+    "labelVisible": true,
+    "position": {
+     "x": 480,
+     "y": 700
+    }
+   },
+   {
+    "id": 38,
+    "internal-data": {
+     "model-name": "Float",
+     "params": [
+      "0.28"
+     ],
+     "reference": "grainStrength"
+    },
+    "label": "",
+    "labelVisible": true,
+    "position": {
+     "x": 720,
+     "y": 700
+    }
+   },
+   {
+    "id": 39,
+    "internal-data": {
+     "model-name": "MultiplyF",
+     "params": [],
+     "reference": ""
+    },
+    "label": "",
+    "labelVisible": true,
+    "position": {
+     "x": 960,
+     "y": 700
+    }
+   },
+   {
+    "id": 40,
+    "internal-data": {
+     "model-name": "Float",
+     "params": [
+      "1.0"
+     ],
+     "reference": ""
+    },
+    "label": "",
+    "labelVisible": true,
+    "position": {
+     "x": 1200,
+     "y": 700
+    }
+   },
+   {
+    "id": 41,
+    "internal-data": {
+     "model-name": "SubtractF",
+     "params": [],
+     "reference": ""
+    },
+    "label": "",
+    "labelVisible": true,
+    "position": {
+     "x": 1440,
+     "y": 700
+    }
+   },
+   {
+    "id": 42,
+    "internal-data": {
+     "model-name": "AddF",
+     "params": [],
+     "reference": ""
+    },
+    "label": "",
+    "labelVisible": true,
+    "position": {
+     "x": 0,
+     "y": 840
+    }
+   },
+   {
+    "id": 43,
+    "internal-data": {
+     "model-name": "Combine",
+     "params": [],
+     "reference": ""
+    },
+    "label": "",
+    "labelVisible": true,
+    "position": {
+     "x": 240,
+     "y": 840
+    }
+   },
+   {
+    "id": 44,
+    "internal-data": {
+     "model-name": "MultiplyV3",
+     "params": [],
+     "reference": ""
+    },
+    "label": "",
+    "labelVisible": true,
+    "position": {
+     "x": 480,
+     "y": 840
+    }
+   },
+   {
+    "id": 45,
+    "internal-data": {
+     "model-name": "Scanlines",
+     "params": [],
+     "reference": ""
+    },
+    "label": "",
+    "labelVisible": true,
+    "position": {
+     "x": 720,
+     "y": 840
+    }
+   },
+   {
+    "id": 46,
+    "internal-data": {
+     "model-name": "Float",
+     "params": [
+      "2.0"
+     ],
+     "reference": "scanlineHeight"
+    },
+    "label": "",
+    "labelVisible": true,
+    "position": {
+     "x": 960,
+     "y": 840
+    }
+   },
+   {
+    "id": 47,
+    "internal-data": {
+     "model-name": "Float",
+     "params": [
+      "0.35"
+     ],
+     "reference": "scanlineSpeed"
+    },
+    "label": "",
+    "labelVisible": true,
+    "position": {
+     "x": 1200,
+     "y": 840
+    }
+   },
+   {
+    "id": 48,
+    "internal-data": {
+     "model-name": "Float",
+     "params": [
+      "0.2"
+     ],
+     "reference": "scanlineStrength"
+    },
+    "label": "",
+    "labelVisible": true,
+    "position": {
+     "x": 1440,
+     "y": 840
+    }
+   },
+   {
+    "id": 49,
+    "internal-data": {
+     "model-name": "MultiplyF",
+     "params": [],
+     "reference": ""
+    },
+    "label": "",
+    "labelVisible": true,
+    "position": {
+     "x": 0,
+     "y": 980
+    }
+   },
+   {
+    "id": 50,
+    "internal-data": {
+     "model-name": "Float",
+     "params": [
+      "1.0"
+     ],
+     "reference": ""
+    },
+    "label": "",
+    "labelVisible": true,
+    "position": {
+     "x": 240,
+     "y": 980
+    }
+   },
+   {
+    "id": 51,
+    "internal-data": {
+     "model-name": "SubtractF",
+     "params": [],
+     "reference": ""
+    },
+    "label": "",
+    "labelVisible": true,
+    "position": {
+     "x": 480,
+     "y": 980
+    }
+   },
+   {
+    "id": 52,
+    "internal-data": {
+     "model-name": "AddF",
+     "params": [],
+     "reference": ""
+    },
+    "label": "",
+    "labelVisible": true,
+    "position": {
+     "x": 720,
+     "y": 980
+    }
+   },
+   {
+    "id": 53,
+    "internal-data": {
+     "model-name": "Combine",
+     "params": [],
+     "reference": ""
+    },
+    "label": "",
+    "labelVisible": true,
+    "position": {
+     "x": 960,
+     "y": 980
+    }
+   },
+   {
+    "id": 54,
+    "internal-data": {
+     "model-name": "MultiplyV3",
+     "params": [],
+     "reference": ""
+    },
+    "label": "",
+    "labelVisible": true,
+    "position": {
+     "x": 1200,
+     "y": 980
+    }
+   },
+   {
+    "id": 55,
+    "internal-data": {
+     "model-name": "SunColor",
+     "params": [],
+     "reference": ""
+    },
+    "label": "",
+    "labelVisible": true,
+    "position": {
+     "x": 1440,
+     "y": 980
+    }
+   },
+   {
+    "id": 56,
+    "internal-data": {
+     "model-name": "ScaleV3",
+     "params": [],
+     "reference": ""
+    },
+    "label": "",
+    "labelVisible": true,
+    "position": {
+     "x": 0,
+     "y": 1120
+    }
+   },
+   {
+    "id": 57,
+    "internal-data": {
+     "model-name": "Float",
+     "params": [
+      "1.0"
+     ],
+     "reference": ""
+    },
+    "label": "",
+    "labelVisible": true,
+    "position": {
+     "x": 240,
+     "y": 1120
+    }
+   },
+   {
+    "id": 58,
+    "internal-data": {
+     "model-name": "AmbientColor",
+     "params": [],
+     "reference": ""
+    },
+    "label": "",
+    "labelVisible": true,
+    "position": {
+     "x": 480,
+     "y": 1120
+    }
+   },
+   {
+    "id": 59,
+    "internal-data": {
+     "model-name": "ScaleV3",
+     "params": [],
+     "reference": ""
+    },
+    "label": "",
+    "labelVisible": true,
+    "position": {
+     "x": 720,
+     "y": 1120
+    }
+   },
+   {
+    "id": 60,
+    "internal-data": {
+     "model-name": "Float",
+     "params": [
+      "0.4"
+     ],
+     "reference": ""
+    },
+    "label": "",
+    "labelVisible": true,
+    "position": {
+     "x": 960,
+     "y": 1120
+    }
+   },
+   {
+    "id": 61,
+    "internal-data": {
+     "model-name": "AddV3",
+     "params": [],
+     "reference": ""
+    },
+    "label": "",
+    "labelVisible": true,
+    "position": {
+     "x": 1200,
+     "y": 1120
+    }
+   },
+   {
+    "id": 62,
+    "internal-data": {
+     "model-name": "MultiplyV3",
+     "params": [],
+     "reference": ""
+    },
+    "label": "",
+    "labelVisible": true,
+    "position": {
+     "x": 1440,
+     "y": 1120
+    }
+   },
+   {
+    "id": 63,
+    "internal-data": {
+     "model-name": "UnlitMaster",
+     "params": [],
+     "reference": ""
+    },
+    "label": "",
+    "labelVisible": true,
+    "position": {
+     "x": 0,
+     "y": 1260
+    }
+   }
+  ]
+ }
+}

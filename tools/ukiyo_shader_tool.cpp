@@ -259,61 +259,53 @@ std::unique_ptr<QtNodes::DataFlowGraphModel> buildParticlesUnlit()
     return std::move(b.model);
 }
 
+// Every node type in one graph: each output is summed into a float or a colour accumulator that feeds
+// the PBR master, so codegen emits every template and every helper and glslang type checks all of it.
+// Inputs keep their port defaults, which are themselves GLSL that has to compile. Vec2 outputs go
+// through Split2 rather than a texture sample, which would burn one of the eight texture slots each.
 std::unique_ptr<QtNodes::DataFlowGraphModel> buildCoverage()
 {
     Builder b;
     NodeId master = b.add("PBRMaster");
-    NodeId t = b.add("Time");
-    NodeId s = b.add("SaturateF");
-    NodeId pw = b.add("PowerF");
-    NodeId two = b.add("Float", {QStringLiteral("2")});
-    NodeId mul = b.add("MultiplyF");
-    NodeId k = b.add("Float", {QStringLiteral("0.8")});
-    NodeId lerpF = b.add("LerpF");
-    NodeId lowF = b.add("Float", {QStringLiteral("0.1")});
-    NodeId omF = b.add("OneMinusF");
-    NodeId addF = b.add("AddF");
-    NodeId uvV = b.add("Vector2", {QStringLiteral("0.25"), QStringLiteral("0.75")});
-    NodeId tex = b.add("SampleTexture2D", {QString()});
-    NodeId col = b.add("Color", {QStringLiteral("0.9"), QStringLiteral("0.4"), QStringLiteral("0.2")});
-    NodeId mulV = b.add("MultiplyV3");
-    NodeId lerpV = b.add("LerpV3");
-    NodeId addV = b.add("AddV3");
-    NodeId comb = b.add("Combine");
-    NodeId split = b.add("Split");
-    NodeId nrm = b.add("Normal");
-    NodeId flatVec = b.add("Combine");
+    NodeId floats = b.add("Float", {QStringLiteral("0")});
+    NodeId colors = b.add("Color", {QStringLiteral("0"), QStringLiteral("0"), QStringLiteral("0")});
 
-    b.link(t, 0, s, 0);
-    b.link(s, 0, pw, 0);
-    b.link(two, 0, pw, 1);
-    b.link(pw, 0, mul, 0);
-    b.link(k, 0, mul, 1);
-    b.link(lowF, 0, lerpF, 0);
-    b.link(mul, 0, lerpF, 1);
-    b.link(s, 0, lerpF, 2);
-    b.link(lerpF, 0, omF, 0);
-    b.link(omF, 0, addF, 0);
-    b.link(lerpF, 0, addF, 1);
-    b.link(uvV, 0, tex, 0);
-    b.link(col, 0, mulV, 0);
-    b.link(tex, 0, mulV, 1);
-    b.link(mulV, 0, lerpV, 0);
-    b.link(col, 0, lerpV, 1);
-    b.link(lerpF, 0, lerpV, 2);
-    b.link(lerpV, 0, addV, 0);
-    b.link(lerpF, 0, comb, 0);
-    b.link(lerpF, 0, comb, 1);
-    b.link(omF, 0, comb, 2);
-    b.link(comb, 0, addV, 1);
-    b.link(addV, 0, split, 0);
-    b.link(split, 0, flatVec, 0);
-    b.link(addV, 0, master, 0);
-    b.link(split, 2, master, 1);
-    b.link(addF, 0, master, 2);
-    b.link(nrm, 0, master, 3);
-    b.link(tex, 0, master, 4);
-    b.link(tex, 1, master, 5);
+    const auto accumulateFloat = [&](NodeId from, int port) {
+        NodeId sum = b.add("AddF");
+        b.link(floats, 0, sum, 0);
+        b.link(from, port, sum, 1);
+        floats = sum;
+    };
+
+    for (const sg::NodeSpec& spec : sg::nodeSpecs()) {
+        if (spec.master) continue;   // the masters are covered by `defaults`, one graph has one master
+        NodeId node = spec.param == sg::ParamKind::Texture ? b.add(qPrintable(spec.id), {QString()})
+                                                           : b.add(qPrintable(spec.id));
+        for (int port = 0; port < static_cast<int>(spec.out.size()); ++port) {
+            switch (spec.out[port].kind) {
+            case sg::Kind::Float:
+                accumulateFloat(node, port);
+                break;
+            case sg::Kind::Vec3: {
+                NodeId sum = b.add("AddV3");
+                b.link(colors, 0, sum, 0);
+                b.link(node, port, sum, 1);
+                colors = sum;
+                break;
+            }
+            case sg::Kind::Vec2: {
+                NodeId split = b.add("Split2");
+                b.link(node, port, split, 0);
+                accumulateFloat(split, 0);
+                accumulateFloat(split, 1);
+                break;
+            }
+            }
+        }
+    }
+
+    b.link(colors, 0, master, 0);   // Base Color
+    b.link(floats, 0, master, 1);   // Metallic
     return std::move(b.model);
 }
 

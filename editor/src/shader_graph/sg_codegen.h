@@ -45,6 +45,9 @@ struct CodegenResult {
     QHash<int, unsigned int> fragmentLineNodes;
     // True when the master's Alpha input is wired: the material draws in the transparent pass.
     bool transparent = false;
+    // True when the graph exposes outlineColor, outlineWidth and outlineAlpha: the engine then draws the
+    // inverted-hull outline pass (shaders/graph_outline.vert) with those three in slots 0, 1 and 2.
+    bool outline = false;
     bool ok() const { return errors.isEmpty(); }
 };
 
