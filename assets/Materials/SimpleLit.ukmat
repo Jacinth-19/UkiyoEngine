@@ -1,0 +1,20 @@
+{
+    "format": "ukiyo-material",
+    "version": 1,
+    "name": "SimpleLit",
+    "shader": "Shaders/SimpleLit.ukshader",
+    "properties": {
+        "baseColor": [
+            0.8,
+            0.8,
+            0.8
+        ],
+        "metallic": 0.0,
+        "emission": [
+            0.0,
+            0.0,
+            0.0
+        ],
+        "alpha": 1.0
+    }
+}

@@ -1,0 +1,90 @@
+{
+ "graph": {
+  "connections": [
+   {
+    "inNodeId": 3,
+    "inPortIndex": 0,
+    "outNodeId": 0,
+    "outPortIndex": 0
+   },
+   {
+    "inNodeId": 3,
+    "inPortIndex": 1,
+    "outNodeId": 1,
+    "outPortIndex": 0
+   },
+   {
+    "inNodeId": 3,
+    "inPortIndex": 2,
+    "outNodeId": 2,
+    "outPortIndex": 0
+   }
+  ],
+  "nodes": [
+   {
+    "id": 0,
+    "internal-data": {
+     "model-name": "Color",
+     "params": [
+      "0.8",
+      "0.1",
+      "0.1"
+     ],
+     "reference": "baseColor"
+    },
+    "label": "",
+    "labelVisible": true,
+    "position": {
+     "x": 0,
+     "y": 0
+    }
+   },
+   {
+    "id": 1,
+    "internal-data": {
+     "model-name": "Float",
+     "params": [
+      "0.0"
+     ],
+     "reference": "metallic"
+    },
+    "label": "",
+    "labelVisible": true,
+    "position": {
+     "x": 220,
+     "y": 0
+    }
+   },
+   {
+    "id": 2,
+    "internal-data": {
+     "model-name": "Float",
+     "params": [
+      "0.9"
+     ],
+     "reference": "smoothness"
+    },
+    "label": "",
+    "labelVisible": true,
+    "position": {
+     "x": 440,
+     "y": 0
+    }
+   },
+   {
+    "id": 3,
+    "internal-data": {
+     "model-name": "PBRMaster",
+     "params": [],
+     "reference": ""
+    },
+    "label": "",
+    "labelVisible": true,
+    "position": {
+     "x": 660,
+     "y": 0
+    }
+   }
+  ]
+ }
+}

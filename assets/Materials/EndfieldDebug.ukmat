@@ -1,0 +1,9 @@
+{
+  "format": "ukiyo-material",
+  "version": 1,
+  "name": "EndfieldDebug",
+  "shader": "Shaders/EndfieldDebug.ukshader",
+  "note": "Personal test only. Own implementation. Channel and exposure view for the Endfield textures.",
+  "properties": {},
+  "textures": {}
+}

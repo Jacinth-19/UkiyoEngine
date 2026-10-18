@@ -1,0 +1,14 @@
+{
+    "format": "ukiyo-material",
+    "version": 1,
+    "name": "Unlit",
+    "shader": "Shaders/Unlit.ukshader",
+    "properties": {
+        "color": [
+            1.0,
+            1.0,
+            1.0
+        ],
+        "alpha": 1.0
+    }
+}

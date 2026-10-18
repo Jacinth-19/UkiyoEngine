@@ -1,0 +1,14 @@
+{
+    "format": "ukiyo-material",
+    "version": 1,
+    "name": "ParticlesUnlit",
+    "shader": "Shaders/ParticlesUnlit.ukshader",
+    "properties": {
+        "color": [
+            1.0,
+            1.0,
+            1.0
+        ],
+        "alpha": 0.5
+    }
+}

@@ -1,0 +1,44 @@
+[
+  {
+    "lang": "en",
+    "language": "English",
+    "voice_id": "voice-00",
+    "audio": "clip_en.mp3",
+    "transcript": "transcript_en.txt"
+  },
+  {
+    "lang": "ja",
+    "language": "Japanese (ja-JP)",
+    "voice_id": "voice-01",
+    "audio": "clip_ja.mp3",
+    "transcript": "transcript_ja.txt"
+  },
+  {
+    "lang": "ko",
+    "language": "Korean, South (ko-KR)",
+    "voice_id": "voice-02",
+    "audio": "clip_ko.mp3",
+    "transcript": "transcript_ko.txt"
+  },
+  {
+    "lang": "zh-CN",
+    "language": "Mandarin, Mainland (zh-CN)",
+    "voice_id": "voice-03",
+    "audio": "clip_zh-CN.mp3",
+    "transcript": "transcript_zh-CN.txt"
+  },
+  {
+    "lang": "zh-TW",
+    "language": "Mandarin, Taiwan (zh-TW)",
+    "voice_id": "voice-04",
+    "audio": "clip_zh-TW.mp3",
+    "transcript": "transcript_zh-TW.txt"
+  },
+  {
+    "lang": "zh-HK",
+    "language": "Cantonese, Hong Kong (zh-HK)",
+    "voice_id": "voice-05",
+    "audio": "clip_zh-HK.mp3",
+    "transcript": "transcript_zh-HK.txt"
+  }
+]

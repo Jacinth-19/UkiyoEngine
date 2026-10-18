@@ -1,0 +1,9 @@
+{
+  "format": "ukiyo-material",
+  "version": 1,
+  "name": "NahidaFace",
+  "shader": "Shaders/NahidaFace.ukshader",
+  "note": "Personal test only. Nahida face (Face.shader's SDF shadow). Own implementation of the source's logic.",
+  "properties": {},
+  "textures": {}
+}

@@ -1,0 +1,12 @@
+{
+  "format": "ukiyo-material",
+  "version": 1,
+  "name": "NahidaHybrid",
+  "shader": "Shaders/NahidaHybrid.ukshader",
+  "note": "Personal test only. Nahida body and hair (BodyAndHair's ILM ramp rows and five-type outline). Own implementation of the source's logic.",
+  "properties": {
+    "normalStrength": 1,
+    "matCapStrength": 0
+  },
+  "textures": {}
+}

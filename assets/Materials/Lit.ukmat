@@ -1,0 +1,21 @@
+{
+    "format": "ukiyo-material",
+    "version": 1,
+    "name": "Lit",
+    "shader": "Shaders/Lit.ukshader",
+    "properties": {
+        "baseColor": [
+            0.8,
+            0.8,
+            0.8
+        ],
+        "metallic": 0.0,
+        "smoothness": 0.5,
+        "emission": [
+            0.0,
+            0.0,
+            0.0
+        ],
+        "alpha": 1.0
+    }
+}

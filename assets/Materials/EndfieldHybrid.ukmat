@@ -1,0 +1,12 @@
+{
+  "format": "ukiyo-material",
+  "version": 1,
+  "name": "EndfieldHybrid",
+  "shader": "Shaders/EndfieldHybrid.ukshader",
+  "note": "Personal test only. Own implementation of an Endfield-style hybrid look; no third-party source. Not for shipping or committing with the assets.",
+  "properties": {
+    "normalStrength": 1,
+    "matCapStrength": 0
+  },
+  "textures": {}
+}

@@ -1,0 +1,310 @@
+// Frame renderer: cascaded shadows, sky, infinite grid, toon materials,
+// outlines, dual-filter bloom, tonemapping and anti-aliasing. Written against
+// the backend-neutral RHI, so the same pass graph runs on OpenGL and Vulkan.
+#pragma once
+#include <set>
+
+#include <array>
+#include <map>
+#include <memory>
+#include <optional>
+#include <vector>
+
+#include <glm/glm.hpp>
+
+#include "engine/camera.h"
+#include "engine/gpu_types.h"
+#include "engine/graph_material.h"
+#include "engine/model.h"
+#include "engine/water.h"
+#include "rhi/rhi.h"
+
+namespace ukiyo {
+
+struct RenderSettings {
+    int aaMode = 3;                 // 0 off, 1 FXAA, 2 SSAA 2x, 3 SSAA 2x + FXAA, 4 TAA (FXAA on reset frames)
+    bool shadows = true;
+    bool depthPrepass = true;       // opaque toon draws write depth before the colour pass
+    bool frustumCull = true;        // colour passes skip static draws outside the camera frustum
+    bool sky = true;
+    bool grid = true;
+    bool outlines = true;
+    bool bloom = true;
+    int tonemap = 3;                // 0 ACES fit, 1 PBR Neutral, 2 AgX, 3 Custom Anime (default), 4 Linear clamp,
+                                    // 5 Reinhard extended, 6 Hejl-Burgess-Dawson, 7 Hable, 8 Lottes, 9 Uchimura, 10 Genshin rational (Kaze)
+    int look = 0;                   // 0 cel, 1 painterly, 2 cinematic (comic-print)
+    int stylize = 0;                // 0 off, 1..15 Stylize looks (shaders/stylize.frag, research/stylize.md)
+    float stylizeStrength = 1.0f;   // blend with the frame before stylizing: 0 none .. 1 full
+    float stylizeOutline = 1.0f;    // ink outline amount: 0 none .. 2 heavy
+    float exposure = 0.84f;
+    float bloomStrength = 0.12f;
+    float bloomThreshold = 1.0f;    // HDR luminance threshold, soft knee applied in bloom_down
+    int bloomThresholdMode = 0;     // 0 luminance soft knee (default), 1 Color (per-channel subtract), 2 Brightness (max channel gate)
+    glm::vec3 bloomTint{1.0f};      // glow colour multiplier, applied after the threshold; white = off
+    float bloomScale = 0.5f;        // bloom size as a fraction of the internal frame, 0.1..1 (0.5 = the original size)
+    glm::vec4 bloomWeights{0.25f};  // Kaze's per-level glow weights: blur levels 0 (finest) .. 3 (coarsest)
+    float bloomBlurRadius = 2.0f;   // Kaze's blur radius; scaled by bloomScale and frame height / 1080
+    bool contrastLogC = false;      // contrast around ACEScc mid grey in LogC (Kaze's Genshin post); false = display pivot at 0.5
+    bool saturationLinear = false;  // saturation as a Rec.709 lerp in linear light (Kaze's); false = display vibrance
+    float saturation = 1.18f;
+    float contrast = 1.12f;
+    float vignette = 0.12f;
+    glm::vec3 shadowTint{0.0f};     // display-space offset added to shadows, about -0.2..0.2 per channel
+    glm::vec3 highlightTint{0.0f};  // display-space offset added to highlights
+    float whiteBalance = 0.0f;      // -1 cool .. +1 warm
+    float lutAmount = 1.0f;         // blend with the loaded grading LUT (no effect while none is loaded)
+    float animeKnee = 0.45f;        // Custom Anime: where the highlight shoulder starts (0.3 .. 0.95). 0.45: at HDR 2.0 output is 0.967
+    float animeToe = 0.03f;         // Custom Anime: shadow lift (0 .. 0.05)
+    bool dither = true;             // interleaved gradient noise at the 8-bit output step
+    float grain = 0.0f;             // film grain: off, it breaks flat cel fills
+    float outlineScale = 1.0f;
+    // RealToon extras for toon materials. All zero or false = off, so existing renders are unchanged.
+    float hairHighlight = 0.0f;     // strength of the anisotropic hair highlight, 0..1
+    float hairShift = 0.1f;         // moves the highlight band along the normal
+    float hairExponent = 60.0f;     // sharpness of the highlight band
+    bool selfShadow = false;        // second shadow threshold on the lit ramp
+    float selfThreshold = 0.5f;     // where the self shadow starts, on N.L remapped to 0..1
+    float selfHardness = 0.08f;     // width of the self shadow edge
+    float gloss = 0.0f;             // strength of the toon gloss, 0..1
+    float glossPower = 32.0f;       // gloss sharpness
+    float sunIntensity = 1.25f;
+    // Screen-space and grading effects. Each is off at its default, so existing renders are unchanged.
+    float fogDensity = 0.0f;         // exponential view-distance fog per metre (0 = off). No height term.
+    glm::vec3 fogColor{0.62f, 0.72f, 0.86f};
+    float fogSun = 0.0f;             // sun in-scatter into the fog, 0..1 (needs fogDensity > 0)
+    float ssao = 0.0f;               // ambient occlusion strength, 0..1 (normal pre-pass)
+    float ssr = 0.0f;                // screen-space reflections, 0..1 (normal pre-pass)
+    float depthNormalOutline = 0.0f; // depth and normal edge lines, 0..1 (normal pre-pass)
+    float flare = 0.0f;              // lens flare around the sun, 0..1 (occluded by geometry)
+    float motionBlur = 0.0f;         // motion blur shutter, 0..2. Runs BEFORE TAA, so it also smears TAA history.
+    float chromatic = 0.0f;          // chromatic aberration at the screen edges, 0..1
+    float sharpen = 0.0f;            // unsharp mask, 0..1
+    bool autoExposure = false;       // adapt exposure to the frame's average brightness
+    float autoKey = 0.25f;           // auto exposure target average luminance
+    bool celBand = false;            // three-step cel ramp in the mtoon shader
+    float screenRim = 0.0f;          // RealToon screen-space rim light, 0..1 (normal pre-pass, scene-wide)
+    float outlineNoise = 0.0f;       // RealToon outline noise (sketch), 0..1: dashes the depth-normal outline
+    float depthEdgeRim = 0.0f;       // depth-edge rim, 0..1: light on the silhouette of a surface in front of farther geometry
+    float normalMap = 0.0f;          // RealToon normal map strength, 0..1 (uses a material's normal texture; 0 = off)
+    float outlineMatNoise = 0.0f;    // RealToon material outline noise, 0..1: dashes the inverted-hull outline
+    float reflection = 0.0f;         // RealToon reflection strength (procedural sky on MToon materials; 0 = off)
+    float smear = 0.0f;              // RealToon smear: how far the cel edge is pulled along the motion, 0..1 (0 = off)
+    float softLight = 0.0f;          // soft light: a wrap term that lifts the shade side of toon materials, 0..1
+    float lightSweep = 0.0f;         // light sweep: a bright band that climbs the character, 0..1 (0 = off)
+    float sweepSpeed = 0.25f;        // light sweep: cycles per second
+    float ditherFadeNear = 0.0f;     // camera dither fade: fully dithered out at this distance (m)
+    float ditherFadeFar = 0.0f;      // camera dither fade: fully visible at this distance (m); off unless above ditherFadeNear
+    float pbrStyle = 0.0f;           // stylised PBR: banded GGX highlight and metal tint on toon materials, 0..1
+    float eyeFlatten = 0.0f;         // eye: blend toward flat full light (0 = lit as normal, 1 = flat), 0..1
+    float eyeParallax = 0.0f;        // eye: parallax pupil strength in UV units (0 = off)
+    float eyeMatcap = 0.0f;          // eye: matcap strength (needs a matcap texture on the eye material), 0..1
+    float eyeHighlight = 0.0f;       // eye: highlight map strength (needs a highlight texture on the eye material), 0..1
+    glm::vec4 occlusionTarget{0.0f}; // occlusion dither: xyz world point the camera looks at, w radius (0 = off)
+    bool smoothNormals = false;      // RealToon smooth object normals: applied when a model loads (reload to change)
+    bool faceShadow = false;         // RealToon face shadow: use the face SDF on materials loaded with one
+    // SplitScreen line (shaders/SplitScreen.shader). Off while splitDir is zero. The NPR side (screen side > 0)
+    // is multiplied by splitNprTint, the other side by splitPbrTint, and a line of splitLineWidthPx is drawn on the
+    // split. The direction is normalised here. The offset and the frame's pixels use the materials' convention
+    // (origin at the centre, y up), so the line sits on the same split as the materials' own split.
+    glm::vec2 splitDir{0.0f};
+    float splitOffsetPx = 0.0f;
+    float splitLineWidthPx = 2.0f;
+    glm::vec3 splitLineColor{1.0f};
+    glm::vec3 splitNprTint{1.0f};    // 0..1 per channel
+    glm::vec3 splitPbrTint{1.0f};    // 0..1 per channel
+    glm::vec3 sunDir = glm::normalize(glm::vec3(0.35f, 0.75f, 0.55f));   // towards the sun
+};
+
+// A terrain chunk to draw (item 18). The buffers belong to the terrain instance. The model moves the chunk from tile
+// space to the world, and the bounds are in tile space.
+struct TerrainDraw {
+    rhi::Buffer* vertices = nullptr;
+    rhi::Buffer* indices = nullptr;
+    uint32_t indexCount = 0;
+    glm::mat4 model{1.0f};
+    glm::vec3 boundsMin{0.0f};
+    glm::vec3 boundsMax{0.0f};
+    rhi::DescriptorSet* layers = nullptr;   // ShaderMaterial set with the layer colours (binding 15)
+};
+
+// One foliage batch to draw (item 18, step 3): up to kFoliageBatch instances of one mesh, drawn as one instanced call.
+// The bounds are the chunk's, in tile space, and the fade is in metres from the camera.
+struct FoliageDraw {
+    rhi::Buffer* vertices = nullptr;
+    rhi::Buffer* indices = nullptr;
+    uint32_t indexCount = 0;
+    uint32_t instanceCount = 0;
+    rhi::DescriptorSet* instances = nullptr;   // ShaderMaterial set with the instance rows (binding 15)
+    glm::mat4 model{1.0f};
+    glm::vec3 boundsMin{0.0f};
+    glm::vec3 boundsMax{0.0f};
+    glm::vec2 fade{60.0f, 90.0f};
+    glm::vec3 tint{0.3f, 0.5f, 0.2f};
+};
+
+// Kaze's Unity Volume values (Bloom Volume and Color Grading Volume), as set in the Unity screenshot.
+// Only the fields that the Unity volumes control change; the rest of the settings are left alone.
+inline void applyKazeUnityPost(RenderSettings& s) {
+    s.bloom = true;
+    s.bloomThresholdMode = 1;               // Mode: Color
+    s.bloomThreshold = 0.7f;                // Threshold
+    s.bloomStrength = 1.5f;                 // Intensity
+    s.bloomWeights = glm::vec4(0.1f, 0.2f, 0.3f, 0.4f);   // Weights
+    s.bloomTint = glm::vec3(1.0f);          // Color
+    s.bloomBlurRadius = 2.0f;               // Blur Radius
+    s.bloomScale = 0.5f;                    // Down Sample Scale
+    s.tonemap = 10;                         // Use Tonemapping: the Genshin rational curve
+    s.exposure = 1.05f;                     // Exposure
+    s.contrast = 1.0f;                      // Contrast 0 in Unity: neutral
+    s.contrastLogC = false;
+    s.saturation = 1.0f;                    // Saturation 0 in Unity: neutral, with the linear mode
+    s.saturationLinear = true;
+}
+
+class Renderer {
+public:
+    explicit Renderer(rhi::Device& device);
+    ~Renderer();
+
+    // Renders one frame into the backbuffer. Call between device.beginFrame() and endFrame().
+    // Joint and material buffers must be updated (updateModel) before this call.
+    void render(const OrbitCamera& cam, const std::vector<Model*>& models,
+                float time, uint32_t frameIndex, const RenderSettings& settings);
+
+    // Mesh draw calls issued by the last render(), across the shadow and scene passes.
+    uint32_t lastDrawCalls() const { return drawCalls_; }
+    uint32_t lastTriangles() const { return triangles_; }
+
+    // Draws a primitive with a Shader Graph material instead of its MToon material. Pass nullptr to
+    // restore the MToon path. The renderer does not own the GraphMaterial; it must outlive the draws.
+    // Graph primitives are drawn opaque in the scene pass and are not shadowed. A graph material whose
+    // shader has an outline gets the inverted-hull outline too, when outlines are on.
+    void setGraphMaterial(const Primitive* prim, GraphMaterial* material);
+
+    // Draws a primitive with the MMD-style toon look (shaders/mmdtoon.frag and mmdedge.frag)
+    // instead of MToon. Applies to opaque and alpha-blended MToon primitives; graph materials take
+    // precedence. Edges follow the global outline toggle. Pass false to restore MToon.
+    void setMmdToon(const Primitive* prim, bool on);
+    void clearMmdToon() { mmdToon_.clear(); }
+
+    // Loads a colour grading LUT: a 256x16 PNG holding a 16-cube as 16 slices of 16x16 (red across,
+    // green down, blue by slice). An empty path restores the identity LUT and turns grading off.
+    // Returns false with `error` set when the file cannot be read or has the wrong size.
+    bool setGradingLut(const std::string& pngPath, std::string* error);
+
+    // Sets the water volume drawn by render() (item 16). Pass nullptr to remove it. The renderer keeps a copy.
+    void setWater(const WaterVolume* volume);
+    // The terrain chunks to draw this frame (item 18). The buffers belong to the terrain instances, so pass the list
+    // again every frame.
+    void setTerrain(const std::vector<TerrainDraw>& chunks) { terrain_ = chunks; }
+    void setFoliage(const std::vector<FoliageDraw>& batches) { foliage_ = batches; }
+    bool hasWater() const { return water_.has_value(); }
+    bool hasGradingLut() const { return hasLut_; }
+    // Removes every override. Call before a GraphMaterial is destroyed or its model is replaced.
+    void clearGraphMaterials() { graphMaterials_.clear(); }
+
+private:
+    struct Rec {
+        Model* model;
+        int node;
+        int skin;
+        const Primitive* prim;
+        float fade = 0.0f;     // distance fade of the model (colour passes)
+        bool inView = true;    // false when the camera frustum culls the draw (colour passes skip it)
+        int lod = 0;           // mesh LOD level for this draw (0 = full detail); static draws only
+    };
+
+    void rebuildTargets(uint32_t scale);
+    void buildPipelines();
+    void buildPostSets();
+    std::unique_ptr<rhi::Texture> makeLutTexture(const uint8_t* rgba, uint32_t size = 16) const;   // size N: N*N x N strip
+
+    rhi::Device& dev_;
+    uint32_t drawCalls_ = 0;
+    uint32_t triangles_ = 0;     // triangles in the mesh draws of the last frame
+    float bloomScale_ = 0.5f;     // bloom size the targets were built with
+    uint32_t scale_ = 0;          // internal resolution scale (1 or 2); 0 = not built
+    uint32_t displayW_ = 0, displayH_ = 0;
+    uint32_t intW_ = 0, intH_ = 0;
+
+    // Fixed-size resources.
+    std::unique_ptr<rhi::Buffer> frameUbo_;
+    std::unique_ptr<rhi::Texture> shadowAtlas_;     // 4096, 2x2 cascades of 2048
+    std::unique_ptr<rhi::Texture> dummyTex_;        // used by the shadow pass's Frame set
+    std::unique_ptr<rhi::DescriptorSet> frameSet_;
+    std::unique_ptr<rhi::DescriptorSet> shadowFrameSet_;
+
+    // Pipelines.
+    std::unique_ptr<rhi::Pipeline> pShadow_, pSky_, pGrid_, pGridWater_, pOutline_;
+    std::unique_ptr<rhi::Pipeline> pMToon_[2][2];   // [blend][doubleSided]
+    std::unique_ptr<rhi::Pipeline> pDepth_[2];      // depth prepass, [doubleSided]
+    std::unique_ptr<rhi::Pipeline> pMmdToon_[2][2];  // MMD-style toon look [blend][doubleSided]
+    std::unique_ptr<rhi::Pipeline> pMmdEdge_;        // MMD-style edge (inverted hull, front culled)
+    std::unique_ptr<rhi::Pipeline> pBloomDown_, pBloomBlur_, pBloomCombine_, pTonemap_, pFxaa_, pPresent_, pTaa_, pStylize_;
+    std::unique_ptr<rhi::Pipeline> pVelocity_;      // per-object motion vectors (TAA or motion blur)
+    std::unique_ptr<rhi::Pipeline> pNormal_;        // view-space normals for SSAO, SSR and the outline
+    std::unique_ptr<rhi::Pipeline> pEffects_;       // screen-space effects (effects.frag)
+    std::unique_ptr<rhi::Pipeline> pExpo_;          // auto exposure reduce and copy (expo_reduce.frag)
+    std::unique_ptr<rhi::Pipeline> pWaterCopy_;     // scene colour + view depth into the refraction target
+    std::unique_ptr<rhi::Pipeline> pWater_;         // water surface (water.vert / water.frag)
+    std::unique_ptr<rhi::Pipeline> pUnderwater_;    // underwater fog (underwater.frag)
+    std::unique_ptr<rhi::Pipeline> pTerrain_;       // terrain chunks (terrain.vert / terrain.frag)
+    std::vector<TerrainDraw> terrain_;
+    std::unique_ptr<rhi::Pipeline> pFoliage_;       // foliage batches (foliage.vert / foliage.frag)
+    std::vector<FoliageDraw> foliage_;
+
+    // Water (item 16). The grid is a fixed 128 x 128 rest grid over [0,1]^2, displaced in water.vert.
+    std::optional<WaterVolume> water_;
+    std::unique_ptr<rhi::Buffer> waterVb_, waterIb_;
+    uint32_t waterIndexCount_ = 0;
+
+    // Resolution-dependent targets.
+    std::unique_ptr<rhi::Texture> hdr_, depth_, ldr0_, ldr1_;
+    std::unique_ptr<rhi::Texture> velocity_;       // RGBA16F motion vectors in UV units (TAA, motion blur)
+    std::unique_ptr<rhi::Texture> refr_;           // half-size RGBA16F: scene colour (rgb) and view depth (a), for water
+    std::unique_ptr<rhi::Texture> normal_;         // RGBA8 view-space normals; alpha 1 = opaque surface
+    std::unique_ptr<rhi::Texture> fxHdr_;          // HDR after the effects pass: input to TAA, bloom, tonemap
+    std::array<std::unique_ptr<rhi::Texture>, 2> expo_;   // 1x1 auto-exposure state; expo_[0] is read by tonemap
+    std::unique_ptr<rhi::Texture> lut_;             // 256x16 grading strip; identity until a LUT is loaded
+    std::unique_ptr<rhi::Texture> blueNoise_;       // 64x64 dither tile (blue_noise_64.h), bound at Post binding 6
+    bool hasLut_ = false;
+    std::array<std::unique_ptr<rhi::Texture>, 4> bloom_;      // blurred level i (level 0 is bloomScale of the frame)
+    std::array<std::unique_ptr<rhi::Texture>, 4> bloomTmp_;   // horizontal-blur result for level i
+    std::unique_ptr<rhi::Texture> bloomOut_;                  // weighted sum of the levels; read by tonemap
+
+    // Post-processing descriptor sets (rebuilt with the targets).
+    std::array<std::unique_ptr<rhi::DescriptorSet>, 4> setDown_;
+    std::array<std::unique_ptr<rhi::DescriptorSet>, 4> setBlurH_;  // horizontal blur of level i (reads bloom_[i], or bloom_[i-1] for i > 0)
+    std::array<std::unique_ptr<rhi::DescriptorSet>, 4> setBlurV_;  // vertical blur of level i (reads bloomTmp_[i])
+    std::unique_ptr<rhi::DescriptorSet> setCombine_;               // the four levels for the weighted sum
+    std::unique_ptr<rhi::DescriptorSet> setTonemap_, setFxaa_, setFxaaLdr1_, setStylize_;
+    std::unique_ptr<rhi::DescriptorSet> setEffects_, setExpoReduce_, setExpoCopy_;
+    // TAA: two history targets ping-pong. taaWrite_ is written this frame; the other one is the
+    // previous resolved frame. Bloom and tonemap read the resolved target through setDownTaa_ and
+    // setTonemapTaa_ (indexed by the resolved target).
+    std::array<std::unique_ptr<rhi::Texture>, 2> taaHist_;
+    std::array<std::unique_ptr<rhi::DescriptorSet>, 2> setTaa_, setDownTaa_, setTonemapTaa_;
+    // Per-draw motion state. Key: model and node (rigid) or model and skin (skinned). Slots are
+    // reused across frames; `last` holds the previous frame's transforms.
+    struct MotionSlot {
+        std::unique_ptr<rhi::Buffer> ubo;              // MotionUBO
+        std::unique_ptr<rhi::DescriptorSet> set;       // SetType::Motion
+        std::vector<glm::mat4> last;                   // previous frame (empty until the first frame)
+        std::vector<glm::mat4> current;                // this frame, copied to `last` after the pass
+    };
+    std::map<std::pair<const void*, int>, MotionSlot> motion_;
+    std::map<const Model*, glm::vec3> hipsPrev_;     // hips world position last frame, per model (smear)
+    std::map<const Model*, glm::vec3> motionDisp_;   // this frame's hips displacement per model (smear)
+    glm::mat4 prevViewProj_{1.0f};                 // previous frame's unjittered viewProj
+    bool prevViewReady_ = false;                   // false until the first frame has set prevViewProj_
+    bool taaHistoryValid_ = false;
+    uint32_t taaWrite_ = 0;
+    std::unique_ptr<rhi::DescriptorSet> setPresent_, setPresentFx_;
+    std::unique_ptr<rhi::DescriptorSet> waterCopySet_;   // Post set: hdr_ at 1, depth_ at 4
+    std::unique_ptr<rhi::DescriptorSet> waterSet_;       // Post set: refr_ at 2 (water and underwater passes)
+
+    std::map<const Primitive*, GraphMaterial*> graphMaterials_;
+    std::set<const Primitive*> mmdToon_;
+};
+
+} // namespace ukiyo

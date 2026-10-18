@@ -1,0 +1,21 @@
+{
+    "format": "ukiyo-material",
+    "version": 1,
+    "name": "Toon",
+    "shader": "Shaders/Toon.ukshader",
+    "properties": {
+        "baseColor": [
+            0.85,
+            0.8,
+            0.85
+        ],
+        "shadeColor": [
+            0.55,
+            0.5,
+            0.7
+        ],
+        "threshold": 0.0,
+        "softness": 0.05,
+        "alpha": 1.0
+    }
+}

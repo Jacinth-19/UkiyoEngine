@@ -1,0 +1,73 @@
+Detected locale "C" with character encoding "ANSI_X3.4-1968", which is not UTF-8.
+Qt depends on a UTF-8 locale, and has switched to "C.UTF-8" instead.
+If this causes problems, reconfigure your locale. See the locale(1) manual
+for more information.
+error: XDG_RUNTIME_DIR is invalid or not set in the environment.
+collision: body y[0.001..1.580] collision: hips 0.796 spine 0.932 chest 1.056 torso y[0.878..1.119] ax[0.136 0.168 0.168 0.125 0.122] az[0.216 0.186 0.199 0.192 0.134] goalY 0.969, 20644 body verts
+anim: bound 51 bones, hips scale 0.885
+anim: t=0.00s variant 0 Idle_Loop, 3 loops
+PASS  scene fixture exists  -- /home/user/ukiyo/renders/roundtrip_test.ukscene
+collision: body y[0.001..1.580] collision: hips 0.796 spine 0.932 chest 1.056 torso y[0.878..1.119] ax[0.136 0.168 0.168 0.125 0.122] az[0.216 0.186 0.199 0.192 0.134] goalY 0.969, 20644 body verts
+collision: body y[0.001..1.580] collision: hips 0.796 spine 0.932 chest 1.056 torso y[0.878..1.119] ax[0.136 0.168 0.168 0.125 0.122] az[0.216 0.186 0.199 0.192 0.134] goalY 0.969, 20644 body verts
+anim: bound 51 bones, hips scale 0.885
+anim: t=0.00s variant 0 Idle_Loop, 3 loops
+collision: body y[-0.001..1.582] collision: hips 0.971 spine 0.984 chest 1.040 torso y[0.979..1.069] ax[0.100 0.079 0.076 0.079 0.081] az[0.115 0.191 0.181 0.127 0.121] goalY 1.001, 22366 body verts
+PASS  readScene(fixture) succeeds
+PASS  writeScene: first save succeeds
+collision: body y[0.001..1.580] collision: hips 0.796 spine 0.932 chest 1.056 torso y[0.878..1.119] ax[0.136 0.168 0.168 0.125 0.122] az[0.216 0.186 0.199 0.192 0.134] goalY 0.969, 20644 body verts
+anim: bound 51 bones, hips scale 0.885
+anim: t=0.00s variant 0 Idle_Loop, 3 loops
+PASS  readScene: reopen of the saved file succeeds
+PASS  writeScene: save after reopen succeeds
+PASS  scene save is stable across reopen (save, reopen, save: identical)
+PASS  scene node count survives the round trip  -- fixture 147, saved 147
+PASS  scene fixture round trips without field loss
+PASS  Game aspect presets: 8 entries  -- 8
+PASS  Game resolution presets: 8 entries  -- 8
+PASS  Game resolution preset 1 is 1920 x 1080  -- 1920 x 1080
+PASS  Project column 2 is named Kind  -- Kind
+PASS  asset directory scanned  -- 17 files
+PASS  every asset has the right kind
+PASS  every shader, material, and scene has a preview image
+PASS  material properties match their shaders  -- 15 properties checked
+PASS  shader blend modes match the URP-style defaults
+PASS  Scene view fills its tab page with no gap  -- Scene page 1016x621 at (252,95), view at (252,95) 1016x621; gaps L0 R0 B0 T0; x-1 #1a1a1a owner none, x+0 #a6b2c7, x+2 #a6b1c7
+PASS  Scene 1 px strip beside the view uses the divider colour  -- pixel x-1 is #1a1a1a, expected #1a1a1a
+collision: missing humanoid bones, torso collider disabled
+PASS  Game view fills its tab page with no gap  -- Game page 1016x621 at (252,95), view at (252,125) 1016x591; gaps L0 R0 B0 T-1; x-1 #1a1a1a owner none, x+0 #1d2024, x+2 #1d2024
+PASS  Game 1 px strip beside the view uses the divider colour  -- pixel x-1 is #1a1a1a, expected #1a1a1a
+PASS  viewport orbit drag changes yaw and pitch  -- yaw 0.6 -> 1.1, pitch 0.1 -> 0.3
+PASS  viewport wheel zoom in reduces distance  -- distance 2.7244 -> 2.20676
+PASS  viewport wheel zoom out returns to start distance
+PASS  Save Screenshot action is bound to Ctrl+P  -- Ctrl+P
+PASS  Minimal layout shows fewer docks than Default  -- Default 5, Minimal 0
+PASS  Save Layout As stores a named custom layout
+PASS  custom layout restores the saved dock state  -- visible docks 5, expected 5
+PASS  Delete Layout removes the custom layout
+PASS  unsaved prompt: Don't Save lets the action go ahead
+PASS  unsaved prompt: Cancel stops the action
+PASS  Content Browser grid view uses icon mode
+PASS  Content Browser list view uses list mode
+PASS  Content Browser details view shows the details page
+PASS  shader graph window opens every default shader  -- 7 opened
+PASS  scene has a mesh node to assign a material to
+PASS  a mesh node takes a Shader Graph material  -- hair
+PASS  the node's material can be cleared back to MToon
+PASS  Game view 16:9 aspect fills the view at 16:9  -- measured 1.779
+PASS  Game view Free Aspect follows the view shape  -- view 1.719, frame 1.719
+PASS  Project thumbnails show each material's own live render
+PASS  icon audit sheet written with a preview for every asset  -- 17 files, 0 without preview, sheet /home/user/ukiyo/renders/icon_audit.png
+PASS  LUT combo lists None, Identity and Anime_Warm  -- None, Anime_Warm, Identity
+PASS  identity LUT loads from assets/LUTs  -- assets/LUTs/Identity.png
+PASS  identity LUT at amount 1 matches grading off (mean difference under 2 levels)  -- 0.522
+PASS  warm LUT changes the frame (mean difference over 1 level)  -- 3.906
+PASS  LUT amount 0.5 lies between off and full  -- 2.374 / 1.848
+PASS  clearing the LUT restores the no-LUT state
+PASS  white balance +1 warms and -1 cools the frame (R minus B)  -- cool -57.43, neutral -39.31, warm -17.36
+PASS  shadow tint +0.15 blue raises the mean blue  -- 205.07 vs 203.70
+PASS  highlight tint +0.15 blue raises the mean blue  -- 210.90 vs 203.70
+PASS  tonemapper comparison fills four thumbnails
+PASS  the four tonemapper thumbnails differ from one another  -- means 202.3 182.6 213.6 188.9
+PASS  comparison restores the tonemapper setting
+selftest: 54 passed, 0 failed
+RC=0

@@ -1,0 +1,1 @@
+Ukiyo Engine is an anime renderer built for expressive characters. Today we are testing whether a face can carry real emotion: a quiet smile, a surprised breath, and a sharp, sudden laugh. Listen closely, then tell me what you feel.

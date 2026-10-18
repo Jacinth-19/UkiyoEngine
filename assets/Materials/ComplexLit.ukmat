@@ -1,0 +1,18 @@
+{
+    "format": "ukiyo-material",
+    "version": 1,
+    "name": "ComplexLit",
+    "shader": "Shaders/ComplexLit.ukshader",
+    "properties": {
+        "baseColor": [
+            0.8,
+            0.8,
+            0.8
+        ],
+        "metallic": 0.0,
+        "smoothness": 0.5,
+        "normalStrength": 1.0,
+        "clearCoat": 0.6,
+        "clearCoatSmoothness": 0.9
+    }
+}

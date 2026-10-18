@@ -1,0 +1,150 @@
+{
+ "graph": {
+  "connections": [
+   {
+    "inNodeId": 1,
+    "inPortIndex": 0,
+    "outNodeId": 0,
+    "outPortIndex": 0
+   },
+   {
+    "inNodeId": 4,
+    "inPortIndex": 0,
+    "outNodeId": 2,
+    "outPortIndex": 0
+   },
+   {
+    "inNodeId": 4,
+    "inPortIndex": 1,
+    "outNodeId": 3,
+    "outPortIndex": 0
+   },
+   {
+    "inNodeId": 4,
+    "inPortIndex": 2,
+    "outNodeId": 1,
+    "outPortIndex": 1
+   },
+   {
+    "inNodeId": 6,
+    "inPortIndex": 0,
+    "outNodeId": 5,
+    "outPortIndex": 0
+   },
+   {
+    "inNodeId": 6,
+    "inPortIndex": 1,
+    "outNodeId": 4,
+    "outPortIndex": 0
+   }
+  ],
+  "nodes": [
+   {
+    "id": 0,
+    "internal-data": {
+     "model-name": "WorldPosition",
+     "params": [],
+     "reference": ""
+    },
+    "label": "",
+    "labelVisible": true,
+    "position": {
+     "x": 0,
+     "y": 0
+    }
+   },
+   {
+    "id": 1,
+    "internal-data": {
+     "model-name": "Split",
+     "params": [],
+     "reference": ""
+    },
+    "label": "",
+    "labelVisible": true,
+    "position": {
+     "x": 220,
+     "y": 0
+    }
+   },
+   {
+    "id": 2,
+    "internal-data": {
+     "model-name": "Float",
+     "params": [
+      "0.0"
+     ],
+     "reference": "fadeBottom"
+    },
+    "label": "",
+    "labelVisible": true,
+    "position": {
+     "x": 440,
+     "y": 0
+    }
+   },
+   {
+    "id": 3,
+    "internal-data": {
+     "model-name": "Float",
+     "params": [
+      "1.5"
+     ],
+     "reference": "fadeTop"
+    },
+    "label": "",
+    "labelVisible": true,
+    "position": {
+     "x": 660,
+     "y": 0
+    }
+   },
+   {
+    "id": 4,
+    "internal-data": {
+     "model-name": "SmoothstepF",
+     "params": [],
+     "reference": ""
+    },
+    "label": "",
+    "labelVisible": true,
+    "position": {
+     "x": 880,
+     "y": 0
+    }
+   },
+   {
+    "id": 5,
+    "internal-data": {
+     "model-name": "Color",
+     "params": [
+      "0.3",
+      "0.6",
+      "1.0"
+     ],
+     "reference": "color"
+    },
+    "label": "",
+    "labelVisible": true,
+    "position": {
+     "x": 1100,
+     "y": 0
+    }
+   },
+   {
+    "id": 6,
+    "internal-data": {
+     "model-name": "UnlitMaster",
+     "params": [],
+     "reference": ""
+    },
+    "label": "",
+    "labelVisible": true,
+    "position": {
+     "x": 0,
+     "y": 120
+    }
+   }
+  ]
+ }
+}

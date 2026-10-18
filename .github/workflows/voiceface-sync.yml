@@ -1,0 +1,37 @@
+name: voiceface-sync
+
+on:
+  push:
+    paths:
+      - "voiceface/**"
+      - ".github/workflows/voiceface-sync.yml"
+  pull_request:
+    paths:
+      - "voiceface/**"
+      - ".github/workflows/voiceface-sync.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build-test-gauntlet:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    defaults:
+      run:
+        working-directory: voiceface
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Configure
+        run: cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
+
+      - name: Build
+        run: cmake --build build --parallel
+
+      - name: Unit tests
+        run: ctest --test-dir build --output-on-failure
+
+      - name: Sync gauntlet
+        run: ./build/voiceface_sync --gauntlet

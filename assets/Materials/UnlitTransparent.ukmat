@@ -1,0 +1,14 @@
+{
+    "format": "ukiyo-material",
+    "version": 1,
+    "name": "UnlitTransparent",
+    "shader": "Shaders/UnlitTransparent.ukshader",
+    "properties": {
+        "color": [
+            1.0,
+            1.0,
+            1.0
+        ],
+        "alpha": 0.5
+    }
+}

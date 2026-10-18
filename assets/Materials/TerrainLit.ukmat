@@ -1,0 +1,17 @@
+{
+    "format": "ukiyo-material",
+    "version": 1,
+    "name": "TerrainLit",
+    "shader": "Shaders/TerrainLit.ukshader",
+    "properties": {
+        "grassColor": [0.27, 0.42, 0.18],
+        "rockColor": [0.42, 0.38, 0.34],
+        "rockSlopeStart": 0.3,
+        "rockSlopeEnd": 0.55,
+        "snowColor": [0.92, 0.94, 0.98],
+        "snowHeightStart": 6.0,
+        "snowHeightEnd": 8.0,
+        "metallic": 0.0,
+        "smoothness": 0.3
+    }
+}

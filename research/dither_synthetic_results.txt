@@ -1,0 +1,8 @@
+Synthetic gradient banding test (CPU model of tonemap.frag dither)
+gradient: 1024x256, display value 0.05 .. 0.40, 8-bit
+flat-run length mean:  plain 11.38 px   IGN 2.09 px   blue noise 2.45 px
+flat-run length p95:   plain 22.0 px   IGN 7.0 px   blue noise 8.0 px
+runs >= 32 px:         plain 2.2%   IGN 0.0%   blue noise 0.0%
+16x16 block mean error vs true gradient: plain 0.041   IGN 0.006   blue noise 0.008 levels
+low-frequency energy (<1/8 cyc/px): white noise 4.9%   IGN 0.3%   blue noise 0.0%
+blue noise: void-and-cluster 64x64 tile, true blue noise (tools/make_blue_noise.py).

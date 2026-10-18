@@ -1,0 +1,662 @@
+{
+ "graph": {
+  "connections": [
+   {
+    "inNodeId": 1,
+    "inPortIndex": 0,
+    "outNodeId": 0,
+    "outPortIndex": 0
+   },
+   {
+    "inNodeId": 4,
+    "inPortIndex": 0,
+    "outNodeId": 2,
+    "outPortIndex": 0
+   },
+   {
+    "inNodeId": 4,
+    "inPortIndex": 1,
+    "outNodeId": 3,
+    "outPortIndex": 0
+   },
+   {
+    "inNodeId": 5,
+    "inPortIndex": 0,
+    "outNodeId": 4,
+    "outPortIndex": 0
+   },
+   {
+    "inNodeId": 7,
+    "inPortIndex": 0,
+    "outNodeId": 1,
+    "outPortIndex": 1
+   },
+   {
+    "inNodeId": 7,
+    "inPortIndex": 1,
+    "outNodeId": 6,
+    "outPortIndex": 0
+   },
+   {
+    "inNodeId": 9,
+    "inPortIndex": 0,
+    "outNodeId": 5,
+    "outPortIndex": 0
+   },
+   {
+    "inNodeId": 9,
+    "inPortIndex": 1,
+    "outNodeId": 8,
+    "outPortIndex": 0
+   },
+   {
+    "inNodeId": 10,
+    "inPortIndex": 0,
+    "outNodeId": 7,
+    "outPortIndex": 0
+   },
+   {
+    "inNodeId": 10,
+    "inPortIndex": 1,
+    "outNodeId": 9,
+    "outPortIndex": 0
+   },
+   {
+    "inNodeId": 12,
+    "inPortIndex": 0,
+    "outNodeId": 11,
+    "outPortIndex": 0
+   },
+   {
+    "inNodeId": 12,
+    "inPortIndex": 1,
+    "outNodeId": 13,
+    "outPortIndex": 0
+   },
+   {
+    "inNodeId": 15,
+    "inPortIndex": 0,
+    "outNodeId": 12,
+    "outPortIndex": 0
+   },
+   {
+    "inNodeId": 15,
+    "inPortIndex": 1,
+    "outNodeId": 14,
+    "outPortIndex": 0
+   },
+   {
+    "inNodeId": 15,
+    "inPortIndex": 2,
+    "outNodeId": 10,
+    "outPortIndex": 0
+   },
+   {
+    "inNodeId": 17,
+    "inPortIndex": 0,
+    "outNodeId": 16,
+    "outPortIndex": 0
+   },
+   {
+    "inNodeId": 17,
+    "inPortIndex": 1,
+    "outNodeId": 11,
+    "outPortIndex": 0
+   },
+   {
+    "inNodeId": 17,
+    "inPortIndex": 2,
+    "outNodeId": 10,
+    "outPortIndex": 0
+   },
+   {
+    "inNodeId": 18,
+    "inPortIndex": 0,
+    "outNodeId": 17,
+    "outPortIndex": 0
+   },
+   {
+    "inNodeId": 18,
+    "inPortIndex": 1,
+    "outNodeId": 19,
+    "outPortIndex": 0
+   },
+   {
+    "inNodeId": 20,
+    "inPortIndex": 0,
+    "outNodeId": 15,
+    "outPortIndex": 0
+   },
+   {
+    "inNodeId": 20,
+    "inPortIndex": 1,
+    "outNodeId": 18,
+    "outPortIndex": 0
+   },
+   {
+    "inNodeId": 23,
+    "inPortIndex": 0,
+    "outNodeId": 20,
+    "outPortIndex": 0
+   },
+   {
+    "inNodeId": 23,
+    "inPortIndex": 1,
+    "outNodeId": 22,
+    "outPortIndex": 0
+   },
+   {
+    "inNodeId": 24,
+    "inPortIndex": 0,
+    "outNodeId": 23,
+    "outPortIndex": 0
+   },
+   {
+    "inNodeId": 24,
+    "inPortIndex": 1,
+    "outNodeId": 23,
+    "outPortIndex": 0
+   },
+   {
+    "inNodeId": 24,
+    "inPortIndex": 2,
+    "outNodeId": 23,
+    "outPortIndex": 0
+   },
+   {
+    "inNodeId": 25,
+    "inPortIndex": 0,
+    "outNodeId": 21,
+    "outPortIndex": 0
+   },
+   {
+    "inNodeId": 25,
+    "inPortIndex": 1,
+    "outNodeId": 24,
+    "outPortIndex": 0
+   },
+   {
+    "inNodeId": 29,
+    "inPortIndex": 0,
+    "outNodeId": 26,
+    "outPortIndex": 0
+   },
+   {
+    "inNodeId": 29,
+    "inPortIndex": 1,
+    "outNodeId": 27,
+    "outPortIndex": 0
+   },
+   {
+    "inNodeId": 29,
+    "inPortIndex": 2,
+    "outNodeId": 28,
+    "outPortIndex": 0
+   },
+   {
+    "inNodeId": 29,
+    "inPortIndex": 4,
+    "outNodeId": 25,
+    "outPortIndex": 0
+   },
+   {
+    "inNodeId": 29,
+    "inPortIndex": 5,
+    "outNodeId": 15,
+    "outPortIndex": 0
+   }
+  ],
+  "nodes": [
+   {
+    "id": 0,
+    "internal-data": {
+     "model-name": "WorldPosition",
+     "params": [],
+     "reference": ""
+    },
+    "label": "",
+    "labelVisible": true,
+    "position": {
+     "x": 0,
+     "y": 0
+    }
+   },
+   {
+    "id": 1,
+    "internal-data": {
+     "model-name": "Split",
+     "params": [],
+     "reference": ""
+    },
+    "label": "",
+    "labelVisible": true,
+    "position": {
+     "x": 220,
+     "y": 0
+    }
+   },
+   {
+    "id": 2,
+    "internal-data": {
+     "model-name": "Time",
+     "params": [],
+     "reference": ""
+    },
+    "label": "",
+    "labelVisible": true,
+    "position": {
+     "x": 440,
+     "y": 0
+    }
+   },
+   {
+    "id": 3,
+    "internal-data": {
+     "model-name": "Float",
+     "params": [
+      "0.25"
+     ],
+     "reference": "speed"
+    },
+    "label": "",
+    "labelVisible": true,
+    "position": {
+     "x": 660,
+     "y": 0
+    }
+   },
+   {
+    "id": 4,
+    "internal-data": {
+     "model-name": "MultiplyF",
+     "params": [],
+     "reference": ""
+    },
+    "label": "",
+    "labelVisible": true,
+    "position": {
+     "x": 880,
+     "y": 0
+    }
+   },
+   {
+    "id": 5,
+    "internal-data": {
+     "model-name": "SaturateF",
+     "params": [],
+     "reference": ""
+    },
+    "label": "",
+    "labelVisible": true,
+    "position": {
+     "x": 1100,
+     "y": 0
+    }
+   },
+   {
+    "id": 6,
+    "internal-data": {
+     "model-name": "Float",
+     "params": [
+      "1.5"
+     ],
+     "reference": ""
+    },
+    "label": "",
+    "labelVisible": true,
+    "position": {
+     "x": 0,
+     "y": 120
+    }
+   },
+   {
+    "id": 7,
+    "internal-data": {
+     "model-name": "AddF",
+     "params": [],
+     "reference": ""
+    },
+    "label": "",
+    "labelVisible": true,
+    "position": {
+     "x": 220,
+     "y": 120
+    }
+   },
+   {
+    "id": 8,
+    "internal-data": {
+     "model-name": "Float",
+     "params": [
+      "-3.0"
+     ],
+     "reference": ""
+    },
+    "label": "",
+    "labelVisible": true,
+    "position": {
+     "x": 440,
+     "y": 120
+    }
+   },
+   {
+    "id": 9,
+    "internal-data": {
+     "model-name": "MultiplyF",
+     "params": [],
+     "reference": ""
+    },
+    "label": "",
+    "labelVisible": true,
+    "position": {
+     "x": 660,
+     "y": 120
+    }
+   },
+   {
+    "id": 10,
+    "internal-data": {
+     "model-name": "AddF",
+     "params": [],
+     "reference": ""
+    },
+    "label": "",
+    "labelVisible": true,
+    "position": {
+     "x": 880,
+     "y": 120
+    }
+   },
+   {
+    "id": 11,
+    "internal-data": {
+     "model-name": "Float",
+     "params": [
+      "0.08"
+     ],
+     "reference": "edgeWidth"
+    },
+    "label": "",
+    "labelVisible": true,
+    "position": {
+     "x": 1100,
+     "y": 120
+    }
+   },
+   {
+    "id": 12,
+    "internal-data": {
+     "model-name": "MultiplyF",
+     "params": [],
+     "reference": ""
+    },
+    "label": "",
+    "labelVisible": true,
+    "position": {
+     "x": 0,
+     "y": 240
+    }
+   },
+   {
+    "id": 13,
+    "internal-data": {
+     "model-name": "Float",
+     "params": [
+      "-1.0"
+     ],
+     "reference": ""
+    },
+    "label": "",
+    "labelVisible": true,
+    "position": {
+     "x": 220,
+     "y": 240
+    }
+   },
+   {
+    "id": 14,
+    "internal-data": {
+     "model-name": "Float",
+     "params": [
+      "0.0"
+     ],
+     "reference": ""
+    },
+    "label": "",
+    "labelVisible": true,
+    "position": {
+     "x": 440,
+     "y": 240
+    }
+   },
+   {
+    "id": 15,
+    "internal-data": {
+     "model-name": "SmoothstepF",
+     "params": [],
+     "reference": ""
+    },
+    "label": "",
+    "labelVisible": true,
+    "position": {
+     "x": 660,
+     "y": 240
+    }
+   },
+   {
+    "id": 16,
+    "internal-data": {
+     "model-name": "Float",
+     "params": [
+      "0.0"
+     ],
+     "reference": ""
+    },
+    "label": "",
+    "labelVisible": true,
+    "position": {
+     "x": 880,
+     "y": 240
+    }
+   },
+   {
+    "id": 17,
+    "internal-data": {
+     "model-name": "SmoothstepF",
+     "params": [],
+     "reference": ""
+    },
+    "label": "",
+    "labelVisible": true,
+    "position": {
+     "x": 1100,
+     "y": 240
+    }
+   },
+   {
+    "id": 18,
+    "internal-data": {
+     "model-name": "MultiplyF",
+     "params": [],
+     "reference": ""
+    },
+    "label": "",
+    "labelVisible": true,
+    "position": {
+     "x": 0,
+     "y": 360
+    }
+   },
+   {
+    "id": 19,
+    "internal-data": {
+     "model-name": "Float",
+     "params": [
+      "-1.0"
+     ],
+     "reference": ""
+    },
+    "label": "",
+    "labelVisible": true,
+    "position": {
+     "x": 220,
+     "y": 360
+    }
+   },
+   {
+    "id": 20,
+    "internal-data": {
+     "model-name": "AddF",
+     "params": [],
+     "reference": ""
+    },
+    "label": "",
+    "labelVisible": true,
+    "position": {
+     "x": 440,
+     "y": 360
+    }
+   },
+   {
+    "id": 21,
+    "internal-data": {
+     "model-name": "Color",
+     "params": [
+      "0.5",
+      "1.0",
+      "0.1"
+     ],
+     "reference": "glowColor"
+    },
+    "label": "",
+    "labelVisible": true,
+    "position": {
+     "x": 660,
+     "y": 360
+    }
+   },
+   {
+    "id": 22,
+    "internal-data": {
+     "model-name": "Float",
+     "params": [
+      "3.0"
+     ],
+     "reference": "glowStrength"
+    },
+    "label": "",
+    "labelVisible": true,
+    "position": {
+     "x": 880,
+     "y": 360
+    }
+   },
+   {
+    "id": 23,
+    "internal-data": {
+     "model-name": "MultiplyF",
+     "params": [],
+     "reference": ""
+    },
+    "label": "",
+    "labelVisible": true,
+    "position": {
+     "x": 1100,
+     "y": 360
+    }
+   },
+   {
+    "id": 24,
+    "internal-data": {
+     "model-name": "Combine",
+     "params": [],
+     "reference": ""
+    },
+    "label": "",
+    "labelVisible": true,
+    "position": {
+     "x": 0,
+     "y": 480
+    }
+   },
+   {
+    "id": 25,
+    "internal-data": {
+     "model-name": "MultiplyV3",
+     "params": [],
+     "reference": ""
+    },
+    "label": "",
+    "labelVisible": true,
+    "position": {
+     "x": 220,
+     "y": 480
+    }
+   },
+   {
+    "id": 26,
+    "internal-data": {
+     "model-name": "Color",
+     "params": [
+      "0.1",
+      "0.2",
+      "0.05"
+     ],
+     "reference": "baseColor"
+    },
+    "label": "",
+    "labelVisible": true,
+    "position": {
+     "x": 440,
+     "y": 480
+    }
+   },
+   {
+    "id": 27,
+    "internal-data": {
+     "model-name": "Float",
+     "params": [
+      "0.0"
+     ],
+     "reference": "metallic"
+    },
+    "label": "",
+    "labelVisible": true,
+    "position": {
+     "x": 660,
+     "y": 480
+    }
+   },
+   {
+    "id": 28,
+    "internal-data": {
+     "model-name": "Float",
+     "params": [
+      "0.4"
+     ],
+     "reference": "smoothness"
+    },
+    "label": "",
+    "labelVisible": true,
+    "position": {
+     "x": 880,
+     "y": 480
+    }
+   },
+   {
+    "id": 29,
+    "internal-data": {
+     "model-name": "PBRMaster",
+     "params": [],
+     "reference": ""
+    },
+    "label": "",
+    "labelVisible": true,
+    "position": {
+     "x": 1100,
+     "y": 480
+    }
+   }
+  ]
+ }
+}
