@@ -12,7 +12,11 @@ namespace ukiyo {
 
 GraphMaterial::GraphMaterial(rhi::Device& dev, const engine::ShaderAsset& shader, rhi::Texture& fallbackTex,
                              rhi::Format colorFormat)
-    : slots_(std::max(1, shader.slotCount())), binding_(shader.materialBinding)
+    // graph_outline.vert reads slots 0..14 of the material block, so a shader with an outline pass
+    // allocates all of them even when its graph exposes only the three slots the loader requires. The
+    // rest stay zero, which is the neutral value for every width and offset control.
+    : slots_(std::max(1, shader.outline ? std::max(kOutlineSlots, shader.slotCount()) : shader.slotCount())),
+      binding_(shader.materialBinding)
 {
     const engine::SpirvResult spv = engine::compileGlslToSpirv(shader.fragment, engine::ShaderStage::Fragment);
     if (!spv.ok)

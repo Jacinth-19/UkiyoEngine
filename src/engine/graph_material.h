@@ -34,6 +34,10 @@ public:
     // The texture bound at a binding, for tests and previews.
     rhi::Texture* textureAt(int binding) const;
     static constexpr int kTextureSlots = 8;    // bindings 0..7; binding 15 is the material UBO
+    // Slots graph_outline.vert reads from that same block: outline colour, width and alpha, then the
+    // five-type colours and Kaze's width range, offsets and flags (o3..o14). A shader with an outline
+    // allocates all of them, so the outline pass never reads past the buffer.
+    static constexpr int kOutlineSlots = 15;
 
     rhi::Pipeline* pipeline() const { return pipeline_.get(); }
     rhi::DescriptorSet* set() const { return set_.get(); }

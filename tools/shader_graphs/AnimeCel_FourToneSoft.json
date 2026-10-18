@@ -1,0 +1,628 @@
+{
+ "graph": {
+  "connections": [
+   {
+    "inNodeId": 2,
+    "inPortIndex": 0,
+    "outNodeId": 0,
+    "outPortIndex": 0
+   },
+   {
+    "inNodeId": 2,
+    "inPortIndex": 1,
+    "outNodeId": 1,
+    "outPortIndex": 0
+   },
+   {
+    "inNodeId": 3,
+    "inPortIndex": 0,
+    "outNodeId": 2,
+    "outPortIndex": 0
+   },
+   {
+    "inNodeId": 3,
+    "inPortIndex": 1,
+    "outNodeId": 4,
+    "outPortIndex": 0
+   },
+   {
+    "inNodeId": 3,
+    "inPortIndex": 2,
+    "outNodeId": 5,
+    "outPortIndex": 0
+   },
+   {
+    "inNodeId": 3,
+    "inPortIndex": 3,
+    "outNodeId": 6,
+    "outPortIndex": 0
+   },
+   {
+    "inNodeId": 3,
+    "inPortIndex": 4,
+    "outNodeId": 7,
+    "outPortIndex": 0
+   },
+   {
+    "inNodeId": 8,
+    "inPortIndex": 0,
+    "outNodeId": 3,
+    "outPortIndex": 0
+   },
+   {
+    "inNodeId": 8,
+    "inPortIndex": 1,
+    "outNodeId": 9,
+    "outPortIndex": 0
+   },
+   {
+    "inNodeId": 8,
+    "inPortIndex": 2,
+    "outNodeId": 10,
+    "outPortIndex": 0
+   },
+   {
+    "inNodeId": 13,
+    "inPortIndex": 0,
+    "outNodeId": 11,
+    "outPortIndex": 0
+   },
+   {
+    "inNodeId": 13,
+    "inPortIndex": 1,
+    "outNodeId": 12,
+    "outPortIndex": 0
+   },
+   {
+    "inNodeId": 16,
+    "inPortIndex": 0,
+    "outNodeId": 14,
+    "outPortIndex": 0
+   },
+   {
+    "inNodeId": 16,
+    "inPortIndex": 1,
+    "outNodeId": 15,
+    "outPortIndex": 0
+   },
+   {
+    "inNodeId": 16,
+    "inPortIndex": 2,
+    "outNodeId": 13,
+    "outPortIndex": 0
+   },
+   {
+    "inNodeId": 16,
+    "inPortIndex": 3,
+    "outNodeId": 8,
+    "outPortIndex": 0
+   },
+   {
+    "inNodeId": 19,
+    "inPortIndex": 0,
+    "outNodeId": 8,
+    "outPortIndex": 0
+   },
+   {
+    "inNodeId": 19,
+    "inPortIndex": 1,
+    "outNodeId": 18,
+    "outPortIndex": 0
+   },
+   {
+    "inNodeId": 20,
+    "inPortIndex": 0,
+    "outNodeId": 17,
+    "outPortIndex": 0
+   },
+   {
+    "inNodeId": 20,
+    "inPortIndex": 1,
+    "outNodeId": 19,
+    "outPortIndex": 0
+   },
+   {
+    "inNodeId": 22,
+    "inPortIndex": 0,
+    "outNodeId": 21,
+    "outPortIndex": 0
+   },
+   {
+    "inNodeId": 22,
+    "inPortIndex": 1,
+    "outNodeId": 23,
+    "outPortIndex": 0
+   },
+   {
+    "inNodeId": 24,
+    "inPortIndex": 0,
+    "outNodeId": 20,
+    "outPortIndex": 0
+   },
+   {
+    "inNodeId": 24,
+    "inPortIndex": 1,
+    "outNodeId": 22,
+    "outPortIndex": 0
+   },
+   {
+    "inNodeId": 25,
+    "inPortIndex": 0,
+    "outNodeId": 16,
+    "outPortIndex": 0
+   },
+   {
+    "inNodeId": 25,
+    "inPortIndex": 1,
+    "outNodeId": 24,
+    "outPortIndex": 0
+   },
+   {
+    "inNodeId": 26,
+    "inPortIndex": 0,
+    "outNodeId": 25,
+    "outPortIndex": 0
+   }
+  ],
+  "nodes": [
+   {
+    "id": 0,
+    "internal-data": {
+     "model-name": "Normal",
+     "params": [],
+     "reference": ""
+    },
+    "label": "",
+    "labelVisible": true,
+    "position": {
+     "x": 0,
+     "y": 0
+    }
+   },
+   {
+    "id": 1,
+    "internal-data": {
+     "model-name": "SunDirection",
+     "params": [],
+     "reference": ""
+    },
+    "label": "",
+    "labelVisible": true,
+    "position": {
+     "x": 240,
+     "y": 0
+    }
+   },
+   {
+    "id": 2,
+    "internal-data": {
+     "model-name": "DotV3",
+     "params": [],
+     "reference": ""
+    },
+    "label": "",
+    "labelVisible": true,
+    "position": {
+     "x": 480,
+     "y": 0
+    }
+   },
+   {
+    "id": 3,
+    "internal-data": {
+     "model-name": "Remap",
+     "params": [],
+     "reference": ""
+    },
+    "label": "",
+    "labelVisible": true,
+    "position": {
+     "x": 720,
+     "y": 0
+    }
+   },
+   {
+    "id": 4,
+    "internal-data": {
+     "model-name": "Float",
+     "params": [
+      "-0.85"
+     ],
+     "reference": ""
+    },
+    "label": "",
+    "labelVisible": true,
+    "position": {
+     "x": 960,
+     "y": 0
+    }
+   },
+   {
+    "id": 5,
+    "internal-data": {
+     "model-name": "Float",
+     "params": [
+      "1.0"
+     ],
+     "reference": ""
+    },
+    "label": "",
+    "labelVisible": true,
+    "position": {
+     "x": 1200,
+     "y": 0
+    }
+   },
+   {
+    "id": 6,
+    "internal-data": {
+     "model-name": "Float",
+     "params": [
+      "0.0"
+     ],
+     "reference": ""
+    },
+    "label": "",
+    "labelVisible": true,
+    "position": {
+     "x": 1440,
+     "y": 0
+    }
+   },
+   {
+    "id": 7,
+    "internal-data": {
+     "model-name": "Float",
+     "params": [
+      "1.0"
+     ],
+     "reference": ""
+    },
+    "label": "",
+    "labelVisible": true,
+    "position": {
+     "x": 0,
+     "y": 140
+    }
+   },
+   {
+    "id": 8,
+    "internal-data": {
+     "model-name": "CelBands",
+     "params": [],
+     "reference": ""
+    },
+    "label": "",
+    "labelVisible": true,
+    "position": {
+     "x": 240,
+     "y": 140
+    }
+   },
+   {
+    "id": 9,
+    "internal-data": {
+     "model-name": "Float",
+     "params": [
+      "4.0"
+     ],
+     "reference": "bands"
+    },
+    "label": "",
+    "labelVisible": true,
+    "position": {
+     "x": 480,
+     "y": 140
+    }
+   },
+   {
+    "id": 10,
+    "internal-data": {
+     "model-name": "Float",
+     "params": [
+      "0.3"
+     ],
+     "reference": "softness"
+    },
+    "label": "",
+    "labelVisible": true,
+    "position": {
+     "x": 720,
+     "y": 140
+    }
+   },
+   {
+    "id": 11,
+    "internal-data": {
+     "model-name": "SampleTexture2D",
+     "params": [
+      ""
+     ],
+     "reference": "baseMap"
+    },
+    "label": "",
+    "labelVisible": true,
+    "position": {
+     "x": 960,
+     "y": 140
+    }
+   },
+   {
+    "id": 12,
+    "internal-data": {
+     "model-name": "Color",
+     "params": [
+      "1.0",
+      "1.0",
+      "1.0"
+     ],
+     "reference": "baseColor"
+    },
+    "label": "",
+    "labelVisible": true,
+    "position": {
+     "x": 1200,
+     "y": 140
+    }
+   },
+   {
+    "id": 13,
+    "internal-data": {
+     "model-name": "MultiplyV3",
+     "params": [],
+     "reference": ""
+    },
+    "label": "",
+    "labelVisible": true,
+    "position": {
+     "x": 1440,
+     "y": 140
+    }
+   },
+   {
+    "id": 14,
+    "internal-data": {
+     "model-name": "Color",
+     "params": [
+      "0.42",
+      "0.38",
+      "0.52"
+     ],
+     "reference": "shadowColor"
+    },
+    "label": "",
+    "labelVisible": true,
+    "position": {
+     "x": 0,
+     "y": 280
+    }
+   },
+   {
+    "id": 15,
+    "internal-data": {
+     "model-name": "Color",
+     "params": [
+      "0.74",
+      "0.7",
+      "0.84"
+     ],
+     "reference": "midColor"
+    },
+    "label": "",
+    "labelVisible": true,
+    "position": {
+     "x": 240,
+     "y": 280
+    }
+   },
+   {
+    "id": 16,
+    "internal-data": {
+     "model-name": "Gradient3",
+     "params": [],
+     "reference": ""
+    },
+    "label": "",
+    "labelVisible": true,
+    "position": {
+     "x": 480,
+     "y": 280
+    }
+   },
+   {
+    "id": 17,
+    "internal-data": {
+     "model-name": "SunColor",
+     "params": [],
+     "reference": ""
+    },
+    "label": "",
+    "labelVisible": true,
+    "position": {
+     "x": 720,
+     "y": 280
+    }
+   },
+   {
+    "id": 18,
+    "internal-data": {
+     "model-name": "Float",
+     "params": [
+      "0.35"
+     ],
+     "reference": ""
+    },
+    "label": "",
+    "labelVisible": true,
+    "position": {
+     "x": 960,
+     "y": 280
+    }
+   },
+   {
+    "id": 19,
+    "internal-data": {
+     "model-name": "AddF",
+     "params": [],
+     "reference": ""
+    },
+    "label": "",
+    "labelVisible": true,
+    "position": {
+     "x": 1200,
+     "y": 280
+    }
+   },
+   {
+    "id": 20,
+    "internal-data": {
+     "model-name": "ScaleV3",
+     "params": [],
+     "reference": ""
+    },
+    "label": "",
+    "labelVisible": true,
+    "position": {
+     "x": 1440,
+     "y": 280
+    }
+   },
+   {
+    "id": 21,
+    "internal-data": {
+     "model-name": "AmbientColor",
+     "params": [],
+     "reference": ""
+    },
+    "label": "",
+    "labelVisible": true,
+    "position": {
+     "x": 0,
+     "y": 420
+    }
+   },
+   {
+    "id": 22,
+    "internal-data": {
+     "model-name": "ScaleV3",
+     "params": [],
+     "reference": ""
+    },
+    "label": "",
+    "labelVisible": true,
+    "position": {
+     "x": 240,
+     "y": 420
+    }
+   },
+   {
+    "id": 23,
+    "internal-data": {
+     "model-name": "Float",
+     "params": [
+      "0.55"
+     ],
+     "reference": ""
+    },
+    "label": "",
+    "labelVisible": true,
+    "position": {
+     "x": 480,
+     "y": 420
+    }
+   },
+   {
+    "id": 24,
+    "internal-data": {
+     "model-name": "AddV3",
+     "params": [],
+     "reference": ""
+    },
+    "label": "",
+    "labelVisible": true,
+    "position": {
+     "x": 720,
+     "y": 420
+    }
+   },
+   {
+    "id": 25,
+    "internal-data": {
+     "model-name": "MultiplyV3",
+     "params": [],
+     "reference": ""
+    },
+    "label": "",
+    "labelVisible": true,
+    "position": {
+     "x": 960,
+     "y": 420
+    }
+   },
+   {
+    "id": 26,
+    "internal-data": {
+     "model-name": "UnlitMaster",
+     "params": [],
+     "reference": ""
+    },
+    "label": "",
+    "labelVisible": true,
+    "position": {
+     "x": 1200,
+     "y": 420
+    }
+   },
+   {
+    "id": 27,
+    "internal-data": {
+     "model-name": "Color",
+     "params": [
+      "0.16",
+      "0.13",
+      "0.18"
+     ],
+     "reference": "outlineColor"
+    },
+    "label": "",
+    "labelVisible": true,
+    "position": {
+     "x": 1440,
+     "y": 420
+    }
+   },
+   {
+    "id": 28,
+    "internal-data": {
+     "model-name": "Float",
+     "params": [
+      "0.018"
+     ],
+     "reference": "outlineWidth"
+    },
+    "label": "",
+    "labelVisible": true,
+    "position": {
+     "x": 0,
+     "y": 560
+    }
+   },
+   {
+    "id": 29,
+    "internal-data": {
+     "model-name": "Float",
+     "params": [
+      "1.0"
+     ],
+     "reference": "outlineAlpha"
+    },
+    "label": "",
+    "labelVisible": true,
+    "position": {
+     "x": 240,
+     "y": 560
+    }
+   }
+  ]
+ }
+}

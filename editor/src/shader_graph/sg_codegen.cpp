@@ -192,6 +192,32 @@ CodegenResult generate(QtNodes::DataFlowGraphModel& graph)
             && !src->params().isEmpty() && src->params().first().toFloat() >= 1.0f)
             out.transparent = false;
     }
+    // An outline is a material contract rather than a surface field: shaders/graph_outline.vert reads
+    // slots 0, 1 and 2 of the same block (colour, width, alpha). A graph asks for the outline pass by
+    // exposing three values with exactly those names. They are allocated here, before the master is
+    // walked, so they land in those slots whatever order the rest of the graph uses. The values do not
+    // have to feed the master: the outline pass reads them straight from the block.
+    {
+        const QString names[3] = {QStringLiteral("outlineColor"), QStringLiteral("outlineWidth"),
+                                  QStringLiteral("outlineAlpha")};
+        const ParamKind kinds[3] = {ParamKind::Color, ParamKind::Float, ParamKind::Float};
+        QStringList defaults[3];
+        bool found[3] = {false, false, false};
+        for (NodeId id : graph.allNodeIds()) {
+            auto* m = graph.delegateModel<ShaderNodeModel>(id);
+            if (!m || m->reference().isEmpty()) continue;
+            for (int k = 0; k < 3; ++k) {
+                if (found[k] || m->reference() != names[k] || m->spec()->param != kinds[k]) continue;
+                found[k] = true;
+                defaults[k] = m->params();
+            }
+        }
+        if (found[0] && found[1] && found[2]) {
+            for (int k = 0; k < 3; ++k) g.propertyExpr(names[k], kinds[k], defaults[k]);
+            out.outline = true;
+        }
+    }
+
     QStringList surfaceLines;
     emitMaster(g, masterId, masterSpec, surfaceLines);
     out.errors << g.errors;
@@ -212,7 +238,27 @@ CodegenResult generate(QtNodes::DataFlowGraphModel& graph)
        << QStringLiteral("    vec3 toonShade;     // Toon Master: shade colour in the shadow band")
        << QStringLiteral("    float toonThreshold;// Toon Master: N.L where the band starts")
        << QStringLiteral("    float toonSoftness; // Toon Master: width of the band edge")
-       << QStringLiteral("    float toon;         // 1 = Toon Master lighting")
+       << QStringLiteral("    vec3 toonRamp;      // NPR Master: ramp atlas colour, multiplied into the shade")
+       << QStringLiteral("    float toonOcclusion;// NPR Master: ambient occlusion (ILM green, vertex colour red)")
+       << QStringLiteral("    float toonShadow;   // NPR Master: 1 where the sun is visible")
+       << QStringLiteral("    float toonScene;    // NPR Master: 0 = no sun or sky term, the ramp carries the light")
+       << QStringLiteral("    float toonRampBlend;// NPR Master: how strongly the ramp tone replaces the lit tone")
+       << QStringLiteral("    float toonWrap;     // NPR Master: 0 = N.L terminator, 1 = half-Lambert")
+       << QStringLiteral("    float toonMask;     // NPR Master: replaces the ramp (painted style ramp, ILM mask)")
+       << QStringLiteral("    float toonMaskMix;  // NPR Master: how far toonMask replaces the ramp")
+       << QStringLiteral("    float toonFloor;    // NPR Master: albedo floor kept in the shadow")
+       << QStringLiteral("    float toonAmbient;  // NPR Master: hemisphere ambient strength")
+       << QStringLiteral("    float toonBoost;    // NPR Master: multiplies the lit term")
+       << QStringLiteral("    float toonNormalShade; // NPR Master: 0.92..1.08 lit modulation by the wrap")
+       << QStringLiteral("    vec3 toonRim;       // Face Master: additive rim light")
+       << QStringLiteral("    float toon;         // 1 = NPR (Toon) Master lighting")
+       << QStringLiteral("    float sdfShadow;    // Hybrid/Face: 0 = lit, 1 = shadowed")
+       << QStringLiteral("    float specMask;     // Hybrid: specular mask")
+       << QStringLiteral("    vec3 hairSpecular;  // Hybrid: anisotropic hair")
+       << QStringLiteral("    vec3 matcap;        // Hybrid: matcap reflection")
+       << QStringLiteral("    float wetness;      // Hybrid: rain coverage")
+       << QStringLiteral("    float hybrid;       // 1 = Hybrid Master lighting")
+       << QStringLiteral("    float face;         // 1 = Face Master lighting")
        << QStringLiteral("    float lit;   // 1 = shaded by the frame's sun and sky, 0 = unlit")
        << QStringLiteral("};")
        << QString()
@@ -230,12 +276,40 @@ CodegenResult generate(QtNodes::DataFlowGraphModel& graph)
        << QStringLiteral("    s.toonShade = vec3(0.6, 0.5, 0.6);")
        << QStringLiteral("    s.toonThreshold = 0.0;")
        << QStringLiteral("    s.toonSoftness = 0.05;")
+       << QStringLiteral("    s.toonRamp = vec3(1.0);")
+       << QStringLiteral("    s.toonOcclusion = 1.0;")
+       << QStringLiteral("    s.toonShadow = 1.0;")
+       << QStringLiteral("    s.toonScene = 1.0;")
+       << QStringLiteral("    s.toonRampBlend = 1.0;")
+       << QStringLiteral("    s.toonWrap = 0.0;")
+       << QStringLiteral("    s.toonMask = 0.0;")
+       << QStringLiteral("    s.toonMaskMix = 0.0;")
+       << QStringLiteral("    s.toonFloor = 0.0;")
+       << QStringLiteral("    s.toonAmbient = 0.55;")
+       << QStringLiteral("    s.toonBoost = 1.0;")
+       << QStringLiteral("    s.toonNormalShade = 0.0;")
+       << QStringLiteral("    s.toonRim = vec3(0.0);")
        << QStringLiteral("    s.toon = 0.0;")
+       << QStringLiteral("    s.sdfShadow = 0.0;")
+       << QStringLiteral("    s.specMask = 1.0;")
+       << QStringLiteral("    s.hairSpecular = vec3(0.0);")
+       << QStringLiteral("    s.matcap = vec3(0.0);")
+       << QStringLiteral("    s.wetness = 0.0;")
+       << QStringLiteral("    s.hybrid = 0.0;")
+       << QStringLiteral("    s.face = 0.0;")
        << QStringLiteral("    s.lit = 1.0;");
     if (masterSpec->id == QLatin1String("UnlitMaster") || masterSpec->id == QLatin1String("BakedLitMaster"))
         surfaceLines << QStringLiteral("    s.lit = 0.0;");
     if (masterSpec->id == QLatin1String("ToonMaster"))
         surfaceLines << QStringLiteral("    s.toon = 1.0;");
+    if (masterSpec->id == QLatin1String("FaceMaster"))
+        surfaceLines << QStringLiteral("    s.face = 1.0;");
+    if (masterSpec->id == QLatin1String("HybridMaster"))
+        surfaceLines << QStringLiteral("    s.hybrid = 1.0;");
+    if (masterSpec->id == QLatin1String("OutlineMaster")) {
+        surfaceLines << QStringLiteral("    s.lit = 0.0;");
+        surfaceLines << QStringLiteral("    s.alpha = 0.0;"); // Discarded by alpha clip or blend
+    }
     fn << g.body << surfaceLines << QStringLiteral("    return s;") << QStringLiteral("}");
     out.surfaceFunction = fn.join('\n') + '\n';
 
@@ -245,6 +319,9 @@ CodegenResult generate(QtNodes::DataFlowGraphModel& graph)
          << QStringLiteral("layout(location = 0) in vec2 v_uv;")
          << QStringLiteral("layout(location = 1) in vec3 v_normal;")
          << QStringLiteral("layout(location = 2) in vec3 v_world;")
+         // graph.vert writes both, so a graph can read painted masks and a second UV set.
+         << QStringLiteral("layout(location = 3) in vec4 v_color;   // COLOR_0, white when the mesh has none")
+         << QStringLiteral("layout(location = 4) in vec2 v_uv1;     // TEXCOORD_1, a copy of v_uv when the mesh has none")
          << QStringLiteral("layout(location = 0) out vec4 o_color;")
          << QStringLiteral("layout(set = 0, binding = 0, std140) uniform FrameBlock {")
          << QStringLiteral("    mat4 view;")
@@ -262,6 +339,17 @@ CodegenResult generate(QtNodes::DataFlowGraphModel& graph)
          << QStringLiteral("    vec4 screenParams;   // z = time (s)")
          << QStringLiteral("    vec4 pointPos[4];")
          << QStringLiteral("    vec4 pointColor[4];")
+         // The scene's toon parameters, so a graph style reacts to the same global sliders the engine's
+         // own toon shaders use (see shaders/frame.glsl for what each row carries).
+         << QStringLiteral("    vec4 toonA;          // x hair highlight, y hair shift, z hair exponent, w self shadow on")
+         << QStringLiteral("    vec4 toonB;          // x self threshold, y self hardness, z gloss, w gloss power")
+         << QStringLiteral("    vec4 toonC;          // x cel band on, y normal map strength, z outline noise, w reflection")
+         << QStringLiteral("    vec4 toonD;          // xy head forward (x, z) for face shadow, z face shadow on, w smear")
+         << QStringLiteral("    vec4 toonE;          // x soft light, y light sweep strength, z sweep speed")
+         << QStringLiteral("    vec4 toonF;          // camera dither fade: x dithered-out distance, y visible distance")
+         << QStringLiteral("    vec4 toonG;          // x stylised PBR, y eye flatten, z eye parallax, w eye matcap")
+         << QStringLiteral("    vec4 toonH;          // x eye highlight map strength")
+         << QStringLiteral("    vec4 toonI;          // occlusion target: xyz world point, w radius")
          << QStringLiteral("} frame;");
     if (!g.props.isEmpty()) {
         frag << QStringLiteral("layout(set = 1, binding = %1, std140) uniform UkMaterial {")
@@ -278,14 +366,71 @@ CodegenResult generate(QtNodes::DataFlowGraphModel& graph)
          << QStringLiteral("    SurfaceData s = ukiyo_surface(v_uv, normalize(v_normal));")
          << QStringLiteral("    vec3 color = s.baseColor * s.bakedLight + s.emission;")
          << QStringLiteral("    if (s.toon > 0.5) {")
-         << QStringLiteral("        // Toon Master: two-tone sun ramp plus hemisphere ambient.")
+         // Every term past the ramp is identity at its default, so the branch reduces to the old
+         // two-tone formula (and the same floating point operations) when nothing new is wired.
+         << QStringLiteral("        // NPR Master: ramp-toned sun light plus hemisphere ambient.")
          << QStringLiteral("        vec3 Nt = normalize(s.normal);")
          << QStringLiteral("        float ndlt = dot(Nt, normalize(frame.sunDir.xyz));")
-         << QStringLiteral("        float ramp = smoothstep(s.toonThreshold - s.toonSoftness, s.toonThreshold + s.toonSoftness, ndlt);")
+         << QStringLiteral("        float wrapped = mix(ndlt, clamp(ndlt, 0.0, 1.0) * 0.5 + 0.5, s.toonWrap);")
+         << QStringLiteral("        float ramp = smoothstep(s.toonThreshold - s.toonSoftness, s.toonThreshold + s.toonSoftness, wrapped);")
+         << QStringLiteral("        ramp = mix(ramp, clamp(s.toonMask, 0.0, 1.0), s.toonMaskMix);")
+         // mix() rather than 1 - (1 - ramp) * blend: the same curve, but exact at the blend default of 1,
+        // so a graph that never touches Ramp Blend keeps the two-tone result bit for bit.
+        << QStringLiteral("        float rampBase = ramp;")
+        << QStringLiteral("        ramp = mix(1.0, ramp, s.toonRampBlend);")
          << QStringLiteral("        vec3 albedo = s.baseColor * s.bakedLight;")
          << QStringLiteral("        vec3 hemiT = mix(frame.groundColor.rgb, frame.skyColor.rgb, 0.5 + 0.5 * Nt.y);")
-         << QStringLiteral("        color = albedo * mix(s.toonShade, vec3(1.0), ramp) * frame.sunColor.rgb")
-         << QStringLiteral("              + albedo * hemiT * 0.55 + s.emission;")
+         // Boost and the normal shade belong to the lit side of the ramp only, as they do in the
+         // Endfield NPR path, where the ramp tone is the shaded side and carries neither.
+         << QStringLiteral("        float normalShade = mix(1.0, mix(0.92, 1.08, clamp(wrapped, 0.0, 1.0)), s.toonNormalShade);")
+         << QStringLiteral("        vec3 tone = albedo * mix(s.toonShade * s.toonRamp, vec3(s.toonBoost * normalShade), ramp);")
+         << QStringLiteral("        color = tone * frame.sunColor.rgb * s.toonShadow * s.toonScene")
+         << QStringLiteral("              + albedo * hemiT * s.toonAmbient * s.toonOcclusion * s.toonScene")
+         << QStringLiteral("              + tone * (1.0 - s.toonScene);")
+         // The floor is measured on the shadow before Ramp Blend weakens it, and the additive terms
+         // (emission, rim, specular) come after it - both as the character shaders do.
+         << QStringLiteral("        vec3 floorTone = albedo * s.toonFloor * (1.0 - rampBase);")
+         << QStringLiteral("        color = mix(color, max(color, floorTone), step(0.0, s.toonFloor));")
+         << QStringLiteral("        color += s.emission;")
+         << QStringLiteral("    } else if (s.hybrid > 0.5) {")
+         << QStringLiteral("        // Hybrid Master: PBR and NPR blended, plus matcap, hair, rim and wetness.")
+         << QStringLiteral("        vec3 N = normalize(s.normal);")
+         << QStringLiteral("        vec3 L = normalize(frame.sunDir.xyz);")
+         << QStringLiteral("        vec3 V = normalize(frame.camPos.xyz - v_world);")
+         << QStringLiteral("        vec3 H = normalize(L + V);")
+         << QStringLiteral("        float ndl = max(dot(N, L), 0.0);")
+         << QStringLiteral("        float ndv = max(dot(N, V), 0.0);")
+         << QStringLiteral("        float ndh = max(dot(N, H), 0.0);")
+         << QStringLiteral("        vec3 albedo = s.baseColor * s.bakedLight;")
+         << QStringLiteral("        vec3 hemi = mix(frame.groundColor.rgb, frame.skyColor.rgb, 0.5 + 0.5 * N.y);")
+         << QStringLiteral("        float shin = exp2(1.0 + 10.0 * s.smoothness);")
+         << QStringLiteral("        float spec = pow(ndh, shin) * (shin + 8.0) / 25.13274;")
+         << QStringLiteral("        vec3 F0 = mix(vec3(0.04), albedo, s.metallic);")
+         << QStringLiteral("        vec3 pbr = albedo * (1.0 - s.metallic) * (frame.sunColor.rgb * ndl + hemi) * s.toonOcclusion")
+         << QStringLiteral("                 + F0 * frame.sunColor.rgb * spec * step(0.0, ndl) * s.specMask;")
+         << QStringLiteral("        float wrapped = mix(dot(N, L), clamp(dot(N, L), 0.0, 1.0) * 0.5 + 0.5, s.toonWrap);")
+         << QStringLiteral("        float ramp = smoothstep(s.toonThreshold - s.toonSoftness, s.toonThreshold + s.toonSoftness, wrapped);")
+         << QStringLiteral("        ramp = mix(ramp, clamp(s.toonMask, 0.0, 1.0), s.toonMaskMix);")
+         << QStringLiteral("        float rampBase = ramp;")
+         << QStringLiteral("        ramp = mix(1.0, ramp, s.toonRampBlend);")
+         << QStringLiteral("        float normalShade = mix(1.0, mix(0.92, 1.08, clamp(wrapped, 0.0, 1.0)), s.toonNormalShade);")
+         << QStringLiteral("        vec3 nprLit = albedo * s.toonBoost * normalShade;")
+         << QStringLiteral("        vec3 rampTone = albedo * mix(s.toonShade * s.toonRamp, vec3(1.0), ramp);")
+         << QStringLiteral("        float shadow = clamp(max(1.0 - s.toonShadow, s.sdfShadow), 0.0, 1.0);")
+         << QStringLiteral("        vec3 litBase = mix(nprLit, pbr, s.toonScene);") // using toonScene as pbrBlend
+         << QStringLiteral("        color = mix(litBase, rampTone, shadow * s.toonRampBlend);")
+         << QStringLiteral("        color = max(color, albedo * s.toonFloor * shadow);")
+         << QStringLiteral("        color += s.hairSpecular * s.toonRamp;") // reusing toonRamp as specRamp
+         << QStringLiteral("        color += s.matcap;")
+         << QStringLiteral("        color += s.toonRim + s.emission;")
+         << QStringLiteral("    } else if (s.face > 0.5) {")
+         << QStringLiteral("        // Face Master: SDF shadow over the ramp, plus hemisphere ambient.")
+         << QStringLiteral("        vec3 albedo = s.baseColor * s.bakedLight;")
+         << QStringLiteral("        vec3 hemiT = mix(frame.groundColor.rgb, frame.skyColor.rgb, 0.5 + 0.5 * s.normal.y);")
+         << QStringLiteral("        vec3 tone = albedo * mix(vec3(1.0), s.toonRamp * s.toonShade, clamp(s.toonShadow, 0.0, 1.0));")
+         << QStringLiteral("        color = tone * frame.sunColor.rgb")
+         << QStringLiteral("              + albedo * hemiT * s.toonAmbient")
+         << QStringLiteral("              + s.toonRim + s.emission;")
          << QStringLiteral("    } else if (s.lit > 0.5) {")
          << QStringLiteral("        vec3 N = normalize(s.normal);")
          << QStringLiteral("        float ndl = max(dot(N, normalize(frame.sunDir.xyz)), 0.0);")
@@ -302,6 +447,8 @@ CodegenResult generate(QtNodes::DataFlowGraphModel& graph)
          << QStringLiteral("        float ccExp = exp2(1.0 + 10.0 * s.clearCoatSmoothness);")
          << QStringLiteral("        float ccSpec = pow(max(dot(N, H), 0.0), ccExp) * (ccExp + 8.0) / 25.13274;")
          << QStringLiteral("        color = color * (1.0 - 0.04 * s.clearCoat) + frame.sunColor.rgb * ccSpec * s.clearCoat * step(0.0, ndl);")
+         << QStringLiteral("    } else if (s.toon < 0.5 && s.face < 0.5 && s.lit < 0.5) {")
+         << QStringLiteral("        discard; // Outline Master")
          << QStringLiteral("    }")
          << QStringLiteral("    o_color = vec4(color, s.alpha);")
          << QStringLiteral("}");
@@ -360,6 +507,8 @@ QJsonObject shaderDocument(QtNodes::DataFlowGraphModel& graph)
     compiled.insert(QStringLiteral("textures"), textures);
     compiled.insert(QStringLiteral("materialBinding"), kMaterialBlockBinding);
     compiled.insert(QStringLiteral("blend"), r.transparent ? QStringLiteral("alpha") : QStringLiteral("none"));
+    // Only written when the graph asks for outlines, so a plain graph's document stays as it was.
+    if (r.outline) compiled.insert(QStringLiteral("outline"), true);
 
     QJsonObject root;
     root.insert(QStringLiteral("format"), QStringLiteral("ukiyo-shader-graph"));
