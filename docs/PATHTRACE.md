@@ -54,15 +54,18 @@ the tufts visible in `terrain-hero.png` are absent. This is the light reference,
 
 ## 3. Cost
 
-Measured on the two cores of the CI container, 1600×900:
+Measured on the two cores of this container:
 
-| Samples | Time |
-| --- | --- |
-| 36 | ~1 min |
-| 96 | ~4 min |
+| Resolution | Samples | Time |
+| --- | --- | --- |
+| 1600×900 | 36 | ~1 min |
+| 1600×900 | 96 | ~4 min |
+| 480×270 | 1 | 0.3 s |
 
-That is one to two orders of magnitude away from real time, which is the point: this is the branch you run when you
-want to know what the right answer looks like, not when you want a frame.
+Per sample and pixel that is about 1.2 µs of one thread. A progressive preview — one sample a frame into a running
+average at a quarter of the viewport, then a bilateral upsample — therefore lands at a few frames a second on an
+iGPU-class machine's CPU, and converges to the still above while the camera is still. That is the only honest way to
+put *this* tracer in front of a player: the frame is not real time, the image is.
 
 ## 4. What the real-time renderer does instead
 
