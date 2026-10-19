@@ -270,7 +270,6 @@ struct Scene {
     }
 };
 
-uint32_t gSeed = 1u;
 uint32_t rnd(uint32_t& s) {
     s ^= s << 13;
     s ^= s >> 17;
