@@ -145,7 +145,7 @@ def stack_text(draw, centre_x, y, text, f, fill, spacing):
     tracked(draw, (centre_x - w * 0.5, y), text, f, fill, spacing)
 
 
-def lockup(width, height, ink=INK, jp=True, subtitle="ENGINE"):
+def lockup(width, height, ink=INK, jp=True, subtitle="ENGINE", jp_ink=None):
     """Mark on the left, the Latin name and its two sub-lines on the right.
 
     No rule under UKIYO: the seal is the only accent, and a second red mark competed with it. The sub-lines start
@@ -172,7 +172,8 @@ def lockup(width, height, ink=INK, jp=True, subtitle="ENGINE"):
     sub_sp = int(ss_h * 0.040)
     tracked(d, (x + int(ss_h * 0.006), int(ss_h * 0.610)), subtitle, f_sub, ink + (225,), sub_sp)
     if jp:
-        tracked(d, (x + int(ss_h * 0.004), int(ss_h * 0.752)), "浮世エンジン", f_jp, MUTED + (225,), int(ss_h * 0.014))
+        tracked(d, (x + int(ss_h * 0.004), int(ss_h * 0.752)), "浮世エンジン", f_jp,
+                (jp_ink or MUTED) + (225,), int(ss_h * 0.014))
     return img.resize((width, height), Image.LANCZOS)
 
 
@@ -207,7 +208,8 @@ def sheet(size=1200):
     # The mono lockup on paper: the same artwork in indigo, which is how the mark travels to print.
     paper_h = int(size * 0.21)
     paper = Image.new("RGB", (int(size * 0.80), paper_h), PAPER)
-    lk2 = lockup(int(size * 0.70), int(size * 0.135), ink=INDIGO, jp=True)
+    # On paper the muted beige disappears; the Japanese line goes to a grey indigo instead.
+    lk2 = lockup(int(size * 0.70), int(size * 0.135), ink=INDIGO, jp=True, jp_ink=(96, 104, 120))
     paper.paste(lk2, ((paper.width - lk2.width) // 2, (paper_h - lk2.height) // 2), lk2)
     img.paste(paper, ((size - paper.width) // 2, int(size * 0.545)))
     return img

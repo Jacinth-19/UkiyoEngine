@@ -23,8 +23,8 @@ The workspace is three programs and a library:
 | ![Path traced](docs/pathtrace-terrain.png) | ![Motion matching](docs/motion-demo.png) |
 | The same scene through a CPU path tracer — one cosine bounce, ray-marched sun shadows, the engine's layer weights and textures. The ground truth the real-time renderer is measured against, and it runs on any machine (see [docs/PATHTRACE.md](docs/PATHTRACE.md)). | Ten seconds of motion matching: the route, the footprints, and four poses from the run (see [docs/MOTION.md](docs/MOTION.md)). |
 
-The hub's own pages are captured on every CI run by `ukiyo_hub --screenshots renders` and uploaded as the
-`screenshots` artifact, together with the terrain renders.
+The hub's own pages are captured on every CI run by `ukiyo_hub --screenshots renders` and uploaded with the terrain
+renders and the motion figure as the `terrain-renders` artifact.
 
 ## Quick start
 
