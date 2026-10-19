@@ -147,11 +147,16 @@ struct PrefabStage {
 class MainWindow : public QMainWindow {
     Q_OBJECT
 public:
-    explicit MainWindow(QWidget* parent = nullptr);
+    // `projectRoot` is the project to open. Empty uses the engine checkout (UKIYO_ROOT), which is
+    // also how the editor behaved before projects existed.
+    explicit MainWindow(const QString& projectRoot = QString(), QWidget* parent = nullptr);
     ~MainWindow() override;
 
-    // Starts the engine, loads the animation library and the default scene.
-    bool bootstrap(QString* error);
+    // Progress for the splash: the current stage and a 0..1 fraction. Runs on the GUI thread.
+    using LoadProgress = std::function<void(const QString& stage, float fraction)>;
+
+    // Starts the engine, loads the animation library and the project's scene (or the default scene).
+    bool bootstrap(QString* error, const LoadProgress& progress = LoadProgress());
 
     // Runs the built-in checks (`ukiyo_editor --selftest`) and prints PASS/FAIL lines.
     // Returns the number of failed checks.

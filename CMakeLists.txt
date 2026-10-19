@@ -98,6 +98,7 @@ add_library(ukiyo_core STATIC
   src/engine/shader_compiler.cpp
   src/engine/material_asset.cpp
   src/engine/project_settings.cpp
+  src/engine/project_template.cpp
   src/engine/graph_material.cpp
   src/engine/water.cpp
   src/engine/terrain.cpp
@@ -165,6 +166,12 @@ add_executable(network_test tests/network_test.cpp)
 target_link_libraries(network_test PRIVATE ukiyo_systems)
 target_compile_options(network_test PRIVATE -Wall -Wextra -Wno-missing-field-initializers)
 
+# Project templates and the hub's new-project scaffold. No Qt, so this runs anywhere.
+add_executable(project_test tests/project_test.cpp)
+target_link_libraries(project_test PRIVATE ukiyo_core)
+target_compile_definitions(project_test PRIVATE UKIYO_ROOT="${CMAKE_SOURCE_DIR}")
+target_compile_options(project_test PRIVATE -Wall -Wextra -Wno-missing-field-initializers)
+
 # ---- Application -----------------------------------------------------------
 add_executable(ukiyo src/app/main.cpp)
 target_link_libraries(ukiyo PRIVATE ukiyo_core)
@@ -221,6 +228,8 @@ if(UKIYO_EDITOR)
 
     add_executable(ukiyo_editor
       editor/src/main.cpp
+      editor/src/splash_screen.cpp
+      editor/src/splash_screen.h
       editor/src/engine_session.cpp
       editor/src/render_worker.cpp
       editor/src/prefab_file.cpp
@@ -263,6 +272,27 @@ if(UKIYO_EDITOR)
     # The rest of the editor keeps the Release flags.
     set_source_files_properties(${CMAKE_SOURCE_DIR}/editor/src/main_window.cpp PROPERTIES COMPILE_OPTIONS "-O0")
     set_source_files_properties(${CMAKE_SOURCE_DIR}/editor/src/main_window_terrain.cpp PROPERTIES COMPILE_OPTIONS "-O0")
+
+    # The hub: a launcher that lists recent projects, scaffolds new ones from the templates, and
+    # starts the editor on them with --project.
+    add_executable(ukiyo_hub
+      editor/src/hub/hub_main.cpp
+      editor/src/hub/hub_window.cpp
+      editor/src/hub/hub_window.h
+      editor/src/hub/new_project_dialog.cpp
+      editor/src/hub/new_project_dialog.h
+      editor/src/hub/project_launcher.cpp
+      editor/src/hub/project_launcher.h
+      editor/src/hub/hub_selftest.cpp
+      editor/src/hub/hub_selftest.h
+      editor/src/splash_screen.cpp
+      editor/src/splash_screen.h
+      editor/src/icons.cpp)
+    set_target_properties(ukiyo_hub PROPERTIES AUTOMOC ON CXX_STANDARD 17)
+    target_include_directories(ukiyo_hub PRIVATE ${CMAKE_SOURCE_DIR}/editor/src)
+    target_compile_definitions(ukiyo_hub PRIVATE UKIYO_ROOT="${CMAKE_SOURCE_DIR}")
+    target_link_libraries(ukiyo_hub PRIVATE ukiyo_core Qt6::Widgets)
+    target_compile_options(ukiyo_hub PRIVATE -Wall -Wextra -Wno-missing-field-initializers)
   else()
     message(STATUS "Qt6 Widgets not found: ukiyo_editor is skipped")
   endif()

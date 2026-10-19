@@ -2,7 +2,7 @@ name: build
 
 on:
   push:
-    branches: [ "arena/7971959b-ukiyoengine", "main" ]
+    branches: [ "arena/7971959b-ukiyoengine", "arena/da507d27-ukiyoengine", "main" ]
   pull_request:
     branches: [ "main" ]
   workflow_dispatch:
@@ -24,3 +24,7 @@ jobs:
         run: ./build/systems_test
       - name: Run Network Test
         run: ./build/network_test
+      - name: Run Project Template Test
+        run: ./build/project_test
+      - name: Run Hub Self-Test
+        run: QT_QPA_PLATFORM=offscreen ./build/ukiyo_hub --selftest

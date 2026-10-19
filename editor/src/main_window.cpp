@@ -169,6 +169,12 @@
 #define UKIYO_ROOT "."
 #endif
 
+namespace {
+// Content that ships with the engine (the animation library, the starter character, the LUTs) is
+// looked up beside the executable's source checkout, not in the project folder.
+QString engineAssetsRoot() { return QStringLiteral(UKIYO_ROOT) + QStringLiteral("/assets"); }
+} // namespace
+
 namespace editor {
 
 using scene_file::emptyModelPath;
@@ -549,8 +555,8 @@ void RenderView::wheelEvent(QWheelEvent* e) {
 // ---------------------------------------------------------------------------------------------
 // MainWindow: construction
 
-MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent) {
-    projectRoot_ = QStringLiteral(UKIYO_ROOT);
+MainWindow::MainWindow(const QString& projectRoot, QWidget* parent) : QMainWindow(parent) {
+    projectRoot_ = projectRoot.trimmed().isEmpty() ? QStringLiteral(UKIYO_ROOT) : QDir::cleanPath(projectRoot);
     resize(1568, 843);
 
     worker_ = new RenderWorker;
@@ -594,7 +600,12 @@ void MainWindow::postToWorker(std::function<void()> fn) {
     QMetaObject::invokeMethod(worker_, std::move(fn), Qt::QueuedConnection);
 }
 
-bool MainWindow::bootstrap(QString* error) {
+bool MainWindow::bootstrap(QString* error, const LoadProgress& progress) {
+    auto stage = [&progress](const QString& text, float fraction) {
+        if (progress) progress(text, fraction);
+    };
+
+    stage(QStringLiteral("Starting the render device"), 0.10f);
     QString err;
     bool ok = false;
     runOnWorker([&] { ok = worker_->init(&err); });
@@ -603,13 +614,27 @@ bool MainWindow::bootstrap(QString* error) {
         return false;
     }
 
-    loadAnimLibrary(projectRoot_ + "/assets/anim/UAL1_Standard.glb");
+    stage(QStringLiteral("Reading the animation library"), 0.45f);
+    loadAnimLibrary(engineAssetsRoot() + QStringLiteral("/anim/UAL1_Standard.glb"));
+
+    // A project reopens its own last scene, never another project's.
+    const QString mainScene = QDir(projectRoot_).absoluteFilePath(QStringLiteral("Scenes/Main.ukscene"));
     bool openedLast = false;
     if (editor::prefs::boolean("general/reopenLast", true)) {
         const QString last = editor::prefs::text("scene/last", QString());
-        if (!last.isEmpty() && QFileInfo::exists(last)) openedLast = readScene(last);
+        const QString relative = QDir(projectRoot_).relativeFilePath(last);
+        const bool insideProject = !relative.startsWith(QStringLiteral(".."));
+        if (!last.isEmpty() && insideProject && QFileInfo::exists(last)) openedLast = readScene(last);
     }
-    if (!openedLast) loadModel(projectRoot_ + "/assets/Seed-san.vrm");
+    if (!openedLast && QFileInfo::exists(mainScene)) {
+        stage(QStringLiteral("Opening %1").arg(QFileInfo(mainScene).fileName()), 0.72f);
+        openedLast = readScene(mainScene);
+    }
+    if (!openedLast) {
+        stage(QStringLiteral("Loading the starter character"), 0.72f);
+        loadModel(engineAssetsRoot() + QStringLiteral("/Seed-san.vrm"));
+    }
+    stage(QStringLiteral("Laying out the editor"), 0.94f);
     return modelReady_;
 }
 
@@ -1173,10 +1198,10 @@ QWidget* MainWindow::buildProjectSettings() {
             QSignalBlocker b(lut);
             lut->clear();
             lut->addItem(QStringLiteral("None"), QString());
-            if (!projectRoot_.isEmpty()) {
-                const QDir d(projectRoot_ + QStringLiteral("/assets/LUTs"));
+            const QDir d(engineAssetsRoot() + QStringLiteral("/LUTs"));
+            if (d.exists()) {
                 for (const QString& f : d.entryList({QStringLiteral("*.png"), QStringLiteral("*.cube")}, QDir::Files, QDir::Name))
-                    lut->addItem(QFileInfo(f).completeBaseName(), QStringLiteral("assets/LUTs/") + f);
+                    lut->addItem(QFileInfo(f).completeBaseName(), d.absoluteFilePath(f));
             }
             const int idx = lut->findData(gradingLut_);
             lut->setCurrentIndex(idx < 0 ? 0 : idx);
@@ -5600,7 +5625,7 @@ void MainWindow::newScene() {
     // Loading the default model resets the rest poses and frames both cameras.
     loadingScene_ = true;
     runOnWorker([&] { worker_->clearScene(); });
-    loadModel(projectRoot_ + "/assets/Seed-san.vrm");
+    loadModel(engineAssetsRoot() + QStringLiteral("/Seed-san.vrm"));
     settings_ = ukiyo::RenderSettings();
     for (const auto& sync : settingSyncers_) sync();
     refresh();
@@ -5613,8 +5638,10 @@ void MainWindow::newScene() {
 
 void MainWindow::openScene() {
     if (!leavePrefabStage() || !confirmDiscardScene()) return;
-    const QString path = QFileDialog::getOpenFileName(this, QStringLiteral("Open Scene"),
-                                                      projectRoot_ + "/assets", QStringLiteral("Ukiyo Scene (*.ukscene)"));
+    const QString scenes = QDir(projectRoot_).absoluteFilePath(QStringLiteral("Scenes"));
+    const QString start = QDir(scenes).exists() ? scenes : projectRoot_ + "/assets";
+    const QString path = QFileDialog::getOpenFileName(this, QStringLiteral("Open Scene"), start,
+                                                      QStringLiteral("Ukiyo Scene (*.ukscene)"));
     if (!path.isEmpty()) readScene(path);
 }
 
@@ -5625,8 +5652,10 @@ bool MainWindow::saveScene() {
 
 bool MainWindow::saveSceneAs() {
     const QString base = scenePath_.isEmpty() ? QStringLiteral("Untitled") : QFileInfo(scenePath_).completeBaseName();
+    const QString scenes = QDir(projectRoot_).absoluteFilePath(QStringLiteral("Scenes"));
+    const QString folder = QDir(scenes).exists() ? scenes : projectRoot_ + "/assets";
     QString path = QFileDialog::getSaveFileName(this, QStringLiteral("Save Scene"),
-                                                projectRoot_ + "/assets/" + base + ".ukscene",
+                                                folder + "/" + base + ".ukscene",
                                                 QStringLiteral("Ukiyo Scene (*.ukscene)"));
     if (path.isEmpty()) return false;
     if (!path.endsWith(QLatin1String(".ukscene"), Qt::CaseInsensitive)) path += QStringLiteral(".ukscene");

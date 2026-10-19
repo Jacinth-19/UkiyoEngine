@@ -1,0 +1,105 @@
+/* Ukiyo Hub theme. Loaded after dark.qss, so the editor's palette is the base and these rules add
+   the launcher's surfaces: a darker rail, project cards, template cards and the new-project
+   dialog. Accents match the editor: #4a9ef0 blue, #7ee3d4 mint. */
+
+QWidget#hubWindow { background: #131519; }
+QStackedWidget#hubPages, QWidget#hubPage { background: #171a20; }
+
+/* Left rail */
+QWidget#hubRail { background: #101216; border-right: 1px solid #0a0b0e; }
+QLabel#hubWordmark { color: #f2f6fb; background: transparent; font-size: 27px; font-weight: 900; }
+QLabel#hubWordmarkSub { color: #6f8ba6; background: transparent; font-size: 9px; font-weight: bold; }
+QLabel#hubRailCaption { color: #566274; background: transparent; font-size: 9px; font-weight: bold; }
+QLabel#hubRailPath { color: #6d7987; background: transparent; font-size: 10px; }
+QPushButton#hubNav {
+    text-align: left; padding: 9px 12px; border-radius: 7px; border: 1px solid transparent;
+    background: transparent; color: #aab6c4; font-size: 12px;
+}
+QPushButton#hubNav:hover { background: #1a1e25; color: #e4ecf5; }
+QPushButton#hubNav:checked { background: #1c2836; border-color: #27384c; color: #9fd6ff; }
+
+/* Page headers */
+QLabel#hubPageTitle { color: #f1f5fa; font-size: 26px; font-weight: bold; background: transparent; }
+QLabel#hubPageSubtitle { color: #8a96a6; background: transparent; font-size: 12px; }
+QLabel#hubCount { color: #647284; background: transparent; font-size: 11px; }
+QLabel#hubFieldLabel { color: #6d7b8c; background: transparent; font-size: 9px; font-weight: bold; }
+QLabel#hubHint { color: #6d7987; background: transparent; font-size: 10px; }
+QLabel#hubError { color: #e58184; background: transparent; font-size: 11px; }
+QLabel#hubPathPreview { color: #8fa3b8; background: #14171c; border: 1px solid #232a33; border-radius: 5px; padding: 7px 9px; font-size: 11px; }
+
+/* Buttons */
+QPushButton#hubPrimary {
+    background: #2f7fd0; border: 1px solid #2668ab; border-radius: 5px; color: #ffffff;
+    padding: 7px 14px; font-weight: bold;
+}
+QPushButton#hubPrimary:hover { background: #3b8fdf; }
+QPushButton#hubPrimary:pressed { background: #276fba; }
+QPushButton#hubPrimarySmall {
+    background: #24476b; border: 1px solid #2f5c86; border-radius: 5px; color: #dceaf7;
+    padding: 5px 14px;
+}
+QPushButton#hubPrimarySmall:hover { background: #2d5a86; }
+QPushButton#hubSecondary {
+    background: #20252d; border: 1px solid #2b323d; border-radius: 5px; color: #c6d1dd;
+    padding: 6px 12px;
+}
+QPushButton#hubSecondary:hover { background: #272e37; border-color: #39424f; }
+QToolButton#hubIconButton { background: transparent; border: 1px solid transparent; border-radius: 5px; padding: 4px; }
+QToolButton#hubIconButton:hover { background: #222831; border-color: #2c3440; }
+
+/* Search */
+QLineEdit#hubSearch {
+    background: #14171c; border: 1px solid #262d37; border-radius: 5px; padding: 6px 9px;
+    color: #cfd9e4; min-height: 20px;
+}
+QLineEdit#hubSearch:focus { border-color: #3d6f9f; }
+
+/* Project list */
+QScrollArea#hubScroll, QWidget#hubListHost { background: transparent; border: none; }
+QFrame#hubCard {
+    background: #1b1f26; border: 1px solid #252c36; border-radius: 9px;
+}
+QFrame#hubCard:hover { background: #1f242c; border-color: #334050; }
+QLabel#hubCardName { color: #eef3fa; font-size: 15px; font-weight: bold; background: transparent; }
+QLabel#hubCardPath { color: #78869a; font-size: 11px; background: transparent; }
+QLabel#hubCardMeta { color: #95a3b5; font-size: 11px; background: transparent; }
+QLabel#hubBadge {
+    background: #232c37; color: #9fb8cf; border-radius: 7px; padding: 1px 8px;
+    font-size: 10px;
+}
+QLabel#hubBadgeMissing { background: #3a2426; color: #e08d90; border-radius: 7px; padding: 1px 8px; font-size: 10px; }
+
+/* Empty state */
+QFrame#hubEmpty {
+    background: #191d23; border: 1px solid #262d37; border-radius: 10px;
+}
+QLabel#hubEmptyArt { border-radius: 8px; }
+QLabel#hubEmptyTitle { color: #f0f4f9; font-size: 20px; font-weight: bold; background: transparent; }
+QLabel#hubEmptyText { color: #8b98a8; background: transparent; }
+
+/* Template cards */
+QFrame#hubTemplateCard {
+    background: #1b1f26; border: 1px solid #262d37; border-radius: 10px;
+}
+QFrame#hubTemplateCard:hover { border-color: #334050; }
+QLabel#hubTemplateName { color: #f0f4f9; font-size: 17px; font-weight: bold; background: transparent; }
+QLabel#hubTemplateTagline { color: #9fd6ff; background: transparent; font-size: 11px; }
+QLabel#hubTemplateText { color: #8c99a9; background: transparent; font-size: 11px; }
+QLabel#hubTemplateBullet { color: #a3b0c0; background: transparent; font-size: 11px; }
+QPushButton#templateChoice {
+    background: #1a1e25; border: 1px solid #262d37; border-radius: 8px; text-align: left;
+    padding: 0px;
+}
+QPushButton#templateChoice:hover { background: #1e232b; border-color: #34404f; }
+QPushButton#templateChoice:checked { background: #1d2731; border-color: #3d6f9f; }
+QLabel#templateChoiceName { color: #eaf1f8; font-size: 12px; font-weight: bold; background: transparent; }
+QLabel#templateChoiceTagline { color: #7f8da0; font-size: 10px; background: transparent; }
+
+/* About */
+QLabel#hubAboutBody { color: #a2afbf; background: transparent; font-size: 12px; }
+QFrame#hubFeatureCard { background: #1a1e25; border: 1px solid #262d37; border-radius: 8px; }
+QLabel#hubFeatureName { color: #d9e6f2; background: transparent; font-size: 12px; font-weight: bold; }
+QLabel#hubFeatureText { color: #7f8c9c; background: transparent; font-size: 10px; }
+
+/* New project dialog */
+QDialog#newProjectDialog { background: #171a20; }
