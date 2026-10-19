@@ -131,6 +131,15 @@ one-bounce, raster-fed estimator can be: *the lighting matches the reference clo
 tracer's own sample noise (the blue grain — 64 spp is not a converged reference) and a one-pixel line along every
 silhouette, where the half-resolution estimate meets the full-resolution depth buffer.*
 
+**What a second bounce would add, and why it is not in the pass.** The tracer's rays bounce again; the estimator's do
+not, so light that leaves a surface, lands on another and leaves that one is missing. That term was implemented in the
+twin (`UKIYO_RT_BOUNCES=2`) and measured against the same 32-spp reference at 480 × 270: it moves the image by 0.26 of
+a 255th on average (worst pixel 26), leaves RMSE at 0.0380, and makes the worst pixel slightly worse because one extra
+sample per ray brings its own variance. On open grassland the missing transport is under the noise floor, and the
+remaining error is the half-resolution silhouette; on a city street the trade could come out the other way, which is
+why the switch is still there. Shipping it by default would spend a second march per ray — doubling the pass's cost —
+on a term this scene cannot see.
+
 **Where the albedo and the normals come from.** A bounce is `albedo × incoming radiance`, and a full-resolution
 albedo is not something a half-resolution pass has: the trace takes the terrain's own layer blend, averaged to the
 heightfield's resolution, from the height texture's spare channels (R is the height; G, B and A are the albedo). Props
