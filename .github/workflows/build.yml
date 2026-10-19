@@ -22,3 +22,5 @@ jobs:
         run: cmake --build build --parallel 4
       - name: Run Systems Test
         run: ./build/systems_test
+      - name: Run Network Test
+        run: ./build/network_test

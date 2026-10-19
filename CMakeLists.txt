@@ -136,9 +136,13 @@ add_library(ukiyo_systems STATIC
   src/systems/anim_state.cpp
   src/systems/script.cpp
   src/systems/vfx.cpp
+  src/systems/network.cpp
   src/systems/world.cpp)
 target_include_directories(ukiyo_systems PUBLIC ${CMAKE_SOURCE_DIR}/src)
 target_link_libraries(ukiyo_systems PUBLIC ukiyo_core Jolt ukiyo_recast ukiyo_lua ukiyo_miniaudio)
+if(WIN32)
+  target_link_libraries(ukiyo_systems PUBLIC ws2_32)
+endif()
 target_compile_options(ukiyo_systems PRIVATE -Wall -Wextra -Wno-missing-field-initializers)
 
 add_executable(systems_test tests/systems_test.cpp)
@@ -156,6 +160,10 @@ target_compile_options(particles_gpu_test PRIVATE -Wall -Wextra -Wno-missing-fie
 target_link_libraries(systems_test PRIVATE ukiyo_systems)
 target_compile_definitions(systems_test PRIVATE UKIYO_ROOT="${CMAKE_SOURCE_DIR}")
 target_compile_options(systems_test PRIVATE -Wall -Wextra -Wno-missing-field-initializers)
+
+add_executable(network_test tests/network_test.cpp)
+target_link_libraries(network_test PRIVATE ukiyo_systems)
+target_compile_options(network_test PRIVATE -Wall -Wextra -Wno-missing-field-initializers)
 
 # ---- Application -----------------------------------------------------------
 add_executable(ukiyo src/app/main.cpp)
