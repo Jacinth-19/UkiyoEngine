@@ -48,6 +48,8 @@ jobs:
         run: |
           mkdir -p renders
           UKIYO_RT_MAX_RMSE=0.05 ./build/pathtrace_preview realtime renders/gi-realtime.png . 480 270 8 4 32
+          # The same pass against a converged truth, which also prints how much of the missing light it reproduces.
+          UKIYO_RT_TRUTH_SPP=256 ./build/pathtrace_preview realtime renders/gi-truth-check.png . 160 90 8 4 64
 
       # The controller, driven through a route: writes docs/motion-demo.png and fails if the run is not sane.
       - name: Run Motion Demo

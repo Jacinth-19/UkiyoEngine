@@ -113,10 +113,10 @@ the previous frame's composited image) keeps the estimator from feeding its own 
 
 | Resolution | Rays per half-res pixel | Frames accumulated | Reference | RMSE | Worst pixel |
 | --- | --- | --- | --- | --- | --- |
-| 480 × 270 | 4 | 8 | 32 spp | 0.03802 | 0.3116 |
-| 480 × 270 | 8 | 8 | 32 spp | 0.03801 | 0.3127 |
-| 480 × 270 | 8 | 8 | 64 spp | 0.03757 | 0.3140 |
-| 960 × 540 | 8 | 16 | 64 spp | **0.03346** | 0.3389 |
+| 480 × 270 | 4 | 8 | 32 spp | 0.03940 | 0.3108 |
+| 480 × 270 | 8 | 8 | 32 spp | 0.03939 | 0.3118 |
+| 480 × 270 | 8 | 8 | 64 spp | 0.03896 | 0.3144 |
+| 960 × 540 | 8 | 16 | 64 spp | **0.03471** | 0.3408 |
 
 These numbers are reproducible to the last digit: the twin seeds every pixel's rays from the pixel and frame index
 rather than the thread, so a rerun writes a byte-identical PNG. (It did not, until that was fixed — the RMSE moved by
@@ -129,7 +129,7 @@ converged ground truth (`UKIYO_RT_TRUTH_SPP=256`) and report both errors against
 
 | 320 × 180, 8 frames, 8 rays | RMSE against 256-spp truth |
 | --- | --- |
-| The estimator | 0.03873 |
+| The estimator | 0.04019 |
 | A 64-spp reference (what the table above compares against) | 0.00726 |
 
 The reference's own sampling is five times smaller than the number being quoted, so **the 0.037–0.039 is the
@@ -137,11 +137,12 @@ estimator's error, not the reference's noise**. Two more measurements say what k
 
 | Change | RMSE against 256-spp truth |
 | --- | --- |
-| 4 rays → 8 rays | 0.03802 → 0.03801 |
-| 8 frames → 64 frames | 0.03873 → 0.03870 |
-| Absolute → relative depth weight in the upsample | 0.03873 → 0.03872 |
+| 4 rays → 8 rays | 0.03940 → 0.03939 |
+| 8 frames → 64 frames | 0.04019 → 0.04017 |
+| Absolute → relative depth weight in the upsample | 0.04019 → 0.04018 |
+| One bounce → two bounces | 0.04019 → 0.04019 |
 
-Eight times the samples change the error by 0.08 %. It is not Monte Carlo variance; it is **model and reconstruction
+Eight times the samples change the error by 0.05 %. It is not Monte Carlo variance; it is **model and reconstruction
 error**, and it is stable, which is why it can be reasoned about at all.
 
 The pass's own contribution, isolated by rendering the raster with and without the bounce and differencing both
@@ -149,13 +150,13 @@ against the truth:
 
 | | Mean, display units |
 | --- | --- |
-| Light the bounce adds | +0.01297 |
+| Light the bounce adds | +0.01274 |
 | Light actually missing (truth − raster) | +0.01568 |
 | RMS of the missing light | 0.05339 |
-| RMS of (added − missing) | 0.03875 |
-| **Share of the missing light's variance the pass explains** | **47.3 %** |
+| RMS of (added − missing) | 0.04022 |
+| **Share of the missing light's variance the pass explains** | **43.3 %** |
 
-So the magnitude is right — the pass adds about four fifths of the light that is missing — and it removes 47 % of the
+So the magnitude is right — the pass adds about four fifths of the light that is missing — and it removes 43 % of the
 error that was there. What it does not do is get the remaining half. Two sources account for it, and both are
 consequences of the design rather than bugs in it:
 
@@ -169,8 +170,11 @@ consequences of the design rather than bugs in it:
 
 The first would be fixed by tracing at full resolution, which costs four times the rays and is the one thing an iGPU
 cannot afford; the second by tracing the bounce of the bounce, which was implemented and measured — `UKIYO_RT_BOUNCES=2`
-leaves the error at 0.03872, because it corrects the second bounce's *transport* and not the ambient model that feeds
-it. Both are written down rather than papered over.
+leaves the error at 0.04019, because it corrects the second bounce's *transport* and not the ambient model that feeds
+it. Both are written down rather than papered over. (Subtracting the ambient at full resolution in the composite,
+using the full-resolution albedo, measured 4 % better — 0.03873 — but the GPU pass has no full-resolution albedo: the
+height texture carries one texel per two metres of ground. The twin follows the shader, not the better-looking
+variant, because a validation tool that measures a different algorithm is worse than none.)
 
 The error barely moves with the ray count, and the section below says why: it is the cost of computing a bounce at
 half resolution and applying it at full resolution, not the cost of sampling it. That is the honest description of
@@ -188,7 +192,7 @@ is not the reference's sampling: §"What that error is made of" measures that at
 
 **What a second bounce would add, and why it is not in the pass.** The tracer's rays bounce again; the estimator's do
 not, so light that leaves a surface, lands on another and leaves that one is missing. That term was implemented in the
-twin (`UKIYO_RT_BOUNCES=2`) and measured against the converged truth: 0.03873 with one bounce, 0.03872 with two. It
+twin (`UKIYO_RT_BOUNCES=2`) and measured against the converged truth: 0.04019 with one bounce, 0.04019 with two. It
 moves the image by 0.26 of a 255th on average, and it does not touch the error, because the error is the ambient model
 that feeds the second bounce rather than the transport it adds. On open grassland the missing transport is far below
 the reconstruction error; on a city street the trade could come out the other way, which is why the switch stays.

@@ -514,7 +514,10 @@ void renderRealtime(const Scene& scene, const glm::mat4& view, const glm::mat4& 
                         // remaining factor.
                         const float detail = std::clamp(1.0f - b.depth[fi] / 210.0f, 0.0f, 1.0f);
                         const glm::vec3 albedo = scene.albedoAt(surf, n, detail);
-                        const glm::vec3 sample = albedo * (sum / float(raysPerFrame));
+                        // Exactly what gi_trace.frag writes: albedo * (traced - unoccluded hemisphere), at the
+                        // half-resolution surface. The composite adds it without subtracting anything, because the
+                        // subtraction already happened here.
+                        const glm::vec3 sample = albedo * (sum / float(raysPerFrame) - scene.ambient(n));
                         if (std::getenv("UKIYO_RT_DEBUG")) {
                             debugRays += 1.0;
                             debugSum += double(sum.x + sum.y + sum.z) / (3.0 * double(raysPerFrame));
@@ -573,17 +576,16 @@ void renderRealtime(const Scene& scene, const glm::mat4& view, const glm::mat4& 
                     wsum += wgt;
                 }
             }
-            glm::vec3 indirect = wsum > 0.0f ? acc / wsum : glm::vec3(0.0f);
-            // The raster already added an *unoccluded* sky ambient to this pixel. The rays computed the same integral
-            // with occlusion and with the ground's bounce, so what is missing is the difference, not the whole sum.
-            // Adding the full sum would count the sky twice, and the image would brighten every time GI was enabled.
-            const float detailC = std::clamp(1.0f - b.depth[i] / 210.0f, 0.0f, 1.0f);
+            // The delta the trace already computed: the raster's unoccluded ambient has been subtracted there, so
+            // adding this cannot count the sky twice and an open flat surface comes out at zero. (Subtracting at full
+            // resolution here instead was measured 4 % better against a converged truth, but it needs a full-resolution
+            // albedo the GPU pass does not have — the height texture's is one texel per two metres of ground — so the
+            // twin follows the shader rather than a variant that cannot ship.)
+            const glm::vec3 indirect = wsum > 0.0f ? acc / wsum : glm::vec3(0.0f);
             const glm::vec4 farC = invProj * glm::vec4((float(x) + 0.5f) / float(W) * 2.0f - 1.0f,
                                                        1.0f - (float(y) + 0.5f) / float(H) * 2.0f, 1.0f, 1.0f);
             const glm::vec3 dirC = glm::normalize(glm::vec3(invView * glm::vec4(glm::normalize(glm::vec3(farC)), 0.0f)));
-            const glm::vec3 surfC = eye + dirC * b.depth[i];
-            const glm::vec3 rasterAmbient = scene.albedoAt(surfC, b.normal[i], detailC) * scene.ambient(b.normal[i]);
-            glm::vec3 c = base + (indirect - rasterAmbient);
+            glm::vec3 c = base + indirect;
             // Aerial perspective. The GPU pass does the same thing per pixel in effects.frag; it is repeated here so
             // that the comparison with the tracer is measuring the GI estimator and not the fog.
             const float haze = 1.0f - std::exp(-b.depth[i] * 0.00055f);
