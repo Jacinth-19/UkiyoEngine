@@ -141,8 +141,10 @@ collapses to.
 
 Costs, measured on this machine (single thread, `-O2`):
 
-* build: **109 ms / 131 k triangles** (0.83 µs a triangle), once per mesh, cached afterwards;
-* selection: **12 µs / 1 365 clusters**, per draw per frame — less than the draw-call bookkeeping it saves;
+* build: **109 ms / 131 k triangles** (0.83 µs a triangle), once per mesh, cached afterwards — a million triangles is
+  about a second, a load hitch rather than a frame cost;
+* selection: **12 µs / 1 365 clusters**, per draw per frame (0.07 % of a 60 fps frame), and that upper bound is the
+  whole tile; a normal prop is a few microseconds;
 * memory: the index stream is 1.7× the source index buffer (225 616 vs 131 072 triangles, 4 bytes an index) and the
   vertices are shared with the ordinary path.
 
