@@ -62,8 +62,9 @@ int main(int argc, char* argv[]) {
     if (!selfTest && !noSplash) {
         splash = new editor::SplashScreen(QStringLiteral(UKIYO_ROOT) + "/editor/res/splash.png",
                                           QStringLiteral("World Editor"));
-        if (!projectRoot.isEmpty()) splash->setCaption(QDir::toNativeSeparators(projectRoot));
+        splash->setEyebrow(QStringLiteral("STARTING EDITOR"));
         splash->setStage(0.02f, QStringLiteral("Preparing the editor"));
+        if (!projectRoot.isEmpty()) splash->setCaption(QDir::toNativeSeparators(projectRoot));
         splash->show();
         QCoreApplication::processEvents();
     }

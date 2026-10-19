@@ -2,11 +2,13 @@
 
 #include <cstdio>
 
+#include <QColor>
 #include <QCoreApplication>
 #include <QDir>
 #include <QElapsedTimer>
 #include <QEventLoop>
 #include <QFileInfo>
+#include <QImage>
 #include <QPixmap>
 #include <QPointer>
 #include <QTemporaryDir>
@@ -92,15 +94,28 @@ int runHubSelfTest() {
 
     // The splash paints and animates without a window manager, then deletes itself.
     QPointer<SplashScreen> splash = new SplashScreen(splashArtPath(), QStringLiteral("Self test"));
+    splash->setEyebrow(QStringLiteral("SELF TEST"));
     splash->setCaption(root);
+    splash->skipIntro();
     splash->setStage(0.5f, QStringLiteral("Checking the splash"));
     check(splash->width() > 400 && splash->height() > 200, "splash: it has a sensible size",
           QStringLiteral("%1 x %2").arg(splash->width()).arg(splash->height()));
-    // Painting without a window manager: the artwork, the wordmark, the bar and its line.
+
+    // Let the bar ease toward the stage, then paint without a window manager: artwork,
+    // wordmark, heading, bar and the line under it.
+    QElapsedTimer settle;
+    settle.start();
+    while (settle.elapsed() < 500) {
+        QCoreApplication::processEvents(QEventLoop::AllEvents, 16);
+    }
     QPixmap frame(splash->size());
     splash->render(&frame);
     check(!frame.isNull() && frame.width() == splash->width(), "splash: it paints its frame",
           QStringLiteral("%1 x %2").arg(frame.width()).arg(frame.height()));
+    const QImage painted = frame.toImage();
+    const QColor bar = painted.pixelColor(64, 287);   // inside the vermilion bar at 50%
+    check(bar.red() > 110 && bar.red() > bar.green() + 40, "splash: the progress bar is drawn",
+          bar.name());
     check(!splash->finishing(), "splash: it starts visible");
     splash->finish();
     check(splash->finishing(), "splash: finish starts the fade-out");

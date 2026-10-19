@@ -4,14 +4,13 @@
 #include <cmath>
 
 #include <QFont>
-#include <QFontMetrics>
+#include <QFontMetricsF>
 #include <QGuiApplication>
 #include <QLinearGradient>
-#include <QPainter>
-#include <QPen>
-#include <QPainterPath>
 #include <QPaintEvent>
-#include <QRadialGradient>
+#include <QPainter>
+#include <QPainterPath>
+#include <QPen>
 #include <QScreen>
 #include <QShowEvent>
 #include <QSizeF>
@@ -19,19 +18,36 @@
 namespace editor {
 namespace {
 
-const QColor kAccent(0x4a, 0x9e, 0xf0);
-const QColor kMint(0x7e, 0xe3, 0xd4);
+// Palette. Four colours and two neutrals, which is enough for the whole screen.
+const QColor kInk(241, 235, 223);        // warm off-white, like the print's paper
+const QColor kMuted(191, 192, 194);
+const QColor kDim(134, 141, 150);
+const QColor kVermilion(204, 72, 50);    // the one accent
+const QColor kNight(26, 40, 68);         // flat indigo, sampled from the artwork
+const QColor kScrim(8, 12, 20);
 
-float easeToward(float current, float target, float factor) {
-    return current + (target - current) * factor;
-}
+// The design is laid out on a 960 x 540 grid; everything is multiplied by `s`.
+constexpr qreal kDesignWidth = 960.0;
+constexpr qreal kMargin = 44.0;
+constexpr qreal kBarTop = 286.0;
+constexpr qreal kBarWidth = 340.0;
+constexpr qreal kMarkHoldMs = 950.0;     // the mark's beat before the artwork
+constexpr qreal kCrossfadeMs = 450.0;
+constexpr qint64 kMinimumVisibleMs = 1350; // no flash for instant work
+constexpr qreal kFadeOutMs = 280.0;
 
-QFont spaced(QFont font, int pixels, qreal spacing, QFont::Weight weight = QFont::Normal) {
-    font.setPixelSize(pixels);
+QFont sized(const QFont& base, qreal pixels, QFont::Weight weight, qreal spacing = 0.0) {
+    QFont font = base;
+    font.setPixelSize(std::max(1, int(std::lround(pixels))));
     font.setWeight(weight);
-    font.setLetterSpacing(QFont::AbsoluteSpacing, spacing);
+    if (spacing > 0.0) font.setLetterSpacing(QFont::AbsoluteSpacing, spacing);
+    else font.setLetterSpacing(QFont::PercentageSpacing, 100.0);
     return font;
 }
+
+// The tracked wordmarks carry a trailing letter-space, so their measured width is wider
+// than the ink. Pulling half of it back keeps the optical centre.
+qreal opticalCentre(qreal width, qreal spacing) { return (width - spacing) * 0.5; }
 
 } // namespace
 
@@ -41,16 +57,29 @@ SplashScreen::SplashScreen(const QString& artPath, const QString& heading, QWidg
     setWindowFlags(Qt::SplashScreen | Qt::FramelessWindowHint | Qt::WindowStaysOnTopHint);
     setAttribute(Qt::WA_TranslucentBackground, true);
     setAttribute(Qt::WA_NoSystemBackground, true);
-    setAutoFillBackground(false);
-    // The window paints its own rounded artwork; the app-wide dark surface must not show through.
-    setStyleSheet(QStringLiteral("background: transparent;"));
     setAttribute(Qt::WA_DeleteOnClose, true);
+    setAutoFillBackground(false);
+    // The window paints its own rounded card; the application's dark surface must not
+    // show through the corners.
+    setStyleSheet(QStringLiteral("background: transparent;"));
     setFixedSize(960, 540);
 
     if (!artPath.isEmpty()) art_.load(artPath);
 
+    markEnd_ = kMarkHoldMs / 1000.0;
+    clock_.start();
     connect(&timer_, &QTimer::timeout, this, [this] { animate(); });
     timer_.start(16);
+}
+
+void SplashScreen::setEyebrow(const QString& text) {
+    eyebrow_ = text;
+    update();
+}
+
+void SplashScreen::setHeading(const QString& text) {
+    heading_ = text;
+    update();
 }
 
 void SplashScreen::setStage(float fraction, const QString& message) {
@@ -67,235 +96,298 @@ void SplashScreen::setCaption(const QString& caption) {
 void SplashScreen::finish() {
     if (fading_) return;
     fading_ = true;
-    fraction_ = 1.0f;
+    finishAt_ = std::max(clock_.elapsed() + qint64(60), qint64(kMinimumVisibleMs));
+}
+
+void SplashScreen::skipIntro() {
+    skipped_ = true;
+    markEnd_ = 0.0;
+    update();
 }
 
 void SplashScreen::showEvent(QShowEvent* event) {
     if (!centred_) {
         centred_ = true;
+        QSize target(960, 540);
         if (QScreen* screen = QGuiApplication::primaryScreen()) {
             const QRect available = screen->availableGeometry();
-            // Keep the splash comfortably inside small screens.
-            const QSize fitted(std::min(width(), int(available.width() * 0.86)),
-                               std::min(height(), int(available.height() * 0.86)));
-            if (fitted != size()) setFixedSize(fitted);
-            move(available.center() - rect().center());
+            // Keep the splash comfortably inside small screens, and keep its 16:9 shape
+            // so the artwork and the type block stay where they were designed to be.
+            const int maxWidth = int(available.width() * 0.86);
+            const int maxHeight = int(available.height() * 0.86);
+            if (target.width() > maxWidth) target = QSize(maxWidth, maxWidth * 9 / 16);
+            if (target.height() > maxHeight) target = QSize(maxHeight * 16 / 9, maxHeight);
+            move(available.center() - QPoint(target.width() / 2, target.height() / 2));
         }
+        setFixedSize(target);
     }
-    opacity_ = 0.0f;
-    setWindowOpacity(0.0f);
+    // The window itself fades in over the first ~200 ms (see animate()).
+    setWindowOpacity(0.0);
     QWidget::showEvent(event);
 }
 
 void SplashScreen::animate() {
-    const float step = 0.016f;
-    phase_ += step;
+    const qint64 elapsed = clock_.elapsed();
+    age_ = elapsed / 1000.0;
 
-    if (fading_) {
-        opacity_ = std::max(0.0f, opacity_ - 0.065f);
-        setWindowOpacity(opacity_);
-        if (opacity_ <= 0.0f) {
+    // Real work is already moving: don't sit on the mark while the bar is filling.
+    if (shown_ > 0.45f && age_ < markEnd_) markEnd_ = age_;
+
+    // Ease toward the real fraction at a fixed rate per second, whatever the frame rate.
+    const qreal dt = std::clamp(age_ - lastAge_, 0.0, 0.05);
+    lastAge_ = age_;
+    const qreal target = fraction_;
+    shown_ += float((target - shown_) * std::min(1.0, dt * 9.0));
+    if (std::fabs(shown_ - target) < 0.0006f) shown_ = float(target);
+
+    // Fade the window in, then out once finish() has held it for its minimum beat.
+    qreal windowAlpha = std::clamp(elapsed / 190.0, 0.0, 1.0);
+    if (fading_ && elapsed >= finishAt_) {
+        const qreal fade = (elapsed - finishAt_) / kFadeOutMs;
+        windowAlpha = std::clamp(1.0 - fade, 0.0, 1.0);
+        if (fade >= 1.0) {
             timer_.stop();
             close();
             return;
         }
-    } else if (opacity_ < 1.0f) {
-        opacity_ = std::min(1.0f, opacity_ + 0.075f);
-        setWindowOpacity(opacity_);
     }
+    setWindowOpacity(windowAlpha);
 
-    shown_ = easeToward(shown_, fraction_, 0.14f);
-    if (std::fabs(shown_ - fraction_) < 0.0005f) shown_ = fraction_;
     update();
+}
+
+qreal SplashScreen::artAlpha() const {
+    if (skipped_) return 1.0;
+    if (age_ <= markEnd_) return 0.0;
+    const qreal fade = (age_ - markEnd_) * 1000.0 / kCrossfadeMs;
+    return std::clamp(fade, 0.0, 1.0);
 }
 
 void SplashScreen::paintEvent(QPaintEvent*) {
     QPainter painter(this);
     painter.setRenderHint(QPainter::Antialiasing, true);
+    painter.setRenderHint(QPainter::TextAntialiasing, true);
     painter.setRenderHint(QPainter::SmoothPixmapTransform, true);
 
-    const QRectF frame = QRectF(rect()).adjusted(0.5, 0.5, -0.5, -0.5);
+    const qreal s = width() / kDesignWidth;
+    const QRectF frame(rect());
     QPainterPath rounded;
-    rounded.addRoundedRect(frame, 16.0, 16.0);
+    rounded.addRoundedRect(frame.adjusted(0.5, 0.5, -0.5, -0.5), 14.0 * s, 14.0 * s);
 
     painter.save();
     painter.setClipPath(rounded);
-    if (art_.isNull()) paintFallbackArt(painter, frame);
-    else paintArt(painter, frame);
 
-    // Darken the top for the wordmark and the bottom for the status block.
-    QLinearGradient top(frame.topLeft(), QPointF(frame.left(), frame.top() + frame.height() * 0.42));
-    top.setColorAt(0.0, QColor(6, 9, 14, 178));
-    top.setColorAt(1.0, QColor(6, 9, 14, 0));
-    painter.fillRect(frame, top);
-
-    QLinearGradient bottom(QPointF(frame.left(), frame.top() + frame.height() * 0.42), frame.bottomLeft());
-    bottom.setColorAt(0.0, QColor(6, 9, 14, 0));
-    bottom.setColorAt(0.55, QColor(6, 9, 14, 176));
-    bottom.setColorAt(1.0, QColor(6, 9, 14, 236));
-    painter.fillRect(frame, bottom);
-
-    QRadialGradient glow(QPointF(frame.left() + 120.0, frame.bottom() - 40.0), 360.0);
-    glow.setColorAt(0.0, QColor(74, 158, 240, 34));
-    glow.setColorAt(1.0, QColor(74, 158, 240, 0));
-    painter.fillRect(frame, glow);
-
-    const qreal margin = 48.0;
-
-    // Wordmark, top left.
-    painter.setPen(QColor(240, 246, 252));
-    painter.setFont(spaced(font(), 30, 9.0, QFont::Black));
-    painter.drawText(QPointF(margin, 60.0), QStringLiteral("UKIYO"));
-    painter.setPen(QColor(kMint.red(), kMint.green(), kMint.blue(), 210));
-    painter.setFont(spaced(font(), 10, 3.4, QFont::DemiBold));
-    painter.drawText(QPointF(margin + 2.0, 80.0), QStringLiteral("VULKAN  ·  ANIME PIPELINE"));
-
-    // Heading above the loading line.
-    const qreal baseY = frame.bottom() - 132.0;
-    painter.setPen(QColor(214, 227, 239, 190));
-    painter.setFont(spaced(font(), 10, 2.6, QFont::DemiBold));
-    painter.drawText(QPointF(margin, baseY - 34.0), QStringLiteral("LOADING"));
-
-    painter.setPen(QColor(255, 255, 255, 240));
-    painter.setFont(spaced(font(), 26, 0.6, QFont::Bold));
-    painter.drawText(QPointF(margin, baseY), heading_);
-
-    if (!caption_.isEmpty()) {
-        painter.setPen(QColor(168, 186, 203, 200));
-        painter.setFont(spaced(font(), 11, 0.2));
-        const QString line = QFontMetrics(painter.font()).elidedText(
-            caption_, Qt::ElideMiddle, int(frame.width() - margin * 2.0));
-        painter.drawText(QPointF(margin, baseY + 20.0), line);
+    paintMark(painter, s);
+    const qreal a = artAlpha();
+    if (a > 0.0) {
+        painter.setOpacity(a);
+        paintArtwork(painter, s);
+        painter.setOpacity(1.0);
     }
 
-    paintProgress(painter, frame);
     painter.restore();
 
-    // A hairline border keeps the rounded edge readable on dark desktops.
+    // A hairline edge keeps the rounded card readable on dark desktops.
     painter.setBrush(Qt::NoBrush);
-    painter.setPen(QPen(QColor(120, 160, 200, 60), 1.0));
+    painter.setPen(QPen(QColor(241, 235, 223, 32), 1.0));
     painter.drawPath(rounded);
 }
 
+// ---------------------------------------------------------------------------------------------
+// Beat 1: the mark
+
+void SplashScreen::paintMark(QPainter& painter, qreal s) {
+    painter.fillRect(rect(), kNight);
+
+    const qreal w = width();
+    const qreal h = height();
+    const qreal spacing = 13.0 * s;
+    const QFont wordFont = sized(font(), 34.0 * s, QFont::Black, spacing);
+    const QFontMetricsF wordMetrics(wordFont);
+    const QString word = QStringLiteral("UKIYO");
+    const qreal wordWidth = wordMetrics.horizontalAdvance(word);
+
+    const qreal baseline = h * 0.5 - 4.0 * s;
+    painter.setFont(wordFont);
+    painter.setPen(kInk);
+    painter.drawText(QPointF(w * 0.5 - opticalCentre(wordWidth, spacing), baseline), word);
+
+    painter.setPen(Qt::NoPen);
+    painter.setBrush(kVermilion);
+    painter.drawRect(QRectF(w * 0.5 - 27.0 * s, baseline + 22.0 * s, 54.0 * s, 2.0 * s));
+
+    const qreal subSpacing = 4.8 * s;
+    const QFont subFont = sized(font(), 8.0 * s, QFont::DemiBold, subSpacing);
+    const QString sub = QStringLiteral("ENGINE");
+    const qreal subWidth = QFontMetricsF(subFont).horizontalAdvance(sub);
+    painter.setFont(subFont);
+    painter.setPen(QColor(196, 184, 166, 220));
+    painter.drawText(QPointF(w * 0.5 - opticalCentre(subWidth, subSpacing), baseline + 46.0 * s), sub);
+}
+
+// ---------------------------------------------------------------------------------------------
+// Beat 2: the artwork
+
+void SplashScreen::paintArtwork(QPainter& painter, qreal s) {
+    const QRectF area(rect());
+    paintArt(painter, area);
+
+    // Take the print down a little so white type always has something to sit on.
+    painter.fillRect(area, QColor(kScrim.red(), kScrim.green(), kScrim.blue(), 46));
+
+    QLinearGradient scrim(QPointF(0.0, area.height() * 0.34), QPointF(0.0, area.height()));
+    scrim.setColorAt(0.00, QColor(kScrim.red(), kScrim.green(), kScrim.blue(), 0));
+    scrim.setColorAt(0.55, QColor(kScrim.red(), kScrim.green(), kScrim.blue(), 54));
+    scrim.setColorAt(1.00, QColor(kScrim.red(), kScrim.green(), kScrim.blue(), 128));
+    painter.fillRect(area, scrim);
+
+    const qreal a = skipped_ ? 1.0 : artAlpha();
+    painter.save();
+    painter.translate(0.0, (1.0 - a) * 9.0 * s);
+
+    // Wordmark, top left.
+    const qreal markSpacing = 6.4 * s;
+    painter.setFont(sized(font(), 20.0 * s, QFont::Black, markSpacing));
+    painter.setPen(kInk);
+    painter.drawText(QPointF(kMargin * s, 50.0 * s), QStringLiteral("UKIYO"));
+
+    const qreal subSpacing = 2.4 * s;
+    painter.setFont(sized(font(), 7.0 * s, QFont::DemiBold, subSpacing));
+    painter.setPen(QColor(kDim.red(), kDim.green(), kDim.blue(), 230));
+    painter.drawText(QPointF(kMargin * s + 1.0 * s, 70.0 * s), QStringLiteral("ENGINE"));
+
+    // Version, top right.
+    const QString version = QStringLiteral("v0.1");
+    const QFont versionFont = sized(font(), 8.0 * s, QFont::Normal, 0.8 * s);
+    const qreal versionWidth = QFontMetricsF(versionFont).horizontalAdvance(version);
+    painter.setFont(versionFont);
+    painter.setPen(QColor(kDim.red(), kDim.green(), kDim.blue(), 220));
+    painter.drawText(QPointF(width() - kMargin * s - versionWidth, 46.0 * s), version);
+
+    // The status block, set in the open sky above the water.
+    const qreal typeWidth = std::min(500.0 * s, width() - kMargin * 2.0 * s);
+    const QFont eyebrowFont = sized(font(), 7.0 * s, QFont::Bold, 2.2 * s);
+    painter.setFont(eyebrowFont);
+    painter.setPen(QColor(196, 184, 166, 240));
+    painter.drawText(QPointF(kMargin * s, 194.0 * s), eyebrow_);
+
+    const QFont headingFont = sized(font(), 26.0 * s, QFont::Bold, 0.2 * s);
+    const QFontMetricsF headingMetrics(headingFont);
+    painter.setFont(headingFont);
+    painter.setPen(kInk);
+    painter.drawText(QPointF(kMargin * s, 230.0 * s),
+                     headingMetrics.elidedText(heading_, Qt::ElideRight, typeWidth));
+
+    const QFont stageFont = sized(font(), 11.0 * s, QFont::Normal, 0.2 * s);
+    const QFontMetricsF stageMetrics(stageFont);
+    painter.setFont(stageFont);
+    painter.setPen(kMuted);
+    painter.drawText(QPointF(kMargin * s, 261.0 * s),
+                     stageMetrics.elidedText(message_, Qt::ElideRight, typeWidth));
+
+    paintProgress(painter, s);
+
+    if (!caption_.isEmpty()) {
+        const QFont captionFont = sized(font(), 8.0 * s, QFont::Normal, 0.2 * s);
+        const QFontMetricsF captionMetrics(captionFont);
+        painter.setFont(captionFont);
+        painter.setPen(kDim);
+        painter.drawText(QPointF(kMargin * s, 511.0 * s),
+                         captionMetrics.elidedText(caption_, Qt::ElideMiddle, width() - kMargin * 2.0 * s));
+    }
+
+    painter.restore();
+}
+
 void SplashScreen::paintArt(QPainter& painter, const QRectF& area) {
-    const float zoom = 1.045f + 0.012f * std::sin(phase_ * 0.12f);
-    QSizeF scaled = QSizeF(art_.size()).scaled(area.size() * zoom, Qt::KeepAspectRatioByExpanding);
-    QRectF target(QPointF(0, 0), scaled);
-    target.moveCenter(area.center() + QPointF(std::sin(phase_ * 0.08f) * 8.0, std::cos(phase_ * 0.06f) * 4.0));
+    if (art_.isNull()) {
+        paintFallbackArt(painter, area);
+        return;
+    }
+
+    // A slow drift keeps the screen alive without ever pulling the eye.
+    const qreal zoom = 1.025 + 0.010 * std::sin(age_ * 0.30);
+    const QSizeF scaled = QSizeF(art_.size()).scaled(area.size() * zoom, Qt::KeepAspectRatioByExpanding);
+    QRectF target(QPointF(0.0, 0.0), scaled);
+    target.moveCenter(area.center() + QPointF(std::sin(age_ * 0.18) * 5.0,
+                                              std::cos(age_ * 0.14) * 3.0));
     painter.drawPixmap(target, art_, QRectF(art_.rect()));
 }
 
 void SplashScreen::paintFallbackArt(QPainter& painter, const QRectF& area) {
-    QLinearGradient sky(area.topLeft(), area.bottomLeft());
-    sky.setColorAt(0.0, QColor(16, 28, 46));
-    sky.setColorAt(0.45, QColor(34, 58, 78));
-    sky.setColorAt(1.0, QColor(12, 24, 32));
-    painter.fillRect(area, sky);
+    painter.fillRect(area, kNight);
 
-    // A low sun.
-    QRadialGradient sun(QPointF(area.width() * 0.72, area.height() * 0.42), area.height() * 0.34);
-    sun.setColorAt(0.0, QColor(255, 196, 140, 200));
-    sun.setColorAt(1.0, QColor(255, 150, 120, 0));
-    painter.fillRect(area, sun);
+    const qreal unit = area.height() / 540.0;
+    const qreal horizon = area.height() * 0.79;
 
-    // Three ink waves.
-    const QColor waveColors[] = {QColor(30, 96, 110, 210), QColor(20, 70, 92, 220), QColor(10, 40, 56, 240)};
-    for (int i = 0; i < 3; ++i) {
-        QPainterPath wave;
-        const qreal base = area.height() * (0.60 + 0.10 * i);
-        wave.moveTo(area.left(), area.bottom());
-        wave.lineTo(area.left(), base);
-        for (int x = 0; x <= int(area.width()); x += 8) {
-            const qreal y = base + std::sin(x * 0.012 + phase_ * (0.6 + 0.2 * i) + i * 1.7) * (10.0 + 4.0 * i) +
-                            std::sin(x * 0.031 + i) * 3.0;
-            wave.lineTo(area.left() + x, y);
-        }
-        wave.lineTo(area.right(), area.bottom());
-        wave.closeSubpath();
-        painter.fillPath(wave, waveColors[i]);
-    }
-
-    // A dark torii silhouette on the right, like the artwork.
-    painter.save();
+    // The sun, flat, sitting on the horizon line.
     painter.setPen(Qt::NoPen);
-    painter.setBrush(QColor(22, 18, 24, 235));
-    const qreal cx = area.width() * 0.74;
-    const qreal top = area.height() * 0.25;
-    painter.drawRect(QRectF(cx - 62, top, 124, 9));
-    painter.drawRect(QRectF(cx - 50, top + 22, 100, 7));
-    painter.drawRect(QRectF(cx - 44, top + 9, 9, 130));
-    painter.drawRect(QRectF(cx + 35, top + 9, 9, 130));
-    painter.restore();
+    painter.setBrush(kVermilion);
+    const qreal sun = area.width() * 0.072;
+    painter.drawEllipse(QPointF(area.width() * 0.13, horizon - sun * 0.15), sun, sun);
+
+    // The water, two flat bands.
+    painter.setBrush(QColor(18, 26, 44));
+    painter.drawRect(QRectF(0.0, horizon, area.width(), area.height() - horizon));
+
+    QPainterPath wave;
+    wave.moveTo(area.width() * 0.34, horizon);
+    wave.cubicTo(area.width() * 0.52, horizon - 150.0 * unit,
+                 area.width() * 0.72, horizon - 190.0 * unit,
+                 area.width() * 0.92, horizon - 120.0 * unit);
+    wave.lineTo(area.right(), area.bottom());
+    wave.lineTo(area.width() * 0.34, area.bottom());
+    wave.closeSubpath();
+    painter.setBrush(QColor(30, 42, 66));
+    painter.drawPath(wave);
+
+    QPainterPath crest;
+    crest.moveTo(area.width() * 0.55, area.bottom());
+    crest.cubicTo(area.width() * 0.62, horizon - 40.0 * unit,
+                  area.width() * 0.82, horizon - 60.0 * unit,
+                  area.width() * 0.98, horizon + 10.0 * unit);
+    crest.lineTo(area.right(), area.bottom());
+    crest.closeSubpath();
+    painter.setBrush(QColor(10, 16, 30));
+    painter.drawPath(crest);
+
+    painter.setBrush(Qt::NoBrush);
+    painter.setPen(QPen(QColor(kInk.red(), kInk.green(), kInk.blue(), 210), std::max(1.0, 1.2 * unit)));
+    painter.drawLine(QPointF(0.0, horizon), QPointF(area.width(), horizon));
 }
 
-void SplashScreen::paintProgress(QPainter& painter, const QRectF& area) {
-    const qreal margin = 48.0;
-    const qreal barWidth = area.width() - margin * 2.0;
-    const qreal barY = area.bottom() - 46.0;
-    const QRectF track(margin, barY, barWidth, 6.0);
-    const int percent = int(std::lround(shown_ * 100.0f));
+void SplashScreen::paintProgress(QPainter& painter, qreal s) {
+    const QRectF track(kMargin * s, kBarTop * s, kBarWidth * s, std::max(2.0, 2.0 * s));
+    const qreal filled = std::clamp<qreal>(track.width() * shown_, 0.0, track.width());
 
-    // Status line, with a small turning ring.
-    const QRectF spinner(margin, barY - 32.0, 12.0, 12.0);
-    painter.setBrush(Qt::NoBrush);
-    painter.setPen(QPen(QColor(120, 205, 255, 120), 1.6));
-    painter.drawEllipse(spinner);
-    painter.setPen(QPen(kMint, 2.0, Qt::SolidLine, Qt::RoundCap));
-    painter.drawArc(spinner.adjusted(1, 1, -1, -1), int(phase_ * 220.0) * 16, 100 * 16);
-
-    painter.setFont(spaced(font(), 11, 0.3));
-    painter.setPen(QColor(226, 237, 247, 235));
-    const qreal textWidth = barWidth - 70.0;
-    const QString line = QFontMetrics(painter.font()).elidedText(message_, Qt::ElideRight, int(textWidth));
-    painter.drawText(QPointF(margin + 20.0, barY - 20.0), line);
-
-    painter.setPen(QColor(150, 195, 232, 220));
-    painter.setFont(spaced(font(), 11, 0.6, QFont::DemiBold));
-    painter.drawText(QRectF(margin, barY - 34.0, barWidth, 20.0), Qt::AlignRight | Qt::AlignVCenter,
-                     QString::number(percent) + QStringLiteral("%"));
-
-    // Track, then the gradient fill.
     painter.setPen(Qt::NoPen);
-    painter.setBrush(QColor(255, 255, 255, 40));
-    painter.drawRoundedRect(track, 3.0, 3.0);
+    painter.setBrush(QColor(241, 235, 223, 46));
+    painter.drawRect(track);
 
-    const qreal filled = std::clamp<qreal>(barWidth * shown_, 0.0, barWidth);
-    if (filled > 0.5) {
+    if (filled > 0.0) {
+        painter.setBrush(kVermilion);
+        painter.drawRect(QRectF(track.topLeft(), QSizeF(filled, track.height())));
+
+        // A restrained shine along the filled part, so a slow step never looks frozen.
         painter.save();
-        QPainterPath clip;
-        clip.addRoundedRect(QRectF(track.topLeft(), QSizeF(filled, track.height())), 3.0, 3.0);
-        painter.setClipPath(clip);
-        QLinearGradient fill(track.topLeft(), QPointF(track.left() + barWidth, track.top()));
-        fill.setColorAt(0.0, kAccent);
-        fill.setColorAt(0.65, QColor(0x63, 0xc8, 0xe8));
-        fill.setColorAt(1.0, kMint);
-        painter.fillRect(track, fill);
-
-        // A soft highlight sweeping along the bar.
-        const qreal sweep = std::fmod(phase_ * 0.42, 1.0) * (barWidth + 180.0) - 90.0;
-        QLinearGradient shine(QPointF(track.left() + sweep - 60.0, track.top()),
-                              QPointF(track.left() + sweep + 60.0, track.top()));
-        shine.setColorAt(0.0, QColor(255, 255, 255, 0));
-        shine.setColorAt(0.5, QColor(255, 255, 255, 95));
-        shine.setColorAt(1.0, QColor(255, 255, 255, 0));
+        painter.setClipRect(QRectF(track.topLeft(), QSizeF(filled, track.height())));
+        const qreal travel = std::fmod(age_ * 0.55, 1.0);
+        const qreal shineX = track.left() - 70.0 * s + travel * (filled + 140.0 * s);
+        QLinearGradient shine(QPointF(shineX, 0.0), QPointF(shineX + 70.0 * s, 0.0));
+        shine.setColorAt(0.0, QColor(241, 235, 223, 0));
+        shine.setColorAt(0.5, QColor(241, 235, 223, 52));
+        shine.setColorAt(1.0, QColor(241, 235, 223, 0));
         painter.fillRect(track, shine);
         painter.restore();
-
-        // A small glow at the tip of the fill.
-        QRadialGradient tip(QPointF(track.left() + filled, track.center().y()), 18.0);
-        tip.setColorAt(0.0, QColor(kMint.red(), kMint.green(), kMint.blue(), 120));
-        tip.setColorAt(1.0, QColor(kMint.red(), kMint.green(), kMint.blue(), 0));
-        painter.setBrush(tip);
-        painter.drawEllipse(QPointF(track.left() + filled, track.center().y()), 18.0, 18.0);
     }
 
-    // Version, bottom right, and the engine line bottom left.
-    painter.setFont(spaced(font(), 9, 0.8));
-    painter.setPen(QColor(150, 168, 184, 170));
-    painter.drawText(QRectF(margin, area.bottom() - 24.0, barWidth, 14.0), Qt::AlignLeft | Qt::AlignVCenter,
-                     QStringLiteral("ukiyo engine"));
-    painter.drawText(QRectF(margin, area.bottom() - 24.0, barWidth, 14.0), Qt::AlignRight | Qt::AlignVCenter,
-                     QStringLiteral("v0.1"));
+    // The percentage sits above the right end of the track, in the same column.
+    const QString percent = QString::number(int(std::lround(shown_ * 100.0f))) + QLatin1Char('%');
+    const QFont percentFont = sized(font(), 8.0 * s, QFont::Normal, 0.8 * s);
+    const qreal percentWidth = QFontMetricsF(percentFont).horizontalAdvance(percent);
+    painter.setFont(percentFont);
+    painter.setPen(QColor(208, 202, 190));
+    painter.drawText(QPointF(track.right() - percentWidth, 276.0 * s), percent);
 }
 
 } // namespace editor

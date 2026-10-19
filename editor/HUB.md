@@ -14,17 +14,25 @@ is enough after a configure.
 ## Creating a project
 
 **New project** asks for a name, a folder, and a template, then shows the loading splash while the
-project is written. The splash is the picture in `editor/res/splash.png` with:
+project is written.
 
-- the project name and the folder it is being written to,
-- a progress bar that eases toward each real step,
-- a line that names the work in progress, for example *Sculpting the terrain: 257 x 257 samples*,
-  *Scattering grass and pines*, or *Linking the character from the engine assets*,
-- a percentage and a turning ring, so a slow disk is visibly working.
+The splash runs in two beats, the way an editor splash usually does:
 
-The steps come from `engine::createProject` itself, not from a timer, so the line always matches
-what is happening. Opening an existing project shows the same splash while it reads the manifest
-and checks the main scene, then starts the editor with `--project`.
+1. **The mark.** `UKIYO` on flat indigo, with a short vermilion rule and `ENGINE` under it. One
+   beat, about a second.
+2. **The artwork.** `editor/res/splash.png`: a flat, woodblock-style wave in indigo, ink and
+   vermilion. The project name, the line that says what is loading, and a thin vermilion progress
+   bar sit in the open sky above the water; the folder path sits in the quiet water at the bottom.
+
+The bar eases toward each real step and never jumps, a small shine travels along the filled part so
+a slow step never looks frozen, and the percentage sits at the end of the track. The line always
+names real work, for example *Sculpting the terrain: 257 x 257 samples*, *Scattering grass and
+pines*, or *Linking the character from the engine assets* — it comes from `engine::createProject`
+itself, not from a timer.
+
+Opening an existing project shows the same splash with `OPENING PROJECT` while it reads the
+manifest and checks the main scene, then starts the editor with `--project`. The editor shows it
+again with `STARTING EDITOR` while the render device, animation library and scene load.
 
 The editor shows the same splash while it starts the engine (render device, animation library,
 scene). Pass `--no-splash` to skip it, or `--selftest` to run the headless checks.
@@ -72,9 +80,11 @@ Without `--project` the editor uses the engine checkout, as it did before projec
 
 ## Design preview
 
-`docs/index.html` is a static mockup of the hub, the new-project dialog, and the splash. It uses the
-same layout, palette and the real progress lines (pulled from `project_template.cpp`), so the
-launcher can be reviewed without a Qt build. It is not part of the application.
+`docs/index.html` is a static mockup of the hub, the new-project dialog, and the splash. It exists
+only so the design can be reviewed in a browser without a Qt build; the launcher and the splash
+themselves are the C++/Qt code in `editor/src/hub/` and `editor/src/splash_screen.cpp`, and that is
+what CMake builds and CI checks. The mockup uses the same 960 x 540 grid, palette and real progress
+lines, so it should stay in step with the Qt code.
 
 ```
 python3 -m http.server 8000 --directory docs

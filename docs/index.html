@@ -274,113 +274,134 @@
   .overlay {
     position: absolute; inset: 0; z-index: 20;
     display: grid; place-items: center;
-    background: rgba(6, 8, 11, .72);
+    background: rgba(6, 8, 11, .74);
     backdrop-filter: blur(3px);
     opacity: 0; pointer-events: none;
     transition: opacity .18s ease;
   }
   .overlay.open { opacity: 1; pointer-events: auto; }
 
+  /* The Qt splash is laid out on a 960 x 540 grid and scales from its width, so the
+     preview uses the same trick: --u is one design pixel. */
   .splash {
+    --u: 1px;
     position: relative;
     width: min(960px, calc(100% - 48px));
     aspect-ratio: 16 / 9;
     max-height: calc(100% - 48px);
-    border-radius: 16px;
+    border-radius: 14px;
     overflow: hidden;
-    border: 1px solid rgba(120, 160, 200, .24);
-    box-shadow: 0 40px 110px rgba(0, 0, 0, .7);
-    background: #0b1017;
+    background: #1a2844;
+    border: 1px solid rgba(241, 235, 223, .14);
+    box-shadow: 0 40px 110px rgba(0, 0, 0, .72);
     transform: scale(.985);
-    transition: transform .28s cubic-bezier(.2, .7, .2, 1), opacity .22s ease;
     opacity: 0;
+    transition: transform .28s cubic-bezier(.2, .7, .2, 1), opacity .22s ease;
   }
-  .overlay.open .splash { transform: scale(1); opacity: 1; }
-  .splash.fading { opacity: 0; transform: scale(1.01); transition: opacity .34s ease, transform .34s ease; }
+  .overlay.open .splash { transform: none; opacity: 1; }
+  .splash.fading { opacity: 0; transform: scale(1.008); transition: opacity .34s ease, transform .34s ease; }
 
-  .splash img.art {
-    position: absolute; inset: -3%;
-    width: 106%; height: 106%;
+  /* Beat 2: the artwork. */
+  .scene { position: absolute; inset: 0; opacity: 0; transition: opacity .45s ease; }
+  .splash.live .scene { opacity: 1; }
+  .scene img.art {
+    position: absolute; inset: -3%; width: 106%; height: 106%;
     object-fit: cover;
     animation: drift 26s ease-in-out infinite alternate;
   }
   @keyframes drift {
-    from { transform: scale(1.02) translate3d(-6px, 2px, 0); }
-    to   { transform: scale(1.055) translate3d(7px, -4px, 0); }
+    from { transform: scale(1.015) translate3d(-5px, 2px, 0); }
+    to   { transform: scale(1.045) translate3d(6px, -3px, 0); }
+  }
+  .scene .tint { position: absolute; inset: 0; background: rgba(8, 12, 20, .18); }
+  .scene .scrim {
+    position: absolute; inset: 0;
+    background: linear-gradient(180deg, rgba(8,12,20,0) 34%, rgba(8,12,20,.21) 70%, rgba(8,12,20,.50) 100%);
   }
 
-  .scrim-top, .scrim-bottom { position: absolute; left: 0; right: 0; pointer-events: none; }
-  .scrim-top {
-    top: 0; height: 42%;
-    background: linear-gradient(rgba(6, 9, 14, .70), rgba(6, 9, 14, 0));
-  }
-  .scrim-bottom {
-    bottom: 0; height: 58%;
-    background: linear-gradient(rgba(6, 9, 14, 0) 0%, rgba(6, 9, 14, .69) 45%, rgba(6, 9, 14, .93) 100%);
-  }
-  .glow {
-    position: absolute; left: -40px; bottom: -180px; width: 620px; height: 620px;
-    background: radial-gradient(circle, rgba(74, 158, 240, .16), rgba(74, 158, 240, 0) 66%);
-    pointer-events: none;
-  }
+  .scene .mark, .scene .sub, .scene .version,
+  .scene .eyebrow, .scene .heading, .scene .stage,
+  .scene .pct, .scene .caption { position: absolute; }
 
-  .splash-content { position: absolute; inset: 0; padding: 0 48px 40px; display: flex; flex-direction: column; }
-
-  .brand { padding-top: 34px; }
-  .brand .mark {
-    font-size: 30px; font-weight: 900; letter-spacing: 9px; line-height: 1;
-    color: #f0f6fc; text-shadow: 0 2px 18px rgba(0, 0, 0, .45);
+  .scene .mark {
+    left: calc(44 * var(--u)); top: calc(35 * var(--u));
+    font-size: calc(20 * var(--u)); font-weight: 800; letter-spacing: calc(6.4 * var(--u));
+    color: #f1ebdf; line-height: 1;
   }
-  .brand .line {
-    margin-top: 9px; font-size: 10px; font-weight: 650; letter-spacing: 3.4px;
-    color: rgba(126, 227, 212, .84);
+  .scene .sub {
+    left: calc(45 * var(--u)); top: calc(65 * var(--u));
+    font-size: calc(7 * var(--u)); font-weight: 600; letter-spacing: calc(2.4 * var(--u));
+    color: rgba(134, 141, 150, .90); line-height: 1;
   }
-
-  .loadblock { margin-top: auto; }
-  .eyebrow { font-size: 10px; font-weight: 650; letter-spacing: 2.6px; color: rgba(214, 227, 239, .72); }
-  .heading {
-    margin-top: 10px; font-size: 26px; font-weight: 700; letter-spacing: .3px;
-    color: #fff; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  .scene .version {
+    right: calc(44 * var(--u)); top: calc(40 * var(--u));
+    font-size: calc(8 * var(--u)); letter-spacing: calc(.8 * var(--u));
+    color: rgba(134, 141, 150, .86); line-height: 1;
   }
-  .caption {
-    margin-top: 5px; font-size: 11px; color: rgba(168, 186, 203, .8);
+  .scene .eyebrow {
+    left: calc(44 * var(--u)); top: calc(188 * var(--u));
+    font-size: calc(7 * var(--u)); font-weight: 700; letter-spacing: calc(2.2 * var(--u));
+    color: rgba(196, 184, 166, .94); line-height: 1;
+  }
+  .scene .heading {
+    left: calc(44 * var(--u)); top: calc(208 * var(--u));
+    font-size: calc(26 * var(--u)); font-weight: 700; letter-spacing: calc(.2 * var(--u));
+    color: #f1ebdf; line-height: 1.15; max-width: calc(500 * var(--u));
     white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
-    direction: rtl; text-align: left;
   }
-  .caption span { direction: ltr; unicode-bidi: embed; }
+  .scene .stage {
+    left: calc(44 * var(--u)); top: calc(252 * var(--u));
+    font-size: calc(11 * var(--u)); color: #bfbfc2; line-height: 1;
+    max-width: calc(500 * var(--u));
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  }
+  .scene .pct {
+    left: calc(44 * var(--u)); top: calc(269 * var(--u)); width: calc(340 * var(--u));
+    text-align: right; font-size: calc(8 * var(--u)); color: #d0cabe; line-height: 1;
+  }
+  .scene .bar {
+    position: absolute; left: calc(44 * var(--u)); top: calc(286 * var(--u));
+    width: calc(340 * var(--u)); height: max(2px, calc(2 * var(--u)));
+    background: rgba(241, 235, 223, .18);
+  }
+  .scene .bar .fill {
+    position: relative; height: 100%; width: 2%; background: #cc4832;
+    transition: width .16s linear; overflow: hidden;
+  }
+  .scene .bar .fill::after {
+    content: ''; position: absolute; top: 0; bottom: 0; width: calc(70 * var(--u));
+    background: linear-gradient(90deg, rgba(241,235,223,0), rgba(241,235,223,.30), rgba(241,235,223,0));
+    animation: sweep 2.6s linear infinite;
+  }
+  @keyframes sweep { from { left: calc(-70 * var(--u)); } to { left: 100%; } }
+  .scene .caption {
+    left: calc(44 * var(--u)); top: calc(505 * var(--u));
+    font-size: calc(8 * var(--u)); color: #868d96; line-height: 1;
+    max-width: calc(872 * var(--u));
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  }
 
-  .statusrow { margin-top: 22px; display: flex; align-items: center; gap: 9px; height: 14px; }
-  .spinner {
-    width: 12px; height: 12px; border-radius: 50%;
-    border: 1.6px solid rgba(120, 205, 255, .45);
-    border-top-color: var(--mint);
-    animation: spin 1.05s linear infinite;
-    flex: 0 0 12px;
+  /* Beat 1: the mark. */
+  .logo {
+    position: absolute; inset: 0; z-index: 3;
+    background: #1a2844;
+    display: grid; place-items: center;
+    transition: opacity .45s ease;
   }
-  @keyframes spin { to { transform: rotate(360deg); } }
-  .status { font-size: 11px; color: rgba(226, 237, 247, .92); flex: 1; min-width: 0;
-            white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-  .percent { font-size: 11px; font-weight: 600; letter-spacing: .6px; color: rgba(150, 195, 232, .88); }
-
-  .bar {
-    margin-top: 12px; height: 6px; border-radius: 3px;
-    background: rgba(255, 255, 255, .16); overflow: hidden; position: relative;
+  .splash.live .logo { opacity: 0; pointer-events: none; }
+  .logo .inner { text-align: center; transform: translateY(calc(-8 * var(--u))); }
+  .logo .word {
+    font-size: calc(34 * var(--u)); font-weight: 800; letter-spacing: calc(13 * var(--u));
+    color: #f1ebdf; line-height: 1;
   }
-  .fill {
-    position: absolute; inset: 0 auto 0 0; width: 0%;
-    background: linear-gradient(90deg, #4a9ef0 0%, #63c8e8 62%, #7ee3d4 100%);
-    border-radius: 3px;
-    transition: width .16s linear;
+  .logo .rule {
+    width: calc(54 * var(--u)); height: max(2px, calc(2 * var(--u)));
+    background: #cc4832; margin: calc(21 * var(--u)) auto calc(22 * var(--u));
   }
-  .shine {
-    position: absolute; top: 0; bottom: 0; width: 160px;
-    background: linear-gradient(90deg, rgba(255,255,255,0), rgba(255,255,255,.38), rgba(255,255,255,0));
-    animation: sweep 2.4s linear infinite;
-    mix-blend-mode: screen;
+  .logo .sub {
+    font-size: calc(8 * var(--u)); font-weight: 600; letter-spacing: calc(4.8 * var(--u));
+    color: rgba(196, 184, 166, .88); line-height: 1;
   }
-  @keyframes sweep { from { transform: translateX(-180px); } to { transform: translateX(1000px); } }
-
-  .footrow { margin-top: 12px; display: flex; justify-content: space-between; font-size: 9px; letter-spacing: .8px; color: rgba(150, 168, 184, .62); }
 
   /* -------------------------------------------------------------------- dialog */
 
@@ -612,27 +633,26 @@
     <!-- splash -->
     <div class="overlay" id="splashOverlay">
       <div class="splash" id="splash">
-        <img class="art" src="splash.png" alt=""
-             onerror="if(!this.dataset.fallback){this.dataset.fallback=1;this.src='../editor/res/splash.png';}else{this.style.display='none';}">
-        <div class="scrim-top"></div>
-        <div class="scrim-bottom"></div>
-        <div class="glow"></div>
-        <div class="splash-content">
-          <div class="brand">
-            <div class="mark">UKIYO</div>
-            <div class="line">VULKAN &nbsp;·&nbsp; ANIME PIPELINE</div>
-          </div>
-          <div class="loadblock">
-            <div class="eyebrow" id="splashEyebrow">CREATING</div>
-            <div class="heading" id="splashHeading">Creating My Ukiyo Project</div>
-            <div class="caption"><span id="splashCaption">~/Documents/Ukiyo Projects/My Ukiyo Project</span></div>
-            <div class="statusrow">
-              <div class="spinner"></div>
-              <div class="status" id="splashStatus">Preparing the project</div>
-              <div class="percent" id="splashPercent">2%</div>
-            </div>
-            <div class="bar"><div class="fill" id="splashFill"><div class="shine"></div></div></div>
-            <div class="footrow"><span>ukiyo engine</span><span>v0.1</span></div>
+        <div class="scene">
+          <img class="art" src="splash.png" alt=""
+               onerror="if(!this.dataset.fallback){this.dataset.fallback=1;this.src='../editor/res/splash.png';}else{this.style.display='none';}">
+          <div class="tint"></div>
+          <div class="scrim"></div>
+          <div class="mark">UKIYO</div>
+          <div class="sub">ENGINE</div>
+          <div class="version">v0.1</div>
+          <div class="eyebrow" id="splashEyebrow">CREATING PROJECT</div>
+          <div class="heading" id="splashHeading">Coastal Test</div>
+          <div class="stage" id="splashStatus">Preparing the project</div>
+          <div class="pct" id="splashPercent">2%</div>
+          <div class="bar"><div class="fill" id="splashFill"></div></div>
+          <div class="caption" id="splashCaption">~/Documents/Ukiyo Projects/Coastal Test</div>
+        </div>
+        <div class="logo">
+          <div class="inner">
+            <div class="word">UKIYO</div>
+            <div class="rule"></div>
+            <div class="sub">ENGINE</div>
           </div>
         </div>
       </div>
@@ -811,12 +831,12 @@ function renderProjects() {
   list.querySelectorAll('[data-open]').forEach((el) => {
     el.addEventListener('click', (e) => {
       e.stopPropagation();
-      playSplash('Opening ' + el.dataset.open.split('/').pop(), el.dataset.open, [
+      playSplash(el.dataset.open.split('/').pop(), el.dataset.open, [
         [0.15, 'Reading the project manifest'],
         [0.62, 'Checking the main scene'],
         [0.86, 'Starting the Ukiyo editor'],
         [1.00, 'Ready'],
-      ], 'OPENING');
+      ], 'OPENING PROJECT');
     });
   });
 }
@@ -906,7 +926,7 @@ $('createProject').addEventListener('click', () => {
   const root = $('projectLocation').value.replace(/\/+$/, '') + '/' + name;
   closeDialog();
   const t = TEMPLATES.find((x) => x.id === state.templateId);
-  playSplash('Creating ' + name, root, t.steps, 'CREATING', () => {
+  playSplash(name, root, t.steps, 'CREATING PROJECT', () => {
     remember(name, root, t.id);
     state.lastCreated = root;
   });
@@ -914,6 +934,15 @@ $('createProject').addEventListener('click', () => {
 
 // ----------------------------------------------------------------- splash
 let splashRun = 0;
+
+// --u is one design pixel: the Qt splash is designed on 960 x 540 and scales from
+// its width, and this preview does the same.
+function fitSplash() {
+  const splash = $('splash');
+  if (!splash) return;
+  splash.style.setProperty('--u', (splash.clientWidth / 960) + 'px');
+}
+window.addEventListener('resize', fitSplash);
 
 function playSplash(heading, caption, steps, eyebrow, onDone) {
   const run = ++splashRun;
@@ -926,25 +955,28 @@ function playSplash(heading, caption, steps, eyebrow, onDone) {
   $('splashHeading').textContent = heading;
   $('splashCaption').textContent = caption;
   $('splashEyebrow').textContent = eyebrow || 'LOADING';
+  splash.classList.remove('fading', 'live');
   overlay.classList.add('open');
-  splash.classList.remove('fading');
+  fitSplash();
 
-  let shown = 0;
+  let shown = 0.02;
   let target = 0.02;
-  let message = steps[0][1];
   let stepIndex = 0;
   let done = false;
 
   const setStep = (i) => {
     const [fraction, text] = steps[i];
     target = fraction;
-    message = text;
     status.textContent = text;
   };
-
   setStep(0);
   fill.style.width = '2%';
   pct.textContent = '2%';
+
+  // The mark holds for one beat, then the artwork comes in.
+  setTimeout(() => {
+    if (run === splashRun) splash.classList.add('live');
+  }, 950);
 
   let last = performance.now();
   function frame(now) {
@@ -952,14 +984,12 @@ function playSplash(heading, caption, steps, eyebrow, onDone) {
     const dt = Math.min(64, now - last);
     last = now;
 
-    if (!done && stepIndex < steps.length - 1) {
-      if (shown >= steps[stepIndex][0] - 0.004) {
-        stepIndex += 1;
-        setStep(stepIndex);
-      }
+    if (!done && stepIndex < steps.length - 1 && shown >= steps[stepIndex][0] - 0.004) {
+      stepIndex += 1;
+      setStep(stepIndex);
     }
-
-    shown += (target - shown) * Math.min(1, dt / 120);
+    // The same ease as the Qt splash: about nine units a second toward the real value.
+    shown += (target - shown) * Math.min(1, dt * 0.009);
     if (Math.abs(shown - target) < 0.0006) shown = target;
 
     const percent = Math.round(shown * 100);
@@ -974,7 +1004,7 @@ function playSplash(heading, caption, steps, eyebrow, onDone) {
         setTimeout(() => {
           if (run !== splashRun) return;
           overlay.classList.remove('open');
-          splash.classList.remove('fading');
+          splash.classList.remove('fading', 'live');
           if (onDone) onDone();
         }, 340);
       }, 520);
@@ -991,12 +1021,12 @@ $('demoCreate').addEventListener('click', () => {
   openDialog('terrain');
 });
 $('demoOpen').addEventListener('click', () => {
-  playSplash('Opening My Ukiyo Project', '~/Documents/Ukiyo Projects/My Ukiyo Project', [
+  playSplash('Portrait Study', '~/Documents/Ukiyo Projects/Portrait Study', [
     [0.15, 'Reading the project manifest'],
     [0.62, 'Checking the main scene'],
     [0.86, 'Starting the Ukiyo editor'],
     [1.00, 'Ready'],
-  ], 'OPENING');
+  ], 'OPENING PROJECT');
 });
 
 // escape closes overlays

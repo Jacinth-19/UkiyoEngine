@@ -649,9 +649,10 @@ void HubWindow::newProject(const QString& templateId) {
 }
 
 void HubWindow::createProject(const QString& root, const QString& name, const QString& templateId) {
-    auto* splash = new SplashScreen(splashArtPath(), QStringLiteral("Creating %1").arg(name));
-    splash->setCaption(QDir::toNativeSeparators(root));
+    auto* splash = new SplashScreen(splashArtPath(), name);
+    splash->setEyebrow(QStringLiteral("CREATING PROJECT"));
     splash->setStage(0.02f, QStringLiteral("Preparing the project"));
+    splash->setCaption(QDir::toNativeSeparators(root));
     splash->show();
 
     QPointer<SplashScreen> splashGuard(splash);
@@ -734,9 +735,10 @@ void HubWindow::openProject(const QString& root) {
 
     const QString name = manifest.name.empty() ? QFileInfo(root).fileName()
                                                : QString::fromStdString(manifest.name);
-    auto* splash = new SplashScreen(splashArtPath(), QStringLiteral("Opening %1").arg(name));
-    splash->setCaption(QDir::toNativeSeparators(root));
+    auto* splash = new SplashScreen(splashArtPath(), name);
+    splash->setEyebrow(QStringLiteral("OPENING PROJECT"));
     splash->setStage(0.15f, QStringLiteral("Reading the project manifest"));
+    splash->setCaption(QDir::toNativeSeparators(root));
     splash->show();
     QPointer<SplashScreen> splashGuard(splash);
 
