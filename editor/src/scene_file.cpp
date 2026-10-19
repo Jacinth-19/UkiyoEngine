@@ -136,6 +136,63 @@ std::optional<ukiyo::TerrainSettings> readTerrain(const QJsonValue& v, const QSt
                                 glm::vec3(0.0f), glm::vec3(1.0f));
         t.foliage.push_back(F);
     }
+    // Grass (item 19). A missing object leaves grass off, which is how every scene written before the grass landed
+    // reads. Every key is clamped, so a hand-edited scene cannot ask for a negative density or a zero blade.
+    const QJsonValue gv = o.value(QLatin1String("grass"));
+    if (gv.isObject()) {
+        const QJsonObject go = gv.toObject();
+        ukiyo::GrassSettings& G = t.grass;
+        G.enabled = go.value(QLatin1String("enabled")).toBool(true);
+        G.density = std::clamp(float(go.value(QLatin1String("density")).toDouble(0.35)), 0.0f, 8.0f);
+        const QString gmap = go.value(QLatin1String("densityMap")).toString();
+        if (!gmap.isEmpty()) G.densityMap = QDir::cleanPath(QDir(projectRoot).absoluteFilePath(gmap)).toStdString();
+        G.heightMin = std::clamp(float(go.value(QLatin1String("heightMin")).toDouble(0.0)), 0.0f, 1.0f);
+        G.heightMax = std::clamp(float(go.value(QLatin1String("heightMax")).toDouble(1.0)), 0.0f, 1.0f);
+        G.slopeMax = std::clamp(float(go.value(QLatin1String("slopeMax")).toDouble(35.0)), 0.0f, 90.0f);
+        G.height = std::clamp(float(go.value(QLatin1String("height")).toDouble(0.42)), 0.02f, 5.0f);
+        G.width = std::clamp(float(go.value(QLatin1String("width")).toDouble(0.055)), 0.001f, 1.0f);
+        G.blades = uint32_t(std::clamp(go.value(QLatin1String("blades")).toInt(3), 1, 8));
+        G.segments = uint32_t(std::clamp(go.value(QLatin1String("segments")).toInt(4), 1, 12));
+        G.scaleMin = std::clamp(float(go.value(QLatin1String("scaleMin")).toDouble(0.75)), 0.01f, 20.0f);
+        G.scaleMax = std::clamp(float(go.value(QLatin1String("scaleMax")).toDouble(1.35)), 0.01f, 20.0f);
+        G.seed = uint32_t(std::clamp<qint64>(go.value(QLatin1String("seed")).toInteger(3), 0, 0xFFFFFFFFLL));
+        G.groundAlign = std::clamp(float(go.value(QLatin1String("groundAlign")).toDouble(0.55)), 0.0f, 1.0f);
+        G.bandNear = std::clamp(float(go.value(QLatin1String("bandNear")).toDouble(24.0)), 0.0f, 2000.0f);
+        G.bandMid = std::clamp(float(go.value(QLatin1String("bandMid")).toDouble(48.0)), 0.0f, 2000.0f);
+        G.cullDistance = std::clamp(float(go.value(QLatin1String("cullDistance")).toDouble(95.0)), 0.1f, 5000.0f);
+        const QJsonArray inc = go.value(QLatin1String("includeLayers")).toArray();
+        if (!inc.isEmpty()) {
+            G.includeLayers = 0u;
+            for (const QJsonValue& v : inc) {
+                const int k = v.toInt(-1);
+                if (k >= 0 && k < int(ukiyo::kTerrainMaxLayers)) G.includeLayers |= 1u << uint32_t(k);
+            }
+        }
+        const QJsonArray exc = go.value(QLatin1String("excludeLayers")).toArray();
+        for (const QJsonValue& v : exc) {
+            const int k = v.toInt(-1);
+            if (k >= 0 && k < int(ukiyo::kTerrainMaxLayers)) G.excludeLayers |= 1u << uint32_t(k);
+        }
+        G.includeThreshold = std::clamp(float(go.value(QLatin1String("includeThreshold")).toDouble(0.35)), 0.0f, 1.0f);
+        G.excludeThreshold = std::clamp(float(go.value(QLatin1String("excludeThreshold")).toDouble(0.5)), 0.0f, 1.0f);
+        const QJsonArray wd = go.value(QLatin1String("windDir")).toArray();
+        if (wd.size() == 2)
+            G.windDir = glm::vec2(float(wd[0].toDouble(0.85)), float(wd[1].toDouble(0.53)));
+        G.windStrength = std::clamp(float(go.value(QLatin1String("windStrength")).toDouble(0.22)), 0.0f, 5.0f);
+        G.windFrequency = std::clamp(float(go.value(QLatin1String("windFrequency")).toDouble(0.45)), 0.0f, 20.0f);
+        G.windScale = std::clamp(float(go.value(QLatin1String("windScale")).toDouble(0.11)), 0.0f, 10.0f);
+        G.flutter = std::clamp(float(go.value(QLatin1String("flutter")).toDouble(0.05)), 0.0f, 2.0f);
+        const QJsonArray bc = go.value(QLatin1String("baseColour")).toArray();
+        if (bc.size() == 3)
+            G.baseColour = glm::clamp(glm::vec3(float(bc[0].toDouble()), float(bc[1].toDouble()), float(bc[2].toDouble())),
+                                      glm::vec3(0.0f), glm::vec3(1.0f));
+        const QJsonArray tc = go.value(QLatin1String("tipColour")).toArray();
+        if (tc.size() == 3)
+            G.tipColour = glm::clamp(glm::vec3(float(tc[0].toDouble()), float(tc[1].toDouble()), float(tc[2].toDouble())),
+                                     glm::vec3(0.0f), glm::vec3(1.0f));
+        G.translucency = std::clamp(float(go.value(QLatin1String("translucency")).toDouble(0.5)), 0.0f, 1.0f);
+        G.tipDarkening = std::clamp(float(go.value(QLatin1String("tipDarkening")).toDouble(0.35)), 0.0f, 1.0f);
+    }
     // Layer masks (item 18, step 4): up to two RGBA images, relative to the project.
     for (const QJsonValue& mv : o.value(QLatin1String("masks")).toArray()) {
         if (t.maskFiles.size() >= 2) break;
@@ -191,6 +248,47 @@ QJsonObject terrainToJson(const ukiyo::TerrainSettings& t, const QString& projec
             foliage.append(fo);
         }
         o[QStringLiteral("foliage")] = foliage;
+    }
+    if (t.grass.enabled) {
+        const ukiyo::GrassSettings& G = t.grass;
+        QJsonObject go;
+        go[QStringLiteral("enabled")] = true;
+        go[QStringLiteral("density")] = double(G.density);
+        if (!G.densityMap.empty())
+            go[QStringLiteral("densityMap")] = QDir(projectRoot).relativeFilePath(QString::fromStdString(G.densityMap));
+        go[QStringLiteral("heightMin")] = double(G.heightMin);
+        go[QStringLiteral("heightMax")] = double(G.heightMax);
+        go[QStringLiteral("slopeMax")] = double(G.slopeMax);
+        go[QStringLiteral("height")] = double(G.height);
+        go[QStringLiteral("width")] = double(G.width);
+        go[QStringLiteral("blades")] = int(G.blades);
+        go[QStringLiteral("segments")] = int(G.segments);
+        go[QStringLiteral("scaleMin")] = double(G.scaleMin);
+        go[QStringLiteral("scaleMax")] = double(G.scaleMax);
+        go[QStringLiteral("seed")] = double(G.seed);
+        go[QStringLiteral("groundAlign")] = double(G.groundAlign);
+        go[QStringLiteral("bandNear")] = double(G.bandNear);
+        go[QStringLiteral("bandMid")] = double(G.bandMid);
+        go[QStringLiteral("cullDistance")] = double(G.cullDistance);
+        QJsonArray inc, exc;
+        for (uint32_t k = 0; k < ukiyo::kTerrainMaxLayers; ++k) {
+            if (G.includeLayers & (1u << k)) inc.append(int(k));
+            if (G.excludeLayers & (1u << k)) exc.append(int(k));
+        }
+        go[QStringLiteral("includeLayers")] = inc;
+        if (!exc.isEmpty()) go[QStringLiteral("excludeLayers")] = exc;
+        go[QStringLiteral("includeThreshold")] = double(G.includeThreshold);
+        go[QStringLiteral("excludeThreshold")] = double(G.excludeThreshold);
+        go[QStringLiteral("windDir")] = QJsonArray{double(G.windDir.x), double(G.windDir.y)};
+        go[QStringLiteral("windStrength")] = double(G.windStrength);
+        go[QStringLiteral("windFrequency")] = double(G.windFrequency);
+        go[QStringLiteral("windScale")] = double(G.windScale);
+        go[QStringLiteral("flutter")] = double(G.flutter);
+        go[QStringLiteral("baseColour")] = QJsonArray{double(G.baseColour.r), double(G.baseColour.g), double(G.baseColour.b)};
+        go[QStringLiteral("tipColour")] = QJsonArray{double(G.tipColour.r), double(G.tipColour.g), double(G.tipColour.b)};
+        go[QStringLiteral("translucency")] = double(G.translucency);
+        go[QStringLiteral("tipDarkening")] = double(G.tipDarkening);
+        o[QStringLiteral("grass")] = go;
     }
     if (!t.maskFiles.empty()) {
         QJsonArray masks;

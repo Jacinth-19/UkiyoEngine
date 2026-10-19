@@ -290,6 +290,9 @@ private:
         bool layerDirty = false;
         std::vector<std::vector<uint8_t>> density;              // per foliage type, empty when no density mask exists
         std::vector<uint8_t> densityDirty;
+        // The grass detail map (item 19), read the same way as a foliage density map.
+        std::vector<uint8_t> grassDensity;
+        std::string grassDensitySource;
         // The image each mask was read from or written to. When the settings name another image, it is read again.
         std::vector<std::string> maskSource;                    // the layer mask files, as the settings hold them
         std::vector<std::string> densitySource;                 // per foliage type

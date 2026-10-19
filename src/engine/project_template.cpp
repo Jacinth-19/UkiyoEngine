@@ -14,6 +14,7 @@
 
 #include <nlohmann/json.hpp>
 
+#include "engine/grass.h"
 #include "engine/terrain.h"
 #include "engine/water.h"
 
@@ -143,6 +144,64 @@ ojson foliageJson(const std::string& name, ukiyo::FoliageShape shape, float dens
     return o;
 }
 
+// Grass (item 19). On by default in a new project, growing on layer 0 (the tile's grass layer), so a freshly made
+// scene shows the system working without anyone opening the terrain inspector.
+ojson grassJson() {
+    ukiyo::GrassSettings g;
+    g.enabled = true;
+    g.density = 0.55f;
+    g.height = 0.46f;
+    g.width = 0.052f;
+    g.blades = 3;
+    g.segments = 4;
+    g.scaleMin = 0.8f;
+    g.scaleMax = 1.4f;
+    g.bandNear = 26.0f;
+    g.bandMid = 55.0f;
+    g.cullDistance = 110.0f;
+    g.includeLayers = 1u << 0;
+    g.includeThreshold = 0.30f;
+    g.windStrength = 0.24f;
+    g.windFrequency = 0.42f;
+    g.windScale = 0.10f;
+    g.flutter = 0.05f;
+    g.baseColour = glm::vec3(0.055f, 0.115f, 0.030f);
+    g.tipColour = glm::vec3(0.34f, 0.52f, 0.15f);
+
+    ojson o;
+    o["enabled"] = true;
+    o["density"] = tidy(g.density);
+    o["heightMin"] = tidy(g.heightMin);
+    o["heightMax"] = tidy(g.heightMax);
+    o["slopeMax"] = tidy(g.slopeMax);
+    o["height"] = tidy(g.height);
+    o["width"] = tidy(g.width);
+    o["blades"] = int(g.blades);
+    o["segments"] = int(g.segments);
+    o["scaleMin"] = tidy(g.scaleMin);
+    o["scaleMax"] = tidy(g.scaleMax);
+    o["seed"] = g.seed;
+    o["groundAlign"] = tidy(g.groundAlign);
+    o["bandNear"] = tidy(g.bandNear);
+    o["bandMid"] = tidy(g.bandMid);
+    o["cullDistance"] = tidy(g.cullDistance);
+    ojson inc = ojson::array();
+    for (uint32_t k = 0; k < ukiyo::kTerrainMaxLayers; ++k)
+        if (g.includeLayers & (1u << k)) inc.push_back(int(k));
+    o["includeLayers"] = inc;
+    o["includeThreshold"] = tidy(g.includeThreshold);
+    o["windDir"] = numbers({g.windDir.x, g.windDir.y});
+    o["windStrength"] = tidy(g.windStrength);
+    o["windFrequency"] = tidy(g.windFrequency);
+    o["windScale"] = tidy(g.windScale);
+    o["flutter"] = tidy(g.flutter);
+    o["baseColour"] = vec3Json(g.baseColour);
+    o["tipColour"] = vec3Json(g.tipColour);
+    o["translucency"] = tidy(g.translucency);
+    o["tipDarkening"] = tidy(g.tipDarkening);
+    return o;
+}
+
 ojson terrainJson(const std::string& heightmapRelative) {
     ukiyo::TerrainSettings terrain;
     terrain.heightmap = heightmapRelative;
@@ -165,6 +224,7 @@ ojson terrainJson(const std::string& heightmapRelative) {
     foliage.push_back(foliageJson("pine", ukiyo::FoliageShape::Cone, 0.035f, 0.24f, 0.92f, 26.0f, 1.4f,
                                   2.6f, 21, glm::vec3(0.10f, 0.24f, 0.13f)));
     o["foliage"] = foliage;
+    o["grass"] = grassJson();
     return o;
 }
 

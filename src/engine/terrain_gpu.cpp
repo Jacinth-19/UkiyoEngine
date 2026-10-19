@@ -159,4 +159,72 @@ bool uploadFoliage(rhi::Device& device, const std::vector<FoliageType>& types,
     return true;
 }
 
+
+bool uploadGrass(rhi::Device& device, const std::vector<TerrainLayer>& layers, const std::vector<uint8_t>& paint,
+                 const GrassSettings& settings, const std::vector<uint8_t>& detailField, TerrainGpu* gpu,
+                 std::string* error) {
+    if (!gpu) return false;
+    gpu->grass.meshes.clear();
+    gpu->grass.batches.clear();
+    if (!settings.enabled) return true;   // off is not an error, it just leaves nothing to draw
+
+    const Heightmap& map = gpu->map;
+    const uint32_t n = chunksPerSide(map, kTerrainChunkCells);
+    if (n == 0 || gpu->chunks.size() != size_t(n) * n) {
+        if (error) *error = "the terrain has no chunks for the grass";
+        return false;
+    }
+    if (!detailField.empty() && detailField.size() != size_t(map.size) * map.size) {
+        if (error) *error = "the grass density map does not match the tile size";
+        return false;
+    }
+
+    // One tuft mesh for the whole tile. Its uv.y is the height along the blade, which is what the wind curve needs.
+    const GrassMesh mesh = buildGrassMesh(settings);
+    std::vector<rhi::Vertex> verts(mesh.positions.size());   // value-initialised
+    for (size_t k = 0; k < verts.size(); ++k) {
+        verts[k].pos = mesh.positions[k];
+        verts[k].normal = mesh.normals[k];
+        verts[k].uv = mesh.uvs[k];
+    }
+    GrassMeshGpu mg;
+    mg.vertices = device.createBuffer(rhi::BufferUsage::Vertex, verts.size() * sizeof(rhi::Vertex));
+    mg.vertices->upload(verts.data(), verts.size() * sizeof(rhi::Vertex));
+    mg.indices = device.createBuffer(rhi::BufferUsage::Index, mesh.indices.size() * sizeof(uint32_t));
+    mg.indices->upload(mesh.indices.data(), mesh.indices.size() * sizeof(uint32_t));
+    mg.indexCount = uint32_t(mesh.indices.size());
+
+    // Scatter, then one batch of rows per kGrassBatch blades in each chunk.
+    const auto groups = groupGrassByChunk(scatterGrass(map, layers, paint, settings, detailField), map.cellSize,
+                                          kTerrainChunkCells, n);
+    const float top = settings.height * std::max(settings.scaleMin, settings.scaleMax) * 1.15f +
+                      settings.windStrength + settings.flutter;
+    const float side = settings.width * 2.0f + top * 0.5f;
+
+    GrassRowBlock block{};
+    block.base = glm::vec4(settings.baseColour, settings.tipDarkening);
+    block.tip = glm::vec4(settings.tipColour, settings.translucency);
+    std::vector<GrassBatchGpu> batches;
+    for (size_t c = 0; c < groups.size(); ++c) {
+        const std::vector<GrassInstance>& list = groups[c];
+        for (size_t first = 0; first < list.size(); first += kGrassBatch) {
+            const uint32_t count = uint32_t(std::min<size_t>(kGrassBatch, list.size() - first));
+            packGrassRows(list.data() + first, count, block.row);
+            GrassBatchGpu b;
+            b.rows = device.createBuffer(rhi::BufferUsage::Uniform, sizeof(GrassRowBlock));
+            b.rows->upload(&block, sizeof(GrassRowBlock));
+            b.set = device.createDescriptorSet(rhi::SetType::ShaderMaterial);
+            b.set->setBuffer(15, b.rows.get());
+            b.count = count;
+            b.mesh = 0;
+            b.boundsMin = gpu->chunks[c].boundsMin - glm::vec3(side, 0.0f, side);
+            b.boundsMax = gpu->chunks[c].boundsMax + glm::vec3(side, top, side);
+            batches.push_back(std::move(b));
+        }
+    }
+    gpu->grass.meshes.push_back(std::move(mg));
+    gpu->grass.batches = std::move(batches);
+    return true;
+}
+
 } // namespace ukiyo

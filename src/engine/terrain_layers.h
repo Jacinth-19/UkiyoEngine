@@ -23,6 +23,13 @@ float slopeDegAt(const Heightmap& map, int x, int z);
 std::vector<float> layerWeightMap(const Heightmap& map, const std::vector<TerrainLayer>& layers,
                                   const std::vector<uint8_t>& paint);
 
+// The weights at one sample (sample = z * size + x), written as kTerrainMaxLayers floats. Same rule as
+// layerWeightMap, which is this function applied to every sample. A paint map of the wrong size is ignored here: the
+// caller is expected to have validated it. Used by the grass scatter, which needs the weights only where a blade
+// lands and must not build the whole map for a large tile.
+void layerWeightsAtSample(const Heightmap& map, const std::vector<TerrainLayer>& layers,
+                          const std::vector<uint8_t>& paint, size_t sample, float* out);
+
 // Layer textures are packed into two atlases. Each layer owns one cell: layer k is at column k % kTerrainAtlasCols and
 // row k / kTerrainAtlasCols. A cell is kTerrainAtlasCell texels square, and the atlas is always full size, so unused
 // cells hold white diffuse and flat normals.

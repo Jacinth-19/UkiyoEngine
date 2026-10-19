@@ -212,6 +212,8 @@ void Renderer::buildPipelines() {
                      {F::RGBA16F}, true);
     pFoliage_ = make("foliage", "foliage", {S::Frame, S::ShaderMaterial}, true, rhi::Cull::None, true, true,
                      rhi::Blend::None, {F::RGBA16F}, true);
+    pGrass_ = make("grass", "grass", {S::Frame, S::ShaderMaterial}, true, rhi::Cull::None, true, true,
+                   rhi::Blend::None, {F::RGBA16F}, true);
     pUnderwater_ = make("fullscreen", "underwater", {S::Post}, false, rhi::Cull::None, false, false,
                         rhi::Blend::Alpha, {F::RGBA16F}, false);
 }
@@ -781,6 +783,29 @@ void Renderer::render(const OrbitCamera& cam, const std::vector<Model*>& models,
                 dev_.drawIndexedInstanced(f.indexCount, f.instanceCount);
                 ++drawCalls_;
                 triangles_ += (f.indexCount / 3) * f.instanceCount;
+            }
+        }
+        // Grass (item 19). The same culls as foliage: the batch's chunk against the frustum, and the whole chunk
+        // against the distance where the last blade has faded. Inside a batch the vertex shader thins blades by
+        // distance and bends them in the wind.
+        if (!grass_.empty()) {
+            dev_.bindPipeline(pGrass_.get());
+            dev_.bindDescriptorSet(0, frameSet_.get());
+            for (const GrassDraw& g : grass_) {
+                const glm::vec3 centre = glm::vec3(g.model * glm::vec4((g.boundsMin + g.boundsMax) * 0.5f, 1.0f));
+                const float radius = glm::length(g.boundsMax - g.boundsMin) * 0.5f;
+                if (glm::distance(eye, centre) - radius > g.bands.z) continue;
+                if (boxOutsideFrustum(viewProjUnjittered, g.model, g.boundsMin, g.boundsMax, kCullMargin)) continue;
+                PushConstants pc = pcWith(g.model, glm::vec4(g.bands, 0.0f), g.wind);
+                pc.p2 = g.pusher;
+                pc.p3 = glm::vec4(g.windDir, 0.0f, 0.0f);
+                dev_.bindDescriptorSet(1, g.instances);
+                dev_.bindVertexBuffer(g.vertices);
+                dev_.bindIndexBuffer(g.indices);
+                dev_.pushConstants(&pc, sizeof(pc));
+                dev_.drawIndexedInstanced(g.indexCount, g.instanceCount);
+                ++drawCalls_;
+                triangles_ += (g.indexCount / 3) * g.instanceCount;
             }
         }
         if (s.grid) {

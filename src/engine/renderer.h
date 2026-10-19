@@ -142,6 +142,26 @@ struct FoliageDraw {
     glm::vec3 tint{0.3f, 0.5f, 0.2f};
 };
 
+// One grass batch to draw (item 19): up to kGrassBatch blades of one tuft mesh, drawn as one instanced call. The
+// bands are metres from the camera: full density inside x, half at y, nothing past z. `wind` is the strength (m), the
+// frequency (cycles/s), the spatial scale (rad/m) and the flutter (m). `windDir` holds the ground direction in xy.
+// `pusher` is a body standing in the grass: xy its ground position, z the reach in metres, w the push in metres (w = 0
+// turns it off). All of it goes in the push block, so the shader needs no extra buffer.
+struct GrassDraw {
+    rhi::Buffer* vertices = nullptr;
+    rhi::Buffer* indices = nullptr;
+    rhi::DescriptorSet* instances = nullptr;   // ShaderMaterial set with the rows and colours (binding 15)
+    uint32_t indexCount = 0;
+    uint32_t instanceCount = 0;
+    glm::mat4 model{1.0f};
+    glm::vec3 boundsMin{0.0f};
+    glm::vec3 boundsMax{0.0f};
+    glm::vec3 bands{24.0f, 48.0f, 95.0f};
+    glm::vec4 wind{0.22f, 0.45f, 0.11f, 0.05f};
+    glm::vec2 windDir{0.85f, 0.53f};
+    glm::vec4 pusher{0.0f};
+};
+
 // Kaze's Unity Volume values (Bloom Volume and Color Grading Volume), as set in the Unity screenshot.
 // Only the fields that the Unity volumes control change; the rest of the settings are left alone.
 inline void applyKazeUnityPost(RenderSettings& s) {
@@ -198,6 +218,7 @@ public:
     // again every frame.
     void setTerrain(const std::vector<TerrainDraw>& chunks) { terrain_ = chunks; }
     void setFoliage(const std::vector<FoliageDraw>& batches) { foliage_ = batches; }
+    void setGrass(const std::vector<GrassDraw>& batches) { grass_ = batches; }
     bool hasWater() const { return water_.has_value(); }
     bool hasGradingLut() const { return hasLut_; }
     // Removes every override. Call before a GraphMaterial is destroyed or its model is replaced.
@@ -252,6 +273,8 @@ private:
     std::vector<TerrainDraw> terrain_;
     std::unique_ptr<rhi::Pipeline> pFoliage_;       // foliage batches (foliage.vert / foliage.frag)
     std::vector<FoliageDraw> foliage_;
+    std::unique_ptr<rhi::Pipeline> pGrass_;         // grass batches (grass.vert / grass.frag)
+    std::vector<GrassDraw> grass_;
 
     // Water (item 16). The grid is a fixed 128 x 128 rest grid over [0,1]^2, displaced in water.vert.
     std::optional<WaterVolume> water_;

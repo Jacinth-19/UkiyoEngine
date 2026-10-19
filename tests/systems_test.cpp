@@ -17,6 +17,7 @@
 
 #include "engine/cull.h"
 #include "engine/foliage.h"
+#include "engine/grass.h"
 #include "engine/terrain_edit.h"
 #include "engine/vfs.h"
 #include "engine/vfs_cgltf.h"
@@ -1252,6 +1253,243 @@ static void testFoliage() {
           "foliage: a missing density map is an error", err);
 }
 
+// Grass (item 19): the tuft mesh, the scatter's masks, the distance bands and the packed rows. The scatter is CPU work
+// and the bands are a CPU-side rule the shader repeats, so both can be tested without a device.
+static void testGrass() {
+    // A flat tile at normalised height 0.3: 65 samples, so 64 by 64 one-metre cells, and 64 m of ground per side.
+    Heightmap flat;
+    flat.size = 65;
+    flat.cellSize = 1.0f;
+    flat.heightScale = 10.0f;
+    flat.samples.assign(size_t(65) * 65, 0.3f);
+    const std::vector<uint8_t> noField;
+
+    // Two layers that split the tile cleanly by height: the low one covers the flat ground, the high one nothing.
+    std::vector<TerrainLayer> layers(2);
+    layers[0].name = "low";
+    layers[0].heightMin = 0.0f;
+    layers[0].heightMax = 0.5f;
+    layers[0].heightFade = 0.0f;
+    layers[0].slopeMin = 0.0f;
+    layers[0].slopeMax = 90.0f;
+    layers[0].slopeFade = 0.0f;
+    layers[1] = layers[0];
+    layers[1].name = "high";
+    layers[1].heightMin = 0.6f;
+    layers[1].heightMax = 1.0f;
+
+    GrassSettings g;
+    g.enabled = true;
+    g.density = 0.5f;      // 64 m of ground, so about 2048 candidates at full density
+    g.includeLayers = 0u;  // no layer test until one is asked for
+    g.excludeLayers = 0u;
+    const std::vector<uint8_t> noPaint;
+
+    const auto full = scatterGrass(flat, layers, noPaint, g, noField);
+    check(!full.empty() && full.size() > 1800 && full.size() < 2300,
+          "grass: a half-density scatter fills the tile with about 2000 tufts", std::to_string(full.size()));
+    bool inside = true;
+    for (const GrassInstance& b : full)
+        if (b.pos.x < 0.0f || b.pos.x > 64.0f || b.pos.z < 0.0f || b.pos.z > 64.0f ||
+            std::fabs(b.pos.y - 3.0f) > 1e-4f)
+            inside = false;
+    check(inside, "grass: every tuft stands on the ground inside the tile");
+
+    g.density = 0.0f;
+    check(scatterGrass(flat, layers, noPaint, g, noField).empty(), "grass: density 0 places nothing");
+    g.density = 0.5f;
+
+    // Determinism, and a second seed moving the tufts.
+    const auto again = scatterGrass(flat, layers, noPaint, g, noField);
+    bool same = again.size() == full.size();
+    for (size_t i = 0; same && i < full.size(); ++i)
+        same = again[i].pos == full[i].pos && again[i].yaw == full[i].yaw && again[i].scale == full[i].scale;
+    check(same, "grass: the same seed gives the same tufts");
+    g.seed = 11;
+    const auto other = scatterGrass(flat, layers, noPaint, g, noField);
+    bool differs = other.size() != full.size();
+    for (size_t i = 0; !differs && i < full.size(); ++i) differs = !(other[i].pos == full[i].pos);
+    check(differs, "grass: another seed gives other tufts");
+    g.seed = 3;
+
+    // The detail map scales the density: zero clears the tile, full changes nothing.
+    check(scatterGrass(flat, layers, noPaint, g, std::vector<uint8_t>(size_t(65) * 65, 0)).empty(),
+          "grass: a zero detail map places nothing");
+    check(scatterGrass(flat, layers, noPaint, g, std::vector<uint8_t>(size_t(65) * 65, 255)).size() == full.size(),
+          "grass: a full detail map changes nothing");
+    check(scatterGrass(flat, layers, noPaint, g, std::vector<uint8_t>(10, 255)).empty(),
+          "grass: a detail map of the wrong size is refused");
+
+    // Layer masks: layer 0 covers the flat ground, layer 1 does not. Including one grows grass, the other clears it.
+    g.includeLayers = 1u << 0;
+    check(scatterGrass(flat, layers, noPaint, g, noField).size() == full.size(),
+          "grass: including the layer under the tufts changes nothing");
+    g.includeLayers = 1u << 1;
+    check(scatterGrass(flat, layers, noPaint, g, noField).empty(),
+          "grass: including only a layer that is not there clears the tile");
+    g.includeLayers = 0u;
+    g.excludeLayers = 1u << 0;
+    check(scatterGrass(flat, layers, noPaint, g, noField).empty(),
+          "grass: excluding the layer under the tufts clears the tile");
+    g.excludeLayers = 1u << 1;
+    check(scatterGrass(flat, layers, noPaint, g, noField).size() == full.size(),
+          "grass: excluding an absent layer changes nothing");
+    g.excludeLayers = 0u;
+
+    // A paint map a brush writes: with both layers matching the ground, painting layer 0 off moves every sample's
+    // whole weight to layer 1, so including layer 0 clears the tile and including layer 1 plants all of it.
+    std::vector<TerrainLayer> bothLayers = layers;
+    bothLayers[1].heightMin = 0.0f;
+    bothLayers[1].heightMax = 1.0f;
+    std::vector<uint8_t> paint = std::vector<uint8_t>(size_t(65) * 65 * kTerrainMaxLayers, 0);
+    for (size_t s = 0; s < size_t(65) * 65; ++s) paint[s * kTerrainMaxLayers + 1] = 255;
+    g.includeLayers = 1u << 0;
+    check(scatterGrass(flat, bothLayers, paint, g, noField).empty(),
+          "grass: the layer paint a brush writes clears the grass where layer 0 is painted off");
+    g.includeLayers = 1u << 1;
+    check(scatterGrass(flat, bothLayers, paint, g, noField).size() == full.size(),
+          "grass: the same paint plants every tuft once the layer that took the weight is included");
+    g.includeLayers = 0u;
+
+    // Height and slope limits. The ramp rises 1 m per metre, so it is 45 degrees everywhere.
+    g.heightMax = 0.2f;
+    check(scatterGrass(flat, layers, noPaint, g, noField).empty(), "grass: nothing above the height band");
+    g.heightMax = 1.0f;
+    Heightmap ramp = flat;
+    ramp.heightScale = 64.0f;   // one metre of rise per metre of ground, so 45 degrees everywhere
+    for (uint32_t z = 0; z < 65; ++z)
+        for (uint32_t x = 0; x < 65; ++x) ramp.samples[size_t(z) * 65 + x] = float(x) / 64.0f;
+    g.slopeMax = 30.0f;
+    check(scatterGrass(ramp, layers, noPaint, g, noField).empty(), "grass: nothing on a 45 degree ramp past slopeMax");
+    g.slopeMax = 60.0f;
+    check(scatterGrass(ramp, layers, noPaint, g, noField).size() > 1800, "grass: the same ramp is planted past slopeMax");
+    g.slopeMax = 35.0f;
+
+    // Scale and ground alignment stay in their ranges.
+    bool ranges = true;
+    for (const GrassInstance& b : full) {
+        if (b.yaw < 0.0f || b.yaw >= 6.2831853f) ranges = false;
+        if (b.scale < g.scaleMin || b.scale > g.scaleMax) ranges = false;
+        if (std::fabs(glm::length(b.up) - 1.0f) > 1e-4f) ranges = false;
+        if (b.up.y < 0.0f) ranges = false;
+    }
+    check(ranges, "grass: scale, yaw and the up vector stay in their ranges");
+
+    // The bands: full inside bandNear, half at bandMid, gone at cullDistance, and never rising with distance.
+    g.bandNear = 20.0f;
+    g.bandMid = 50.0f;
+    g.cullDistance = 100.0f;
+    check(std::fabs(grassDensityAt(0.0f, g) - 1.0f) < 1e-6f && std::fabs(grassDensityAt(20.0f, g) - 1.0f) < 1e-6f,
+          "grass: the near band keeps every blade");
+    check(std::fabs(grassDensityAt(50.0f, g) - 0.5f) < 1e-4f, "grass: the mid band keeps half");
+    check(grassDensityAt(100.0f, g) < 1e-5f && grassDensityAt(160.0f, g) < 1e-5f, "grass: past the cull distance nothing is kept");
+    bool monotone = true;
+    float last = 1.0f;
+    for (float d = 0.0f; d <= 120.0f; d += 0.5f) {
+        const float v = grassDensityAt(d, g);
+        if (v > last + 1e-6f) monotone = false;
+        last = v;
+    }
+    check(monotone, "grass: density never rises with distance, so a near view keeps every far blade");
+
+    // The shader's rule, applied on the CPU: the blades kept at 90 m are a subset of the ones kept at 45 m.
+    g.cullDistance = 200.0f;
+    g.bandMid = 120.0f;
+    size_t keptNear = 0, keptFar = 0, keptFarInsideNear = 0;
+    for (int i = 0; i < 4000; ++i) {
+        const glm::vec2 p(float(i % 61) * 1.7f, float(i / 61) * 2.3f);
+        const float h = grassBladeHash(p);
+        const bool near = h < grassDensityAt(45.0f, g);
+        const bool far = h < grassDensityAt(90.0f, g);
+        keptNear += near ? 1 : 0;
+        keptFar += far ? 1 : 0;
+        keptFarInsideNear += (far && !near) ? 1 : 0;
+    }
+    check(keptNear > keptFar && keptFar > 0 && keptFarInsideNear == 0,
+          "grass: the far band draws a subset of the near band, never the other way round",
+          std::to_string(keptNear) + " then " + std::to_string(keptFar));
+
+    // Grouping by chunk, on a 129-sample tile with 64-cell chunks.
+    Heightmap big = flat;
+    big.size = 129;
+    big.samples.assign(size_t(129) * 129, 0.3f);
+    const auto bigList = scatterGrass(big, layers, noPaint, g, noField);
+    const auto groups = groupGrassByChunk(bigList, 1.0f, 64, 2);
+    size_t total = 0;
+    for (const auto& grp : groups) total += grp.size();
+    check(groups.size() == 4 && total == bigList.size(), "grass: grouping by chunk keeps every tuft",
+          std::to_string(total));
+
+    // The instance budget: a dense tile is thinned, and the result is still deterministic.
+    GrassSettings dense = g;
+    dense.density = 64.0f;   // 512 by 512 candidates on this tile, three and a half times the budget
+    dense.bandNear = 0.0f;
+    dense.bandMid = 0.0f;
+    dense.cullDistance = 1.0f;   // the bands are the shader's business; the scatter must not care
+    const auto capped = scatterGrass(flat, layers, noPaint, dense, noField);
+    const auto cappedAgain = scatterGrass(flat, layers, noPaint, dense, noField);
+    check(capped.size() <= kGrassMaxInstances && capped.size() > kGrassMaxInstances / 4,
+          "grass: a tile past the instance budget is thinned to it", std::to_string(capped.size()));
+    bool cappedSame = capped.size() == cappedAgain.size();
+    for (size_t i = 0; cappedSame && i < capped.size(); ++i) cappedSame = capped[i].pos == cappedAgain[i].pos;
+    check(cappedSame, "grass: the budget's subset is the same every build");
+
+    // The mesh: 3 blades of 4 segments, uv.y from root to tip, one normal per vertex, indices in range.
+    GrassSettings meshSettings;
+    const GrassMesh mesh = buildGrassMesh(meshSettings);
+    check(mesh.positions.size() == 3 * 5 * 2 && mesh.indices.size() == 3 * 4 * 6,
+          "grass: the tuft mesh is three blades of four quads", std::to_string(mesh.positions.size()));
+    bool meshOk = mesh.normals.size() == mesh.positions.size() && mesh.uvs.size() == mesh.positions.size();
+    float rootWidth = 0.0f;
+    for (size_t i = 0; i < mesh.positions.size(); ++i) {
+        meshOk = meshOk && std::fabs(glm::length(mesh.normals[i]) - 1.0f) < 1e-4f;
+        meshOk = meshOk && mesh.uvs[i].y >= 0.0f && mesh.uvs[i].y <= 1.0f;
+        if (mesh.uvs[i].y < 1e-4f) rootWidth = std::max(rootWidth, mesh.positions[i].y);
+    }
+    for (uint32_t i : mesh.indices) meshOk = meshOk && i < mesh.positions.size();
+    check(meshOk && rootWidth < 1e-4f, "grass: the tuft mesh has unit normals, tips at uv.y 1 and roots at 0");
+    // Vertices come in pairs (one across the blade) per row, so a pair's distance is the blade's width at that height.
+    bool taper = true;
+    for (uint32_t b = 0; b < 3; ++b) {
+        const size_t base = size_t(b) * 5 * 2;
+        const float root = glm::distance(mesh.positions[base], mesh.positions[base + 1]);
+        const float tip = glm::distance(mesh.positions[base + 8], mesh.positions[base + 9]);
+        taper = taper && root > meshSettings.width * 0.9f && tip < root * 0.25f;
+    }
+    check(taper, "grass: a blade starts at its full width and tapers to a point");
+
+    // Packed rows: with no yaw and no ground alignment the basis is a swap of two axes, so a local point maps to a
+    // known world point. Checked through the same dots the shader does, which is the part that can actually be wrong.
+    GrassInstance one;
+    one.pos = glm::vec3(2.0f, 5.0f, 7.0f);
+    one.up = glm::vec3(0.0f, 1.0f, 0.0f);
+    one.yaw = 0.0f;
+    one.scale = 2.0f;
+    std::vector<glm::vec4> rows(3 * kGrassBatch);
+    packGrassRows(&one, 1, rows.data());
+    auto transform = [&rows](glm::vec3 local) {
+        return glm::vec3(glm::dot(rows[0], glm::vec4(local, 1.0f)), glm::dot(rows[1], glm::vec4(local, 1.0f)),
+                         glm::dot(rows[2], glm::vec4(local, 1.0f)));
+    };
+    const glm::vec3 root = transform(glm::vec3(0.0f));
+    const glm::vec3 tip = transform(glm::vec3(0.0f, 1.0f, 0.0f));
+    check(glm::length(root - one.pos) < 1e-5f && glm::length(tip - (one.pos + glm::vec3(0.0f, 2.0f, 0.0f))) < 1e-5f,
+          "grass: the packed rows put the root at the tuft and the tip two metres up");
+    check(glm::length(transform(glm::vec3(1.0f, 0.0f, 0.0f)) - one.pos) > 1.9f &&
+              rows[3] == glm::vec4(0.0f),
+          "grass: a local side point is scaled by the tuft, and unused rows are zero");
+
+    // A tilted tuft keeps its up vector: the shader's normal is the basis applied to the mesh normal.
+    GrassInstance tilted = one;
+    tilted.up = glm::normalize(glm::vec3(0.6f, 0.8f, 0.0f));
+    packGrassRows(&tilted, 1, rows.data());
+    const glm::vec3 upAxis(glm::dot(glm::vec3(rows[0]), glm::vec3(0.0f, 1.0f, 0.0f)),
+                           glm::dot(glm::vec3(rows[1]), glm::vec3(0.0f, 1.0f, 0.0f)),
+                           glm::dot(glm::vec3(rows[2]), glm::vec3(0.0f, 1.0f, 0.0f)));
+    check(glm::length(upAxis - tilted.up * 2.0f) < 1e-4f,
+          "grass: a tuft on a slope leans with the ground normal it was given");
+}
+
 // Terrain editing (item 18, steps 4 and 5): brush weights and edits (with exact undo), noise, terrace, stamps, erosion,
 // paint masks, the ray pick, and a density mask that limits the scatter.
 static void testTerrainEdit() {
@@ -1521,6 +1759,7 @@ int main() {
     testTerrainLayers();
     testTerrainAtlases();
     testFoliage();
+    testGrass();
     testTerrainEdit();
     std::printf("systems: %d passed, %d failed\n", passed, failed);
     return failed == 0 ? 0 : 1;

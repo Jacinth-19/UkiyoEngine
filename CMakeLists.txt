@@ -105,6 +105,7 @@ add_library(ukiyo_core STATIC
   src/engine/terrain_gpu.cpp
   src/engine/terrain_layers.cpp
   src/engine/foliage.cpp
+  src/engine/grass.cpp
   src/engine/terrain_edit.cpp
   third_party/meshoptimizer/simplifier.cpp
   third_party/meshoptimizer/allocator.cpp

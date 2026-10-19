@@ -12142,6 +12142,67 @@ int MainWindow::runSelfTest() {
                                               in.terrain->foliage[0].shape == ukiyo::FoliageShape::Cone);
         check(reopenedTrees, "foliage: the reopened scene has the trees");
 
+        // Step 3b: grass (item 19). Blades are scattered over the tile, drawn from one instanced call per chunk batch,
+        // and turning the grass off gives the frame back. A camera close to the tile: a blade is centimetres wide.
+        int grassIndex = -1;
+        {
+            std::vector<InstanceInfo> now2;
+            runOnWorker([&] { now2 = worker_->instances(); });
+            for (size_t i = 0; i < now2.size(); ++i)
+                if (now2[i].terrain && QString::fromStdString(now2[i].terrain->heightmap) == raw) grassIndex = int(i);
+        }
+        ukiyo::TerrainSettings meadow = forest;
+        meadow.grass.enabled = true;
+        meadow.grass.density = 0.45f;
+        meadow.grass.height = 0.9f;
+        meadow.grass.scaleMin = 0.8f;
+        meadow.grass.scaleMax = 1.2f;
+        meadow.grass.includeLayers = 1u << 0;
+        meadow.grass.bandNear = 80.0f;
+        meadow.grass.bandMid = 160.0f;
+        meadow.grass.cullDistance = 400.0f;
+        ukiyo::OrbitCamera gcam = tcam;
+        gcam.distance = 60.0f;
+        gcam.pitch = 0.35f;
+        QImage bareShot, meadowShot, restoredShot;
+        bool grassOk = false, restoredOk = false;
+        QString grassErr;
+        runOnWorker([&] {
+            bareShot = worker_->renderNow(gcam).convertToFormat(QImage::Format_RGB32);
+            grassOk = worker_->setInstanceTerrain(grassIndex, meadow, &grassErr);
+            meadowShot = worker_->renderNow(gcam).convertToFormat(QImage::Format_RGB32);
+        });
+        auto pixelDiff = [](const QImage& a, const QImage& b) -> long {
+            if (a.isNull() || a.size() != b.size()) return -1;
+            long n = 0;
+            for (int y = 0; y < a.height(); ++y)
+                for (int x = 0; x < a.width(); ++x)
+                    if (a.pixel(x, y) != b.pixel(x, y)) ++n;
+            return n;
+        };
+        const long grassDiff = pixelDiff(bareShot, meadowShot);
+        check(grassOk && grassIndex >= 0 && grassDiff > 500, "grass: blades scattered on the tile are drawn",
+              QString("%1 pixels differ").arg(grassDiff));
+        meadowShot.save(projectRoot_ + QStringLiteral("/renders/terrain_grass.png"));
+        QJsonObject grassBlock;
+        const QJsonArray grassModels = sceneDocument().value(QStringLiteral("models")).toArray();
+        for (const QJsonValue& mv : grassModels) {
+            const QJsonObject terrain = mv.toObject().value(QStringLiteral("terrain")).toObject();
+            if (terrain.value(QStringLiteral("heightmap")).toString().endsWith(QStringLiteral(".u16")))
+                grassBlock = terrain.value(QStringLiteral("grass")).toObject();
+        }
+        check(grassBlock.value(QStringLiteral("enabled")).toBool(false) &&
+                  std::fabs(grassBlock.value(QStringLiteral("density")).toDouble() - 0.9) < 1e-4 &&
+                  grassBlock.value(QStringLiteral("includeLayers")).toArray().size() == 1,
+              "grass: the scene document holds the scatter, the bands and the layer mask");
+        runOnWorker([&] {
+            restoredOk = worker_->setInstanceTerrain(grassIndex, forest, &grassErr);
+            restoredShot = worker_->renderNow(gcam).convertToFormat(QImage::Format_RGB32);
+        });
+        const long restoredDiff = pixelDiff(bareShot, restoredShot);
+        check(restoredOk && restoredDiff >= 0 && restoredDiff < 50, "grass: turning it off gives the frame back",
+              QString("%1 pixels differ").arg(restoredDiff));
+
         // Removing the terrain takes the tile away again.
         bool cleared = false;
         runOnWorker([&] { cleared = worker_->setInstanceTerrain(index, std::nullopt); });

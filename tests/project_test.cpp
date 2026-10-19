@@ -318,6 +318,9 @@ static void testTerrainProject() {
           "terrain: the default layers are stored");
     check(terrain.contains("foliage") && terrain["foliage"].size() == 2,
           "terrain: grass and pines are scattered");
+    check(terrain.contains("grass") && terrain["grass"].value("enabled", false) &&
+              terrain["grass"].value("density", 0.0) > 0.0 && terrain["grass"].contains("includeLayers"),
+          "terrain: the new project grows grass on its first layer");
 
     bool sculpted = false;
     for (const std::string& message : messages) {

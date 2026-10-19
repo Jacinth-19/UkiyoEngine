@@ -360,6 +360,15 @@ EngineSession::TerrainEditState* EngineSession::ensureTerrainState(const ukiyo::
             held.densityDirty[t] = 0;
             held.densitySource[t] = ts.foliage[t].densityMap;
         }
+        if (ts.grass.densityMap != held.grassDensitySource) {
+            std::vector<uint8_t> field;
+            if (!readDensity(ts.grass.densityMap, ts.size, &field, &loadErr)) {
+                if (error) *error = QString::fromStdString(loadErr);
+                return nullptr;
+            }
+            held.grassDensity = std::move(field);
+            held.grassDensitySource = ts.grass.densityMap;
+        }
         return &held;
     }
     TerrainEditState st;
@@ -387,6 +396,11 @@ EngineSession::TerrainEditState* EngineSession::ensureTerrainState(const ukiyo::
         }
         st.densitySource[t] = ts.foliage[t].densityMap;
     }
+    if (!readDensity(ts.grass.densityMap, ts.size, &st.grassDensity, &loadErr)) {
+        if (error) *error = QString::fromStdString(loadErr);
+        return nullptr;
+    }
+    st.grassDensitySource = ts.grass.densityMap;
     return &terrainEdits_.emplace(ts.heightmap, std::move(st)).first->second;
 }
 
@@ -402,6 +416,12 @@ bool EngineSession::buildTerrainGpu(const ukiyo::TerrainSettings& ts, const Terr
     std::vector<std::vector<uint8_t>> densities(ts.foliage.size());
     for (size_t t = 0; t < ts.foliage.size() && t < st.density.size(); ++t) densities[t] = st.density[t];
     if (!ukiyo::uploadFoliage(*device_, ts.foliage, densities, gpu.get(), &uploadErr)) {
+        if (error) *error = QString::fromStdString(uploadErr);
+        return false;
+    }
+    // Grass (item 19): the scatter reads the same layer masks the terrain shader blends, so blades grow on the layers
+    // the settings include and clear off the ones they exclude.
+    if (!ukiyo::uploadGrass(*device_, ts.layers, st.layerPaint, ts.grass, st.grassDensity, gpu.get(), &uploadErr)) {
         if (error) *error = QString::fromStdString(uploadErr);
         return false;
     }
@@ -967,6 +987,40 @@ QImage EngineSession::render(const OrbitCamera& cam, float time, float dt, const
         }
     }
     renderer_->setFoliage(foliage);
+    // Grass (item 19). One draw per batch; the shader's wind and distance bands read from the push block, so a batch
+    // needs nothing but its instance rows.
+    std::vector<GrassDraw> grass;
+    glm::vec4 pusher(0.0f);   // the active character standing in the grass: xy position, reach, push
+    for (const Instance& in : instances_) {
+        if (in.model.get() != active) continue;
+        pusher = glm::vec4(in.position.x, in.position.z, 1.6f, 0.30f);
+        break;
+    }
+    for (const Instance& in : instances_) {
+        if (!in.terrainGpu || !in.terrain) continue;
+        const glm::mat4 tile = glm::translate(glm::mat4(1.0f), in.position);
+        const ukiyo::TerrainGpu& g = *in.terrainGpu;
+        const ukiyo::GrassSettings& gs = in.terrain->grass;
+        for (const ukiyo::GrassBatchGpu& b : g.grass.batches) {
+            if (b.mesh >= g.grass.meshes.size()) continue;
+            const ukiyo::GrassMeshGpu& mesh = g.grass.meshes[b.mesh];
+            GrassDraw d;
+            d.vertices = mesh.vertices.get();
+            d.indices = mesh.indices.get();
+            d.instances = b.set.get();
+            d.indexCount = mesh.indexCount;
+            d.instanceCount = b.count;
+            d.model = tile;
+            d.boundsMin = b.boundsMin;
+            d.boundsMax = b.boundsMax;
+            d.bands = glm::vec3(gs.bandNear, gs.bandMid, gs.cullDistance);
+            d.wind = glm::vec4(gs.windStrength, gs.windFrequency, gs.windScale, gs.flutter);
+            d.windDir = gs.windDir;
+            d.pusher = pusher;
+            grass.push_back(d);
+        }
+    }
+    renderer_->setGrass(grass);
     renderer_->render(cam, models, time, frame_++, s);
     drawParticleOverlay(cam);
     device_->endFrame(true);
