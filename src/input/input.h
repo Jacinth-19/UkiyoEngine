@@ -237,6 +237,10 @@ class State {
 public:
     State();
     ~State();
+    // A State owns its devices and its bindings point into them, so a copy would double-free and dangle. Move is not
+    // offered either: actions and maps are addressed by reference for their whole life.
+    State(const State&) = delete;
+    State& operator=(const State&) = delete;
 
     // Devices. addDevice returns a stable reference; the engine keeps at most one keyboard and one mouse and up to
     // kMaxGamepads gamepads.

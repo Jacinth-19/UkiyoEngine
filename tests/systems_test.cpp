@@ -672,6 +672,34 @@ static void testVfx() {
     check(vfx.find(h) == nullptr, "vfx: remove deletes an emitter");
 }
 
+// The project's input actions (a name and portable key text) are compiled into an engine input-system action map, and
+// scripts read them through actionDown(). docs/INPUT.md.
+static void testWorldInput() {
+    World w(true);
+    w.setInputActions({{"Jump", "Space"}, {"Run", "LeftShift"}, {"Typo", "Hyper"}});
+    check(w.input().action("Gameplay", "Jump") != nullptr, "input: a project action becomes an action in the Gameplay map");
+    check(w.input().map("Gameplay") && w.input().map("Gameplay")->enabled, "input: the Gameplay map is enabled");
+    check(!w.actionDown("Jump"), "input: an action nobody is pressing is false");
+    check(w.input().action("Gameplay", "Typo") != nullptr, "input: a key the engine cannot name keeps its action");
+
+    w.setKeyHeld("Space", true);
+    check(w.actionDown("Jump"), "input: a key press reaches actionDown before the next tick");
+    w.tick(0.1f);
+    check(w.actionDown("Jump"), "input: and it is still held after a tick");
+    w.setKeyHeld("Space", false);
+    check(!w.actionDown("Jump"), "input: releasing the key ends the action");
+
+    // A modifier is a normal control name here, not a chord; the key text is Qt's.
+    w.setKeyHeld("LeftShift", true);
+    check(w.actionDown("Run"), "input: LeftShift maps to leftShift and drives its action");
+
+    // An unknown key is ignored on both sides, so a typo in the project settings cannot half-work.
+    w.setKeyHeld("Hyper", true);
+    check(!w.actionDown("Typo"), "input: an action with an unknown key never fires");
+    w.setKeyHeld("LeftShift", false);
+    check(!w.actionDown("Run"), "input: the modifier releases too");
+}
+
 static void testActions() {
     check(std::fabs(ukiyo::pingPongWeight(0.0f, false)) < 1e-5f, "actions: a linear ping-pong starts at rest");
     check(std::fabs(ukiyo::pingPongWeight(0.25f, false) - 0.5f) < 1e-5f, "actions: a linear ping-pong is halfway at a quarter cycle");
@@ -1744,6 +1772,7 @@ static void testTerrain() {
 int main() {
     testPhysics();
     testActions();
+    testWorldInput();
     testNavigation();
     testAudio();
     testAnimState();
