@@ -18,7 +18,12 @@ jobs:
       - name: Install dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y cmake g++ libglfw3-dev libvulkan-dev glslang-tools libglm-dev nlohmann-json3-dev glslang-dev python3 python3-pip qt6-base-dev qt6-base-dev-tools libqt6opengl6-dev qt6-tools-dev qt6-tools-dev-tools
+          # GLM, nlohmann_json and GLFW are vendored under third_party/ (third_party/VENDOR.md), so their -dev packages
+          # are not installed. GLFW is built from source and its X11 backend needs these headers; the Wayland backend
+          # is off (see the GLFW_BUILD_WAYLAND block in CMakeLists.txt), which is why no wayland-scanner is needed.
+          sudo apt-get install -y cmake g++ libvulkan-dev glslang-tools glslang-dev python3 python3-pip \
+            qt6-base-dev qt6-base-dev-tools libqt6opengl6-dev qt6-tools-dev qt6-tools-dev-tools \
+            libx11-dev libxrandr-dev libxinerama-dev libxcursor-dev libxi-dev libxext-dev
       - name: Configure CMake
         run: cmake -B build -DCMAKE_BUILD_TYPE=Release
       - name: Build Everything
@@ -36,6 +41,11 @@ jobs:
       # The estimator's maths, mirrored on the CPU: the shader cannot run here, but its algebra can be checked.
       - name: Run Real-Time GI Test
         run: ./build/gi_test
+      # The input runtime, its asset format and its actions, driven from synthetic devices: no window, no GPU, no GLFW.
+      # It checks press/hold/tap/multitap, 1D and 2D composites, processors, control schemes, rebinding, and that the
+      # .inputactions file the engine writes loads back byte-for-byte. docs/INPUT.md.
+      - name: Run Input System Test
+        run: ./build/input_test
       # Bindings are the one class of shader bug a compiler cannot see and CI has no GPU to catch. This resolves the
       # includes and fails on two samplers at one (set, binding), or two bindings on one GL texture unit.
       - name: Audit shader descriptor bindings

@@ -10,6 +10,7 @@ endif()
 
 find_package(Python3 COMPONENTS Interpreter REQUIRED)
 find_package(Vulkan REQUIRED)
+
 # ---- Vendored dependencies -------------------------------------------------
 # GLM, nlohmann_json and GLFW live in third_party/ so a checkout builds without fetching anything and CI does not
 # spend a package install on them (see third_party/VENDOR.md for versions and the upgrade commands). Each one falls
@@ -177,7 +178,7 @@ add_library(ukiyo_systems STATIC
   src/systems/network.cpp
   src/systems/world.cpp)
 target_include_directories(ukiyo_systems PUBLIC ${CMAKE_SOURCE_DIR}/src)
-target_link_libraries(ukiyo_systems PUBLIC ukiyo_core Jolt ukiyo_recast ukiyo_lua ukiyo_miniaudio)
+target_link_libraries(ukiyo_systems PUBLIC ukiyo_core ukiyo_input Jolt ukiyo_recast ukiyo_lua ukiyo_miniaudio)
 if(WIN32)
   target_link_libraries(ukiyo_systems PUBLIC ws2_32)
 endif()
@@ -232,6 +233,25 @@ target_include_directories(gi_test PRIVATE ${CMAKE_SOURCE_DIR}/src ${CMAKE_SOURC
 target_link_libraries(gi_test PRIVATE glm::glm)
 target_compile_options(gi_test PRIVATE -Wall -Wextra -Wno-missing-field-initializers)
 
+# ---- Input system (docs/INPUT.md) ------------------------------------------
+# The runtime and the .inputactions asset format are plain C++ (glm + nlohmann), with no GLFW, Vulkan or window, so the
+# test below runs on any machine and in CI. The GLFW backend is its own target: only applications link it.
+add_library(ukiyo_input STATIC
+  src/input/input.cpp
+  src/input/input_asset.cpp)
+target_include_directories(ukiyo_input PUBLIC ${CMAKE_SOURCE_DIR}/src)
+target_link_libraries(ukiyo_input PUBLIC glm::glm nlohmann_json::nlohmann_json)
+target_compile_options(ukiyo_input PRIVATE -Wall -Wextra -Wno-missing-field-initializers)
+
+add_library(ukiyo_input_glfw STATIC src/input/input_glfw.cpp)
+target_link_libraries(ukiyo_input_glfw PUBLIC ukiyo_input glfw)
+target_compile_options(ukiyo_input_glfw PRIVATE -Wall -Wextra -Wno-missing-field-initializers)
+
+add_executable(input_test tests/input_test.cpp)
+target_link_libraries(input_test PRIVATE ukiyo_input)
+target_compile_definitions(input_test PRIVATE UKIYO_ROOT="${CMAKE_SOURCE_DIR}")
+target_compile_options(input_test PRIVATE -Wall -Wextra -Wno-missing-field-initializers)
+
 # The motion demo (docs/MOTION.md): drives the controller through a scripted route with synthetic clips and writes
 # the figure, so the runtime half of motion matching is exercised on every build.
 add_executable(motion_demo tools/motion_demo.cpp src/engine/motion_match.cpp)
@@ -268,7 +288,10 @@ target_compile_options(project_test PRIVATE -Wall -Wextra -Wno-missing-field-ini
 
 # ---- Application -----------------------------------------------------------
 add_executable(ukiyo src/app/main.cpp)
-target_link_libraries(ukiyo PRIVATE ukiyo_core)
+target_link_libraries(ukiyo PRIVATE ukiyo_core ukiyo_input_glfw)
+# glfw3.h includes GL/gl.h unless told not to. The viewer never makes a GL call itself (the RHI does), so it asks GLFW
+# for the no-GL header and the build does not need GL development headers on the machine.
+target_compile_definitions(ukiyo PRIVATE GLFW_INCLUDE_NONE)
 target_compile_options(ukiyo PRIVATE -Wall -Wextra -Wno-missing-field-initializers)
 
 # ---- Tests -----------------------------------------------------------------
