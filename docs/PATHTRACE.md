@@ -107,8 +107,8 @@ missing while a lit ridge keeps what it had. The difference is multiplied by the
 heightfield's resolution and carried in the height texture's spare channels. Reading this frame's raster (rather than
 the previous frame's composited image) keeps the estimator from feeding its own output back into its rays.
 
-**Measured against the tracer.** Same scene, same camera, same curves (`pathtrace_preview realtime out.png . 480 270
-16 8 64` renders the estimate, the 64-spp reference and the difference):
+**Measured against the tracer.** Same scene, same camera, same curves — `pathtrace_preview realtime out.png . 960 540
+16 8 64` writes the estimate, the 64-spp reference and the difference, and prints the error:
 
 | Resolution | Rays per half-res pixel | Frames accumulated | Reference | RMSE | Worst pixel |
 | --- | --- | --- | --- | --- | --- |
@@ -139,15 +139,16 @@ the engine's normal pre-pass where it has a surface and from the heightfield's o
 in that pre-pass — the same surface the rays march, so the two agree.
 
 **Cost on the CPU twin**, two threads: at 480 × 270 the raster pass (whose direct light comes from shadow rays in the
-twin) is 286 ms one-off and the estimator is 114 ms a frame at eight rays — 0.31 M rays; at 960 × 540, sixteen frames
-at eight rays is 527 ms a frame for 1.0 M rays. On the GPU the same work is a
-fragment shader with no divergence and texture-cached height lookups, and the two halves of the twin are exactly the
-kinds of work an integrated GPU is built for; the pass's own budget is 7.4 M texture fetches at 720p with four rays.
-**No GPU number is quoted here because none was measured on a GPU** — this container has no Vulkan device. What can be
-said without a measurement is the work: two half-resolution passes, 0.92 M rays, 7.4 M fetches at 720p with four
-rays, no synchronisation and no readback, which is inside what a 15 W integrated part does in a few milliseconds. The editor's self-test runs the
-pass on whatever device it is on (`11v: traced bounce light runs without breaking the frame`), and the setting is in
-the Screen Effects panel next to SSAO.
+twin) is 286 ms one-off and the estimator is 114 ms a frame at eight rays — 0.31 M rays. At 960 × 540, sixteen frames
+at eight rays is 527 ms a frame for 1.0 M rays.
+
+On the GPU the same work is a fragment shader with no divergence and texture-cached height lookups, and both halves of
+the twin are exactly what an integrated GPU is for. **No GPU number is quoted here because none was measured on a
+GPU** — this container has no Vulkan device. What can be said without one is the work: two half-resolution passes,
+0.92 M rays and 7.4 M texture fetches at 720p with four rays, no synchronisation and no readback, which is inside what
+a 15 W integrated part does in a few milliseconds. The editor's self-test runs the pass on whatever device it is on
+(`11v: traced bounce light runs without breaking the frame`), the setting is in the Screen Effects panel next to SSAO,
+and `tests/gi_test.cpp` checks the algorithm's maths against analytic answers on every build.
 
 ## 5. What the renderer does around it
 
