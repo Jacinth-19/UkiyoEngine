@@ -36,6 +36,14 @@ constexpr qreal kCrossfadeMs = 450.0;
 constexpr qint64 kMinimumVisibleMs = 1350; // no flash for instant work
 constexpr qreal kFadeOutMs = 280.0;
 
+// The 07 print puts its cloud mass against the card's right rounded corner, so the framing is pulled four per cent to
+// the left: the source starts four per cent in, which moves the clouds off the corner and opens the right margin.
+// Tuned for that artwork; revisit if the splash image changes.
+constexpr qreal kArtCropLeft = 0.04;
+// The flat scrim under the gradient. 58 rather than the old 46: the 07 print is bright at the top right and the small
+// caption line needs the extra contrast (3.86:1 as it stands).
+constexpr int kArtScrimAlpha = 58;
+
 QFont sized(const QFont& base, qreal pixels, QFont::Weight weight, qreal spacing = 0.0) {
     QFont font = base;
     font.setPixelSize(std::max(1, int(std::lround(pixels))));
@@ -235,7 +243,7 @@ void SplashScreen::paintArtwork(QPainter& painter, qreal s) {
     paintArt(painter, area);
 
     // Take the print down a little so white type always has something to sit on.
-    painter.fillRect(area, QColor(kScrim.red(), kScrim.green(), kScrim.blue(), 46));
+    painter.fillRect(area, QColor(kScrim.red(), kScrim.green(), kScrim.blue(), kArtScrimAlpha));
 
     QLinearGradient scrim(QPointF(0.0, area.height() * 0.34), QPointF(0.0, area.height()));
     scrim.setColorAt(0.00, QColor(kScrim.red(), kScrim.green(), kScrim.blue(), 0));
@@ -309,11 +317,15 @@ void SplashScreen::paintArt(QPainter& painter, const QRectF& area) {
 
     // A slow drift keeps the screen alive without ever pulling the eye.
     const qreal zoom = 1.025 + 0.010 * std::sin(age_ * 0.30);
-    const QSizeF scaled = QSizeF(art_.size()).scaled(area.size() * zoom, Qt::KeepAspectRatioByExpanding);
+    // Crop from the left, not by panning the target: at the 1.025 base zoom a pan would expose a bare edge on the
+    // other side, while a narrower source still covers the card.
+    const QRectF source(art_.width() * kArtCropLeft, 0.0,
+                        art_.width() * (1.0 - kArtCropLeft), art_.height());
+    const QSizeF scaled = QSizeF(source.size()).scaled(area.size() * zoom, Qt::KeepAspectRatioByExpanding);
     QRectF target(QPointF(0.0, 0.0), scaled);
     target.moveCenter(area.center() + QPointF(std::sin(age_ * 0.18) * 5.0,
                                               std::cos(age_ * 0.14) * 3.0));
-    painter.drawPixmap(target, art_, QRectF(art_.rect()));
+    painter.drawPixmap(target, art_, source);
 }
 
 void SplashScreen::paintFallbackArt(QPainter& painter, const QRectF& area) {
