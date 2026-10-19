@@ -1168,7 +1168,7 @@ QWidget* MainWindow::buildProjectSettings() {
         // which it turns on itself.
         number(fx, "Traced bounce light (GI)", &settings_.gi, 0.0, 1.0, 0.05);
         number(fx, "GI ray distance (m)", &settings_.giRadius, 2.0, 40.0, 1.0);
-        number(fx, "GI rays per pixel", &settings_.giRays, 1, 8, 1);
+        number(fx, "GI rays per half-res pixel", &settings_.giRays, 1, 8, 1);
         number(fx, "Screen-space reflections", &settings_.ssr, 0.0, 1.0, 0.05);
         number(fx, "Depth-normal outline", &settings_.depthNormalOutline, 0.0, 1.0, 0.05);
         number(fx, "Lens flare", &settings_.flare, 0.0, 1.0, 0.05);
