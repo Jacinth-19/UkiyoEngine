@@ -180,7 +180,7 @@ Japanese line is the brand's second name, not a translation layer. The font is r
 | [docs/GRASS.md](docs/GRASS.md) | the MagicGrass adaptation: scatter, bands, wind, RHI limits |
 | [docs/VGEOM.md](docs/VGEOM.md) | the cluster hierarchy, the cut, the cache, measured costs |
 | [docs/MOTION.md](docs/MOTION.md) | the feature vector, the KD-tree, the controller, the retarget |
-| [docs/PATHTRACE.md](docs/PATHTRACE.md) | the CPU reference tracer and the iGPU argument |
+| [docs/PATHTRACE.md](docs/PATHTRACE.md) | the CPU reference tracer, the traced-bounce estimator, and the iGPU argument |
 
 ## Credits
 
