@@ -41,11 +41,13 @@ jobs:
       - name: Audit shader descriptor bindings
         run: python3 tools/shader_bindings.py shaders
       # The real-time GI estimator against the tracer, in the same units and on the same scene. Slower than the other
-      # steps on purpose: the reference is 32 samples a pixel. It writes renders/gi-*.png and reports the RMSE.
+      # steps on purpose: the reference is 32 samples a pixel. It writes renders/gi-*.png and fails the build if the
+      # RMSE is past its budget — the measured value is ~0.038, and 0.05 is the point past which the model, not the
+      # sampling, has changed.
       - name: Real-time GI estimator
         run: |
           mkdir -p renders
-          ./build/pathtrace_preview realtime renders/gi-realtime.png . 480 270 8 4 32
+          UKIYO_RT_MAX_RMSE=0.05 ./build/pathtrace_preview realtime renders/gi-realtime.png . 480 270 8 4 32
 
       # The controller, driven through a route: writes docs/motion-demo.png and fails if the run is not sane.
       - name: Run Motion Demo

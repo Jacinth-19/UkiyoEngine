@@ -672,8 +672,20 @@ int main(int argc, char** argv) {
                 sum += e * e;
                 worst = std::max(worst, e);
             }
-            std::printf("error vs %d spp reference: RMSE %.4f, worst %.3f (display units, 0..1)\n", refSpp,
-                        std::sqrt(sum / double(display.size())), worst);
+            const double rmse = std::sqrt(sum / double(display.size()));
+            std::printf("error vs %d spp reference: RMSE %.4f, worst %.3f (display units, 0..1)\n", refSpp, rmse,
+                        worst);
+            // CI has no GPU, so this is the only number that says the estimator still matches the tracer. A budget
+            // makes the run a test rather than a printout: the measured value is ~0.038, and 0.05 is the point past
+            // which something in the model, not the sampling, has changed.
+            if (const char* budget = std::getenv("UKIYO_RT_MAX_RMSE")) {
+                const double limit = std::atof(budget);
+                if (rmse > limit) {
+                    std::printf("error: RMSE %.4f exceeds the budget %.4f (UKIYO_RT_MAX_RMSE)\n", rmse, limit);
+                    return 1;
+                }
+                std::printf("ok: RMSE %.4f is within the budget %.4f\n", rmse, limit);
+            }
             // A difference image, amplified: where the estimator is wrong, and by how much.
             std::vector<glm::vec3> diff(display.size());
             for (size_t i = 0; i < display.size(); ++i) {
