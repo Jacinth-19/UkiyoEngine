@@ -102,11 +102,10 @@ c++ -O2 -std=c++17 -I src -I third_party tools/terrain_preview.cpp \
 
 Framing, sun, grade and the grass shape can be set without a rebuild: `UKIYO_EYE`, `UKIYO_EYE_H`, `UKIYO_TARGET`,
 `UKIYO_TARGET_H`, `UKIYO_SUN_AZ`, `UKIYO_SUN_ELEV`, `UKIYO_FOG`, `UKIYO_EXPOSURE`, and `UKIYO_GRASS_DENSITY`,
-`UKIYO_GRASS_HEIGHT`, `UKIYO_GRASS_WIDTH`, `UKIYO_GRASS_BLADES` for a what-if on the meadow. The image at the top was
-made with `UKIYO_SUN_AZ=320 UKIYO_SUN_ELEV=22 UKIYO_FOG=0.0035 UKIYO_EXPOSURE=0.84 UKIYO_EYE=196,196
-UKIYO_EYE_H=0.85 UKIYO_TARGET=178,178 UKIYO_TARGET_H=0.30` (41 359 tufts and 131 072 terrain triangles in frame); the
-close-up in [GRASS.md](GRASS.md) is the same light from `UKIYO_EYE=190,194 UKIYO_EYE_H=1.05 UKIYO_TARGET=174,182
-UKIYO_TARGET_H=0.35` at 1000 × 620.
+`UKIYO_GRASS_HEIGHT`, `UKIYO_GRASS_WIDTH`, `UKIYO_GRASS_BLADES` for a what-if on the meadow. The image at the top is
+the tool at its defaults — sun azimuth 60°, elevation 24°, fog 0.0035, exposure 0.84, the camera at 46, 206 looking at
+150, 118 — with 41 359 tufts and 131 072 terrain triangles in frame; the close-up in [GRASS.md](GRASS.md) is the same
+light from `UKIYO_EYE=190,194 UKIYO_EYE_H=1.05 UKIYO_TARGET=174,182 UKIYO_TARGET_H=0.35` at 1000 × 620.
 
 The tool is also a check: it is the only place where the scatter, the mesh and the settings are exercised together
 without a device, and it is compiled by the normal CMake build so it cannot rot.
