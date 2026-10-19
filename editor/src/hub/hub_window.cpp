@@ -68,7 +68,7 @@ QString accentFor(const QString& templateId) {
     if (const engine::ProjectTemplate* projectTemplate = engine::findProjectTemplate(templateId.toStdString())) {
         return QString::fromStdString(projectTemplate->accent);
     }
-    return QStringLiteral("#4a9ef0");
+    return QStringLiteral("#cc4832");
 }
 
 QString templateNameFor(const QString& templateId) {
@@ -138,18 +138,26 @@ QWidget* HubWindow::buildRail() {
     column->setContentsMargins(22, 26, 18, 20);
     column->setSpacing(6);
 
-    // The mark and the wordmark read as one lockup: the ensō sits on the rail's text baseline, the name beside it.
+    // The mark and the wordmark read as one lockup. At this size the ring's gap closes up and the ensō reads as a
+    // letter C, so the rail carries the hanko instead: a block of red pigment still reads as a stamp at 26 px, and it
+    // is the one accent the rest of the interface borrows.
     auto* brand = new QWidget;
+    brand->setObjectName(QStringLiteral("hubBrand"));
+    brand->setAttribute(Qt::WA_StyledBackground, false);
     auto* brandRow = new QHBoxLayout(brand);
     brandRow->setContentsMargins(0, 0, 0, 0);
-    brandRow->setSpacing(10);
+    brandRow->setSpacing(11);
     auto* mark = new QLabel;
-    QPixmap markPixmap(engineRoot() + QStringLiteral("/editor/res/brand/ukiyo-mark-64.png"));
-    if (!markPixmap.isNull()) {
-        mark->setPixmap(markPixmap.scaled(30, 30, Qt::KeepAspectRatio, Qt::SmoothTransformation));
-    }
-    mark->setFixedSize(30, 30);
+    mark->setObjectName(QStringLiteral("hubBrandMark"));
     mark->setAttribute(Qt::WA_TranslucentBackground, true);
+    mark->setStyleSheet(QStringLiteral("background: transparent;"));
+    QPixmap markPixmap(engineRoot() + QStringLiteral("/editor/res/brand/ukiyo-seal-64.png"));
+    if (markPixmap.isNull()) markPixmap.load(engineRoot() + QStringLiteral("/editor/res/brand/ukiyo-mark-64.png"));
+    if (!markPixmap.isNull()) {
+        const int px = 26;
+        mark->setPixmap(markPixmap.scaled(px, px, Qt::KeepAspectRatio, Qt::SmoothTransformation));
+        mark->setFixedSize(px, px);
+    }
     brandRow->addWidget(mark, 0, Qt::AlignVCenter);
 
     auto* titles = new QVBoxLayout;
@@ -159,18 +167,18 @@ QWidget* HubWindow::buildRail() {
     auto* wordmark = new QLabel(QStringLiteral("UKIYO"));
     wordmark->setObjectName(QStringLiteral("hubWordmark"));
     QFont markFont = wordmark->font();
-    markFont.setPixelSize(27);
-    markFont.setWeight(QFont::Black);
-    markFont.setLetterSpacing(QFont::AbsoluteSpacing, 6.0);
+    markFont.setPixelSize(25);
+    markFont.setWeight(QFont::Bold);
+    markFont.setLetterSpacing(QFont::AbsoluteSpacing, 3.2);
     wordmark->setFont(markFont);
     titles->addWidget(wordmark);
 
-    auto* sub = new QLabel(QStringLiteral("PROJECT HUB"));
+    auto* sub = new QLabel(QStringLiteral("ENGINE"));
     sub->setObjectName(QStringLiteral("hubWordmarkSub"));
     QFont subFont = sub->font();
     subFont.setPixelSize(9);
-    subFont.setWeight(QFont::DemiBold);
-    subFont.setLetterSpacing(QFont::AbsoluteSpacing, 3.0);
+    subFont.setWeight(QFont::Medium);
+    subFont.setLetterSpacing(QFont::AbsoluteSpacing, 2.6);
     sub->setFont(subFont);
     titles->addWidget(sub);
     brandRow->addLayout(titles);
@@ -182,14 +190,15 @@ QWidget* HubWindow::buildRail() {
     QFont jpFont = jp->font();
     jpFont.setPixelSize(10);
     jpFont.setWeight(QFont::Medium);
-    jpFont.setLetterSpacing(QFont::AbsoluteSpacing, 2.0);
+    jpFont.setLetterSpacing(QFont::AbsoluteSpacing, 2.6);
     jp->setFont(jpFont);
+    column->addSpacing(6);
     column->addWidget(jp);
 
     auto* rule = new QFrame;
-    rule->setFixedSize(30, 2);
-    rule->setStyleSheet(QStringLiteral("background:#4a9ef0; border-radius:1px;"));
-    column->addSpacing(14);
+    rule->setFixedSize(26, 2);
+    rule->setStyleSheet(QStringLiteral("background:#cc4832; border-radius:1px;"));
+    column->addSpacing(16);
     column->addWidget(rule);
     column->addSpacing(16);
 
@@ -210,7 +219,7 @@ QWidget* HubWindow::buildRail() {
         button->setObjectName(QStringLiteral("hubNav"));
         button->setCheckable(true);
         button->setCursor(Qt::PointingHandCursor);
-        button->setIcon(editor::materialIcon(entries[i].icon, QColor(0x9f, 0xb4, 0xc9), 16));
+        button->setIcon(editor::materialIcon(entries[i].icon, QColor(0xc4, 0xb8, 0xa6), 16));
         button->setIconSize(QSize(16, 16));
         button->setToolTip(QString::fromLatin1(entries[i].hint));
         button->setToolTipDuration(4000);

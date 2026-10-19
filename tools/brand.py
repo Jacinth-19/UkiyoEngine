@@ -127,6 +127,33 @@ def ensō(size, ink=INK, seal=True, ring=0.688, thickness=0.142, seal_glyph="浮
     return img.resize((size, size), Image.LANCZOS)
 
 
+def hanko(size, glyph="浮", seal_color=VERMILION, ink=INK):
+    """The seal alone: a stamped block of vermilion with the character cut out of it.
+
+    This is the mark for small sizes and for places that already say the name — a 30 px ensō loses its gap and
+    reads as a letter C, while a block of red pigment still reads as a stamp at 16 px.
+    """
+    ss = size * S
+    img = Image.new("RGBA", (ss, ss), (0, 0, 0, 0))
+    d = ImageDraw.Draw(img)
+    pad = ss * 0.045
+    box = [pad, pad, ss - pad, ss - pad]
+    d.rounded_rectangle(box, radius=max(2, int(ss * 0.075)), fill=seal_color + (255,))
+    if glyph:
+        f = font("Medium", int(ss * 0.66))
+        bbox = d.textbbox((0, 0), glyph, font=f)
+        d.text(((ss - (bbox[2] - bbox[0])) * 0.5 - bbox[0], (ss - (bbox[3] - bbox[1])) * 0.5 - bbox[1]),
+               glyph, font=f, fill=ink + (255,))
+    # Pressed ink: bites out of the edge, kept small enough that the block stays a block at 16 px.
+    for k in range(18):
+        a = k * 0.349 + 0.2
+        ex = pad + (0.5 + 0.5 * math.cos(a)) * (ss - 2.0 * pad)
+        ey = pad + (0.5 + 0.5 * math.sin(a)) * (ss - 2.0 * pad)
+        er = ss * (0.004 + 0.005 * ((k * 53) % 7) / 6.0)
+        d.ellipse([ex - er, ey - er, ex + er, ey + er], fill=(0, 0, 0, 0))
+    return img.resize((size, size), Image.LANCZOS)
+
+
 def tracked(draw, xy, text, f, fill, spacing):
     """Draws text with letter spacing, returning the advance width."""
     x, y = xy
@@ -225,6 +252,10 @@ def main():
     # At 64 px the character inside the seal is mud, but the red block still reads as a dot of pigment; at 32 the
     # ring alone carries the mark.
     ensō(64, seal_glyph=None).save(os.path.join(RES_DIR, "ukiyo-mark-64.png"))
+    # The stamp alone, for the rail and for anything smaller than 64 px.
+    hanko(128).save(os.path.join(RES_DIR, "ukiyo-seal.png"))
+    hanko(64).save(os.path.join(RES_DIR, "ukiyo-seal-64.png"))
+    hanko(32).save(os.path.join(RES_DIR, "ukiyo-seal-32.png"))
     ensō(32, seal=False).save(os.path.join(RES_DIR, "ukiyo-mark-32.png"))
 
     lockup(1400, 380).save(os.path.join(RES_DIR, "ukiyo-lockup.png"))
