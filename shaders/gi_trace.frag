@@ -1,79 +1,65 @@
 // Real-time diffuse GI: the trace pass.
 //
-// One half-resolution pixel, N cosine-weighted rays into the heightfield, and the hit's radiance read from the last
-// frame's raster result. This is the iGPU answer to the reference's traced GI: no RT cores, no BVH, no compute — a
-// fragment shader, a height function, and eight short marches.
+// One half-resolution pixel, N cosine-weighted rays into the heightfield, and the hit's radiance read from this
+// frame's raster. This is the iGPU answer to the reference's traced GI: no RT cores, no BVH, no compute — a fragment
+// shader, a height function, and eight short marches.
 //
 // The heightfield is the scene. Terrain is a heightmap, so a ray does not need an acceleration structure: it marches
 // with a step that grows with the height above the ground and refines the hit by bisection, exactly as
 // tools/pathtrace_preview.cpp does. Entries that a heightfield cannot express (props, characters) simply do not
 // occlude the bounce; the engine's SSAO still darkens their contact.
 //
-// Inputs:  uTex0 previous frame's HDR raster (full resolution), uDepth scene depth, uNormal view-space normals.
-// Output:  RGBA16F half-resolution GI in linear radiance, alpha = mean albedo for the composite.
+// What the pass writes is the *difference* between the traced bounce and the ambient the raster already added:
 //
-// Push constants (five vectors, so the whole pass fits the engine's 128-byte push block):
-//   model = inverse(viewProj)                       depth -> world
-//   (frame.viewProj, frame.view and frame.camPos are in the Frame set, which this pass also binds: the camera basis
-//   turns the view-space normals into world space and the projection turns a hit back into screen UV.)
+//     out = albedo * (mean incoming radiance over the hemisphere - unoccluded hemisphere ambient)
+//
+// The raster frame contains `albedo * hemi(n)` for the sky, so adding the full traced integral would count the sky
+// twice and the scene would brighten whenever GI was switched on. Subtracting the same hemisphere model the terrain
+// shader uses (frame.skyColor / frame.groundColor) makes an open, flat surface land on zero and leaves only occlusion
+// and the bounce. The albedo is the terrain's own, averaged to the heightfield's resolution and carried in the
+// height texture's G, B and A channels (see uploadTerrain in src/engine/terrain_gpu.cpp).
+//
+// Inputs (Post set, set 1 in the pipeline layout because the Frame set is set 0):
+//   uHeight  R = height normalised to heightScale, GBA = albedo in 0..1, one texel per heightfield sample
+//   uRaster  this frame's HDR raster; the radiance a bounce ray lands on
+//   uDepth   scene depth, uNormal view-space normal (alpha 1 = surface)
+//
+// Push constants:
+//   model = inverse(viewProj)                      depth -> world
 //   p0    = (heightCellSize, heightScale, marchDistance, hitBias)
-//   p1    = (sunDir.xyz, raysPerPixel)
-//   p2    = (frame, noiseSeed, 0, 0)
-//   p2    = (frame, noiseSeed, reprojectScale, 0)
+//   p1    = (raysPerPixel, 0, 0, 0)
+//   p2    = (tileOriginX, tileOriginZ, tileOriginY, frameIndex)
 //
-// Reprojection: the pass does not own a previous viewProj, and the Post set has no uniform buffer to put one in. The
-// camera's motion between two frames is small, so the previous frame's UV is approximated from the current one by
-// the per-frame screen-space offset the renderer computes on the CPU (pc.p2.z applies it as a scale on the offset
-// from the screen centre). The error is bounded by the camera's own rotation over one frame and the accumulation
-// pass discards history where depth disagrees.
-//
-// `model` carries inverse(viewProj) so a depth value can be turned into a world position here, the same way
-// effects.frag does it. The heightmap texture is the uHeight sampler in slot 2, R32F, with the tile at texel centres.
+// The camera basis and the ambient colours come from the Frame set, which this pass also binds.
 #include "common.glsl"
 
 #include "frame.glsl"
-TEX(0, 3) uniform sampler2D uPrev;      // previous frame's raster HDR (binding 3: the GL backend shares one unit
-                                        // space across sets, and binding 1 is the Frame set's shadow atlas)
-TEX(0, 2) uniform sampler2D uHeight;    // heightmap, R channel, metres
-TEX(0, 3) uniform sampler2D uDepth;     // scene depth
-TEX(0, 4) uniform sampler2D uNormal;    // view-space normal, alpha 1 = surface
+TEX(1, 2) uniform sampler2D uHeight;    // R height, GBA albedo (linear)
+TEX(1, 3) uniform sampler2D uRaster;    // this frame's HDR raster
+TEX(1, 4) uniform sampler2D uDepth;     // scene depth
+TEX(1, 5) uniform sampler2D uNormal;    // view-space normal
 layout(location = 0) in vec2 vUV;
 layout(location = 0) out vec4 outColor;
 
 float hash21(vec2 p) { return fract(sin(dot(p, vec2(12.9898, 78.233))) * 43758.5453); }
 
-// The inverse ACES curve the sky is authored through (see tools/pathtrace_preview.cpp). Authoring the sky in display
-// space and converting back is what keeps the horizon the colour it was designed to be.
-float inverseAces(float y) {
-    y = clamp(y, 0.0, 0.995);
-    float a = 2.51, b = 0.03, c = 2.43, d = 0.59, e = 0.14;
-    float A = c * y - a, B = d * y - b, C = e * y;
-    float disc = B * B - 4.0 * A * C;
-    if (disc < 0.0) return 0.0;
-    float sq = sqrt(disc);
-    return max(0.0, max((-B + sq) / (2.0 * A), (-B - sq) / (2.0 * A)));
-}
-vec3 fromDisplay(vec3 c) {
-    c = pow(clamp(c, 0.0, 1.0), vec3(2.2));
-    return vec3(inverseAces(c.r), inverseAces(c.g), inverseAces(c.b));
-}
-// The sky of the estimator. Cheaper than the tracer's: the cirrus deck is two noise octaves instead of five and the
-// sun glow is a single lobe. It is sampled by rays that leave the heightfield, so it has to be the same colour as
-// the sky the raster pass draws or the bounce will not match it.
-vec3 sky(vec3 d, vec3 sunDir) {
-    float up = clamp(d.y, 0.0, 1.0);
-    vec3 disp = mix(vec3(0.90, 0.78, 0.62), vec3(0.18, 0.38, 0.68), pow(up, 0.42));
-    disp = mix(disp, vec3(0.94, 0.89, 0.82), exp(-up * 11.0) * 0.45);
-    float cs = max(dot(d, sunDir), 0.0);
-    disp += vec3(1.0, 0.86, 0.66) * (pow(cs, 900.0) * 0.55 + pow(cs, 24.0) * 0.10 + pow(cs, 4.0) * 0.035);
-    return fromDisplay(disp);
+// Metres from the tile's first sample. The engine's terrain instances translate a tile built at the origin; they do
+// not rotate or scale it, which is the assumption the whole heightfield estimator is built on.
+vec2 tileLocal(vec2 xz) { return xz - pc.p2.xy; }
+
+// World xz -> the height texture's uv. Sample i sits at texel centre (i + 0.5) / size.
+vec2 heightUV(vec2 xz) {
+    float size = float(textureSize(uHeight, 0).x);
+    return clamp((tileLocal(xz) / max(pc.p0.x, 1e-3) + 0.5) / size, vec2(0.0), vec2(1.0));
 }
 
 float heightMetres(vec2 xz) {
-    // The heightmap is stored normalised; the tile is heightCellSize metres per texel and heightScale metres tall.
-    float texels = float(textureSize(uHeight, 0).x - 1);
-    vec2 uv = clamp(xz / max(pc.p0.x, 1e-3) / max(texels, 1.0), vec2(0.0), vec2(1.0));
-    return texture(uHeight, uv).r * pc.p0.y;
+    return texture(uHeight, heightUV(xz)).r * pc.p0.y + pc.p2.z;
+}
+
+// The terrain's diffuse colour, averaged to the heightfield's resolution.
+vec3 albedoAt(vec2 xz) {
+    return max(texture(uHeight, heightUV(xz)).gba, vec3(0.015));
 }
 
 vec3 normalAt(vec2 xz) {
@@ -83,15 +69,27 @@ vec3 normalAt(vec2 xz) {
     return normalize(vec3(hl - hr, 2.0 * e, hd - hu));
 }
 
+// The raster's ambient model, integrated over the cosine hemisphere. frame.skyColor / groundColor are the same
+// colours shaders/terrain.frag mixes, so a ray that escapes returns exactly what the raster added for a sky sample
+// and the difference is zero on open ground. For a linear function of d.y, the cosine-weighted mean is
+// 0.5 + n.y / 3 (the hemisphere average of d.y is 2/3).
+vec3 skyRadiance(vec3 d) { return mix(frame.groundColor.rgb, frame.skyColor.rgb, 0.5 + 0.5 * d.y); }
+vec3 hemiAmbient(vec3 n) { return mix(frame.groundColor.rgb, frame.skyColor.rgb, 0.5 + n.y / 3.0); }
+
 // Adaptive march plus bisection: the step grows with the height above the ground, so empty air costs almost nothing
-// and the hit lands within a few centimetres.
+// and the hit lands within a few centimetres. A heightfield is one height per xz, so the march can never step *over*
+// a ridge it is heading into; that bound is the whole reason this costs a handful of taps instead of a BVH
+// traversal, and it is why an iGPU can run it.
 bool march(vec3 ro, vec3 rd, float tmax, out float tout, out vec3 nout) {
+    const int kSteps = 48;
     float t = 0.02;
-    float limit = pc.p0.x * (float(textureSize(uHeight, 0).x) - 1.0) + 8.0;
-    for (int i = 0; i < 64; ++i) {
+    float size = float(textureSize(uHeight, 0).x);
+    float extent = pc.p0.x * (size - 1.0);
+    for (int i = 0; i < kSteps; ++i) {
         if (t >= tmax) return false;
         vec3 p = ro + rd * t;
-        if (p.x < -8.0 || p.z < -8.0 || p.x > limit || p.z > limit) return false;
+        vec2 local = tileLocal(p.xz);
+        if (local.x < -4.0 || local.y < -4.0 || local.x > extent + 4.0 || local.y > extent + 4.0) return false;
         float h = heightMetres(p.xz);
         if (p.y <= h) {
             float lo = max(0.0, t - 2.0), hi = t;
@@ -104,10 +102,10 @@ bool march(vec3 ro, vec3 rd, float tmax, out float tout, out vec3 nout) {
             nout = normalAt((ro + rd * hi).xz);
             return true;
         }
-        // A heightfield is one height per xz, so a march can never step *over* a ridge it is heading into: the step
-        // below is bounded by how far the ray can fall before it reaches the ground. That is the whole reason this
-        // costs a handful of taps instead of a BVH traversal, and it is why an iGPU can run it.
-        t += max(0.08, min((p.y - h) * 0.55, max(0.1, (p.y - h) / max(0.08, -rd.y + 0.08))));
+        // Bound the step by how far the ray can fall before it reaches the ground, and by a cap so a ray aimed at
+        // the sky does not spend the whole budget stepping upward. 0.6 m reaches the far end of a 12 m ray in 20 taps.
+        float air = p.y - h;
+        t += clamp(min(air * 0.55, air / max(0.08, -rd.y + 0.08)), 0.08, 0.6);
     }
     return false;
 }
@@ -121,19 +119,21 @@ void main() {
     vec4 world = pc.model * clip;
     vec3 P = world.xyz / world.w;
 
-    // View-space normal -> world. The camera basis comes from the Post set's uniform, filled with the view matrix's
-    // 3x3 on the CPU; a mat3 of inverse(viewProj) is not a rotation and cannot do this job.
-    vec3 Nv = normalize(texture(uNormal, vUV).xyz);
-    vec3 Nd = normalize(mat3(frame.view) * Nv);
-    vec3 sunDir = pc.p1.xyz;
-    float n = pc.p1.w;
+    // World normal. Props and characters are in the normal pre-pass, encoded as view-space * 0.5 + 0.5; terrain is
+    // not (it is drawn after the opaque list), so a pixel with no pre-pass normal takes the heightfield's own normal
+    // — which is also the surface the rays are marching, so the two agree by construction.
+    vec4 nS = texture(uNormal, vUV);
+    vec3 Nd = nS.a > 0.5 ? normalize(mat3(frame.view) * normalize(nS.xyz * 2.0 - 1.0)) : normalAt(P.xz);
+    vec3 albedo = albedoAt(P.xz);
+    float n = max(pc.p1.x, 1.0);
     float radius = pc.p0.z;
     float bias = pc.p0.w;
     vec3 sum = vec3(0.0);
-    float seed = hash21(gl_FragCoord.xy + pc.p2.z);
+    // A per-pixel, per-frame offset: the rays rotate a little every frame so the accumulation converges on the
+    // integral instead of on one fixed set of directions.
+    float seed = hash21(gl_FragCoord.xy + pc.p2.w * 1.618034);
     for (int i = 0; i < 8; ++i) {
         if (float(i) >= n) break;
-        // Cosine-weighted direction around the normal, with a stratified azimuth.
         float u1 = fract(seed + float(i) * 0.6180339);
         float u2 = fract(seed * 1.37 + float(i) * 0.7548776);
         float r = sqrt(u1);
@@ -144,16 +144,18 @@ void main() {
         float t = 0.0;
         vec3 hn;
         if (march(P + Nd * bias, d, radius, t, hn)) {
-            // Project the hit into the previous frame's raster and take its radiance. The reprojection error this
-            // introduces is bounded by the march's radius; when the hit is off screen the sky is the better guess.
-            // Previous-frame UV from this frame's projection, shifted by the camera's screen-space motion.
+            // The radiance leaving the hit surface, from this frame's raster. Reading the raster rather than the
+            // previous frame's composited image keeps the estimator from feeding its own output back into the rays,
+            // which would amplify the bounce every frame.
             vec3 hp = P + Nd * bias + d * t;
             vec4 hc = frame.viewProj * vec4(hp, 1.0);
-            vec2 uv = (hc.xy / max(hc.w, 1e-4)) * 0.5 + 0.5 - (vUV - 0.5) * (pc.p2.z - 1.0);
-            sum += (all(greaterThan(uv, vec2(0.0))) && all(lessThan(uv, vec2(1.0)))) ? texture(uPrev, uv).rgb : sky(d, sunDir);
+            vec2 uv = (hc.xy / max(hc.w, 1e-4)) * 0.5 + 0.5;
+            sum += (all(greaterThan(uv, vec2(0.0))) && all(lessThan(uv, vec2(1.0)))) ? texture(uRaster, uv).rgb
+                                                                                   : skyRadiance(d);
         } else {
-            sum += sky(d, sunDir);
+            sum += skyRadiance(d);
         }
     }
-    outColor = vec4(sum / max(n, 1.0), 1.0);
+    // The delta, not the integral: what the raster's ambient did not already account for.
+    outColor = vec4(albedo * (sum / n - hemiAmbient(Nd)), 1.0);
 }

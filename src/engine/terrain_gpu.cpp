@@ -96,8 +96,31 @@ bool uploadTerrain(rhi::Device& device, const Heightmap& map, uint32_t cells, co
         g.detailTexture = device.createTexture(td, white.data());
     }
 
-    // The heightmap, for the GI pass: heights in metres in the red channel. The tile is `map.size` samples square;
-    // the shader reconstructs metres from the texture's own size, so no metadata has to travel with it.
+    // The heightmap, for the GI pass: R is the normalised height, GBA the terrain's albedo at that sample. The tile is
+    // `map.size` samples square; the shader reconstructs metres from the texture's own size, so no metadata travels
+    // with it.
+    //
+    // The albedo is the layer blend *averaged to the heightfield's resolution*, not the blended texture: a texel here
+    // covers map.cellSize metres, so the detail the surface shader shows at centimetre scale is not representable and
+    // is not what a twelve-metre bounce needs. Each layer's mean colour comes from its own atlas cell, times the
+    // layer tint the surface shader multiplies in. The detail overlay and the macro variation are left out: they vary
+    // by ±20 %, and the bounce they modulate is a few percent of the frame.
+    glm::vec3 layerMean[kTerrainMaxLayers]{};
+    {
+        const uint32_t cw = atlases.width / kTerrainAtlasCols, ch = atlases.height / kTerrainAtlasRows;
+        for (size_t k = 0; k < layers.size() && k < kTerrainMaxLayers; ++k) {
+            const uint32_t cx = uint32_t(k % kTerrainAtlasCols) * cw, cy = uint32_t(k / kTerrainAtlasCols) * ch;
+            double sum[3] = {0, 0, 0};
+            for (uint32_t y = 0; y < ch; ++y) {
+                const uint8_t* row = &atlases.diffuse[(size_t(cy + y) * atlases.width + cx) * 4];
+                for (uint32_t x = 0; x < cw; ++x)
+                    for (int c = 0; c < 3; ++c) sum[c] += double(row[size_t(x) * 4 + size_t(c)]) / 255.0;
+            }
+            const double inv = 1.0 / (double(cw) * double(ch));
+            layerMean[k] = glm::vec3(float(sum[0] * inv), float(sum[1] * inv), float(sum[2] * inv)) *
+                           glm::vec3(layers[k].colour);
+        }
+    }
     {
         rhi::TextureDesc hd;
         hd.width = uint32_t(map.size);
@@ -106,14 +129,19 @@ bool uploadTerrain(rhi::Device& device, const Heightmap& map, uint32_t cells, co
         hd.filter = rhi::Filter::Linear;
         hd.wrap = rhi::Wrap::Clamp;
         // RGBA16F uploads go through the RGBA8 path in the RHI, which is not right for float data; store the height
-        // normalised to 0..1 in red with the other channels free and let the shader scale by heightScale. That keeps
-        // the texture an ordinary 8-bit texture, which every backend here can create, and 1/255 of the tile's height
-        // is 5 cm — under the estimator's own step size.
-        std::vector<uint8_t> pixels(size_t(map.size) * size_t(map.size) * 4, 0);
+        // normalised to 0..1 in red and let the shader scale by heightScale. That keeps the texture an ordinary 8-bit
+        // texture, which every backend here can create, and 1/255 of the tile's height is 5 cm — under the estimator's
+        // own step size. The albedo shares the remaining channels; 1/255 of a 0.1 albedo is 4 %, and the bounce it
+        // scales is a few percent of the frame, so 8 bits are enough here where they would not be for a G-buffer.
+        std::vector<uint8_t> pixels(size_t(map.size) * size_t(map.size) * 4, 255);
         for (size_t i = 0; i < map.samples.size() && i < size_t(map.size) * size_t(map.size); ++i) {
             const float n = std::clamp(map.samples[i], 0.0f, 1.0f);
+            glm::vec3 a(0.0f);
+            const float* w = &weights[i * kTerrainMaxLayers];
+            for (size_t k = 0; k < layers.size() && k < kTerrainMaxLayers; ++k) a += w[k] * layerMean[k];
+            a = glm::clamp(a, glm::vec3(0.0f), glm::vec3(1.0f));
             pixels[i * 4 + 0] = uint8_t(n * 255.0f + 0.5f);
-            pixels[i * 4 + 3] = 255;
+            for (int c = 0; c < 3; ++c) pixels[i * 4 + 1 + c] = uint8_t(a[c] * 255.0f + 0.5f);
         }
         hd.format = rhi::Format::RGBA8;
         g.heightTexture = device.createTexture(hd, pixels.data());

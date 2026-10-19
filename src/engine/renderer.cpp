@@ -204,9 +204,10 @@ void Renderer::buildPipelines() {
                     rhi::Cull::Back, true, false, rhi::Blend::None, {F::RGBA8}, true);
     pEffects_ = make("fullscreen", "effects", {S::Post}, false, rhi::Cull::None, false, false,
                      rhi::Blend::None, {F::RGBA16F}, false);
-    // Real-time GI: the trace pass also needs the Frame set (camera basis and projection) and the heightmap, which is
-    // bound at Post binding 5. The accumulation and the composite are plain Post passes.
-    pGiTrace_ = make("fullscreen", "gi_trace", {S::Post, S::Frame}, false, rhi::Cull::None, false, false,
+    // Real-time GI: the trace pass needs the Frame set (camera basis, ambient colours, projection) *and* the Post set
+    // (heightmap, raster, depth, normals). The Frame set must be set 0 and the Post set 1, because the shader includes
+    // frame.glsl, whose uniforms live in set 0 on Vulkan; the renderer binds the sets in this order.
+    pGiTrace_ = make("fullscreen", "gi_trace", {S::Frame, S::Post}, false, rhi::Cull::None, false, false,
                      rhi::Blend::None, {F::RGBA16F}, false);
     pGiAccum_ = make("fullscreen", "gi_accum", {S::Post}, false, rhi::Cull::None, false, false,
                      rhi::Blend::None, {F::RGBA16F}, false);
@@ -520,7 +521,9 @@ void Renderer::buildPostSets() {
     // to hold a valid image, because a sampled binding cannot be left empty.
     setEffects_->setTexture(5, blueNoise_.get());
     setGiTrace_ = dev_.createDescriptorSet(rhi::SetType::Post);
-    setGiTrace_->setTexture(3, fxHdr_.get());   // previous frame's raster; binding 1 clashes with the Frame set on GL
+    // Unit 1 is the Frame set's shadow atlas on the shared GL texture-unit space; 2 is the heightmap (bound per frame,
+    // because the terrain under the camera can change), 3 the raster, 4 depth, 5 normals.
+    setGiTrace_->setTexture(3, hdr_.get());
     setGiTrace_->setTexture(4, depth_.get());
     setGiTrace_->setTexture(5, normal_.get());
     for (int i = 0; i < 2; ++i) {
@@ -528,6 +531,7 @@ void Renderer::buildPostSets() {
         setGiAccum_[i]->setTexture(1, gi_.get());
         setGiAccum_[i]->setTexture(2, giHist_[1 - i].get());
         setGiAccum_[i]->setTexture(4, depth_.get());
+        setGiAccum_[i]->setTexture(5, velocity_.get());   // reprojects the history with the engine's motion vectors
     }
     giFrame_ = 0;
     giWrite_ = 0;
@@ -1119,21 +1123,24 @@ void Renderer::render(const OrbitCamera& cam, const std::vector<Model*>& models,
         dev_.endPass();
     }
 
-    // 2b2. Real-time GI (the iGPU path tracer, docs/PATHTRACE.md §6). Three passes at half resolution: trace one
-    // bounce per half-res pixel from the raster frame of the *previous* frame, accumulate it, and leave the result in
-    // a texture the effects pass composites at full resolution with a depth-guided bilateral filter. The trace reads
-    // the previous frame's HDR because the frame currently in fxHdr_ is the result of the effects pass, which runs
-    // after this one; the surface being lit is this frame's (depth and normals were written by the geometry passes).
+    // 2b2. Real-time GI (the iGPU path tracer, docs/PATHTRACE.md §4). Two passes at half resolution: trace one bounce
+    // per half-res pixel against the heightfield, accumulate it over frames, and leave the result in a texture the
+    // effects pass composites at full resolution with a depth-guided bilateral filter. The rays read this frame's
+    // raster (hdr_, before the effects pass runs), so the estimator never feeds its own output back into itself.
     const bool giOn = s.gi > 0.0f && heightfield_.height != nullptr && hdr_ && depth_ && normal_;
     bool giComposite = false;
     if (giOn) {
         const uint32_t gw = std::max(1u, intW_ / 2), gh = std::max(1u, intH_ / 2);
-        // The trace's push constants: inverse viewProj in `model`, then the heightfield and ray parameters.
+        // The trace's push constants: inverse viewProj in `model`, the heightfield and ray parameters, and the tile
+        // origin (the shader works in metres from the tile's first sample).
         glm::mat4 invVP = glm::inverse(f.viewProj);
         PushConstants tp = pcWith(invVP, glm::vec4(heightfield_.cellSize, heightfield_.heightScale, s.giRadius, 0.05f),
-                                  glm::vec4(L.x, L.y, L.z, std::clamp(s.giRays, 1.0f, 8.0f)),
-                                  glm::vec4(float(giFrame_), 0.0f, 0.0f, 0.0f));
+                                  glm::vec4(std::clamp(s.giRays, 1.0f, 8.0f), 0.0f, 0.0f, 0.0f),
+                                  glm::vec4(heightfield_.origin.x, heightfield_.origin.z, heightfield_.origin.y,
+                                            float(giFrame_)));
         // The trace needs the Frame set too, so it is bound by hand rather than through post(), which binds only set 0.
+        // The heightmap is pointer-stable for a tile but the camera can move to another tile, so it is (re)bound here.
+        setGiTrace_->setTexture(2, heightfield_.height);
         {
             rhi::PassDesc pd;
             pd.colors = {gi_.get()};
@@ -1142,8 +1149,8 @@ void Renderer::render(const OrbitCamera& cam, const std::vector<Model*>& models,
             dev_.beginPass(pd);
             dev_.setViewport(0, 0, gw, gh);
             dev_.bindPipeline(pGiTrace_.get());
-            dev_.bindDescriptorSet(0, setGiTrace_.get());
-            dev_.bindDescriptorSet(1, frameSet_.get());
+            dev_.bindDescriptorSet(0, frameSet_.get());
+            dev_.bindDescriptorSet(1, setGiTrace_.get());
             dev_.pushConstants(&tp, sizeof(tp));
             dev_.drawFullscreen();
             dev_.endPass();
@@ -1155,7 +1162,7 @@ void Renderer::render(const OrbitCamera& cam, const std::vector<Model*>& models,
              pcWith(glm::mat4(1.0f), glm::vec4(weight, 0, 0, 0),
                     glm::vec4(1.0f / float(intW_), 1.0f / float(intH_), 0, 0)),
              int(intW_) / 2, int(intH_) / 2);
-        // The effects pass composites it: binding 5 carries the accumulated GI, and p2.x its strength.
+        // The effects pass composites it: binding 5 carries the accumulated GI, and p3.w its strength.
         setEffects_->setTexture(5, giHist_[giWrite_].get());
         giComposite = true;
         giWrite_ ^= 1;

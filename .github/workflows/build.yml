@@ -33,6 +33,10 @@ jobs:
         run: ./build/vgeom_test
       - name: Run Motion Matching Test
         run: ./build/motion_test
+      # Bindings are the one class of shader bug a compiler cannot see and CI has no GPU to catch. This resolves the
+      # includes and fails on two samplers at one (set, binding), or two bindings on one GL texture unit.
+      - name: Audit shader descriptor bindings
+        run: python3 tools/shader_bindings.py shaders
       # The real-time GI estimator against the tracer, in the same units and on the same scene. Slower than the other
       # steps on purpose: the reference is 32 samples a pixel. It writes renders/gi-*.png and reports the RMSE.
       - name: Real-time GI estimator

@@ -153,7 +153,9 @@ void main() {
     // Traced diffuse GI, composited at full resolution from the half-resolution accumulation. A 3x3 tent weighted by
     // depth, so the valley does not receive the bounce of the hill in front of it. This is the pass that makes the
     // renderer's ambient *traced* rather than a hemisphere guess: the same one bounce the CPU reference takes.
-    if (surface && hasN && pc.p3.w > 0.0) {
+    // The GI branch is gated on `surface`, not `hasN`: terrain is not in the normal pre-pass, so its alpha is 0,
+    // and it is exactly the surface the heightfield estimator exists for.
+    if (surface && pc.p3.w > 0.0) {
         vec3 acc = vec3(0.0);
         float wsum = 0.0;
         float myEye = eyeDist(d);

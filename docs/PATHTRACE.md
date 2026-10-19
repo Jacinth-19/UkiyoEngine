@@ -80,10 +80,11 @@ in C++ as `pathtrace_preview realtime` so that it can be validated against the t
 | --- | --- | --- |
 | Resolution | full | half, then a depth-guided bilateral upsample |
 | Rays | 64–96 per pixel, jittered, all independent | 4–8 per *half-resolution* pixel per frame |
-| Secondary light | traced again, recursively | the previous frame's raster result, reprojected by screen position |
+| Secondary light | traced again, recursively | the frame's raster result, read at the hit's screen position |
 | Noise | averaged over samples per frame | accumulated over frames (16, exponential) |
 | Termination | one cosine bounce, 85 % | one cosine bounce, every ray |
 | Marching | adaptive steps + 26 bisection steps | adaptive steps + 8 bisection steps, 8 taps typical |
+| What is added | the whole image | the *difference* from the ambient the raster already added, times the surface albedo |
 | Cost | 4–5 µs/thread/sample/pixel | one march per ray |
 
 **Why it is affordable.** A heightfield has one height per xz, so a ray cannot step *over* a ridge it is heading into:
@@ -93,10 +94,18 @@ texture fetches. At 1280 × 720 with four rays per half-resolution pixel that is
 a frame — arithmetic and texture bandwidth an integrated GPU has, unlike BVH traversal.
 
 **Why it is not noise.** Eight rays are noisy, but the sun and the geometry do not move much per frame, and the GI
-signal is low-frequency. The accumulation pass averages sixteen frames of samples with a depth test that throws the
-history away where the surface changed, so what reaches the screen has 64–128 rays of effective sampling at the cost
-of eight. That is the same trade the reference makes with DLSS Ray Reconstruction, done with a blur instead of a
-neural network — less sharp, and it runs anywhere.
+signal is low-frequency. The accumulation pass averages sixteen frames of samples, reprojecting the history with the
+engine's motion vectors and throwing it away where the reprojected depth belongs to another surface, so what reaches
+the screen has 64–128 rays of effective sampling at the cost of eight. That is the same trade the reference makes with
+DLSS Ray Reconstruction, done with a reprojection and a blur instead of a neural network — less sharp, and it runs
+anywhere.
+
+**Why it does not brighten the scene.** The traced integral is not added to the frame. The raster already added an
+unoccluded sky ambient to every surface, so the pass computes the *difference*: rays that escape return the same
+hemisphere model the terrain shader uses, an open flat surface lands on zero, and a valley gains the light it was
+missing while a lit ridge keeps what it had. The difference is multiplied by the terrain's albedo, averaged to the
+heightfield's resolution and carried in the height texture's spare channels. Reading this frame's raster (rather than
+the previous frame's composited image) keeps the estimator from feeding its own output back into its rays.
 
 **Measured against the tracer.** Same scene, same camera, same curves (`pathtrace_preview realtime out.png . 480 270
 16 8 64` renders the estimate, the 64-spp reference and the difference):
@@ -119,6 +128,13 @@ lighting matches the reference closely, the fine detail cannot*.
 
 *The bounce light in the basins and the shading on the far ridges match; the residual is trace noise in the reference
 and a one-pixel silhouette line.*
+
+**Where the albedo and the normals come from.** A bounce is `albedo × incoming radiance`, and a full-resolution
+albedo is not something a half-resolution pass has: the trace takes the terrain's own layer blend, averaged to the
+heightfield's resolution, from the height texture's spare channels (R is the height; G, B and A are the albedo). Props
+and characters are not in the heightfield, so their pixels take the ground's albedo beneath them. Normals come from
+the engine's normal pre-pass where it has a surface and from the heightfield's own gradient on terrain, which is not
+in that pre-pass — the same surface the rays march, so the two agree.
 
 **Cost on the CPU twin**, two threads, 480 × 270: the raster pass (whose direct light comes from shadow rays in the
 twin) is 286 ms one-off, and the estimator is 114 ms a frame at eight rays — 0.31 M rays. On the GPU the same work is a

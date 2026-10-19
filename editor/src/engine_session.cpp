@@ -4,6 +4,7 @@
 #include "scene_file.h"
 
 #include <algorithm>
+#include <cmath>
 #include <cstdlib>
 #include <limits>
 #include <cstring>
@@ -978,6 +979,10 @@ QImage EngineSession::render(const OrbitCamera& cam, float time, float dt, const
         float best = std::numeric_limits<float>::max();
         for (const Instance& in : instances_) {
             if (!in.terrainGpu || !in.terrainGpu->heightTexture) continue;
+            // The estimator reads the tile as an axis-aligned height function of world xz, so a rotated tile would
+            // light the wrong ground. Tiles are placed by translation in this editor; a yaw is not supported.
+            const float yaw = std::fmod(std::fabs(in.yawDeg), 360.0f);
+            if (yaw > 0.01f && yaw < 359.99f) continue;
             const float d = glm::length(glm::vec2(in.position[0], in.position[2]) - glm::vec2(cam.eye().x, cam.eye().z));
             if (d >= best) continue;
             best = d;
