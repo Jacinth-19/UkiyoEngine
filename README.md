@@ -20,8 +20,10 @@ The workspace is three programs and two libraries:
 | --- | --- |
 | ![Terrain](docs/terrain-hero.png) | ![Virtual geometry](docs/vgeom-levels.png) |
 | The Terrain Lab tile with the vendored ground textures and grass, rendered offline by `terrain_preview` (see [docs/TERRAIN.md](docs/TERRAIN.md)). | The same 131 072-triangle tile built into a virtual-geometry cluster tree, cut at 1 px and 8 px (see [docs/VGEOM.md](docs/VGEOM.md)). |
-| ![Path traced](docs/pathtrace-terrain.png) | ![Motion matching](docs/motion-demo.png) |
-| The same scene through a CPU path tracer — one cosine bounce, ray-marched sun shadows, the engine's layer weights and textures. The ground truth the real-time renderer is measured against, and it runs on any machine (see [docs/PATHTRACE.md](docs/PATHTRACE.md)). | Ten seconds of motion matching: the route, the footprints, and four poses from the run. Walk, run and idle are chosen by the matcher from 900 database entries (see [docs/MOTION.md](docs/MOTION.md)). |
+| ![Path traced](docs/pathtrace-terrain.png) | ![Traced bounce light](docs/gi-realtime.png) |
+| The same scene through a CPU path tracer — one cosine bounce, ray-marched sun shadows, the engine's layer weights and textures. The ground truth the real-time renderer is measured against, and it runs on any machine (see [docs/PATHTRACE.md](docs/PATHTRACE.md)). | The same scene through the **real-time estimator** that runs in the renderer: one traced bounce at half resolution, accumulated over sixteen frames, composited at full resolution. RMSE 0.033 against a 64-sample tracer, in a fragment shader with no ray-tracing feature at all. |
+| ![Motion matching](docs/motion-demo.png) | ![Splash](docs/splash.png) |
+| Ten seconds of motion matching: the route, the footprints, and four poses from the run. Walk, run and idle are chosen by the matcher from 900 database entries (see [docs/MOTION.md](docs/MOTION.md)). | The launcher's splash, drawn in C++ with the woodblock artwork and the determinate bar. |
 
 The hub is the first thing anyone sees, so it is checked like a screen and not like a build artifact: CI captures its
 three pages offscreen with `ukiyo_hub --screenshots renders` and commits them to `docs/hub/`, so the images below are
