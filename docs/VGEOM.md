@@ -15,10 +15,10 @@ actually has, and the differences are written down in [§7](#7-what-is-different
 ![The Terrain Lab tile, source and two cuts](vgeom-levels.png)
 
 *The 131 072-triangle Terrain Lab tile built into one tree, from the same camera. **Left:** every source triangle.
-**Middle:** the cut at a 1 px error budget — 41 279 triangles in 321 clusters, almost all leaves. **Right:** the cut at
-8 px — 17 306 triangles in 91 clusters, mostly level 1–2. Clusters are tinted by level (green leaf → blue root). Made
+**Middle:** the cut at a 1 px error budget — 41 407 triangles in 322 clusters, almost all leaves. **Right:** the cut at
+8 px — 17 632 triangles in 93 clusters, mostly level 1–2. Clusters are tinted by level (green leaf → blue root). Made
 offline by `tools/vgeom_preview.cpp`; the cut, the ranges and the counts are the engine's, only the shading is the
-tool's. A pixel-exact comparison against the source leaves 3 of 373 280 pixels uncovered, all on the tile's border.*
+tool's. A pixel-exact comparison against the source leaves 5 of 367 742 pixels uncovered, all on the tile's border.*
 
 ## 1. What the reference does, and what carries over
 
@@ -102,9 +102,10 @@ reuses it:
 * **Colour, depth prepass, outlines, graph materials** draw the cut. The selected clusters are sorted by `firstIndex`
   and adjacent ranges are merged, so a near cut of contiguous leaves becomes a handful of `drawIndexed` calls instead
   of one per cluster.
-* **Shadows** do not use the cut. The pass wants the source surface, and the leaves *are* the source index buffer, so
-  it draws exactly what it drew before the feature existed.
-* **Distance LOD** (`buildModelLods`, item 15) is skipped for a primitive that has a tree; the two do not fight.
+* **Shadows** keep the classic path. The shadow pipeline binds the distance-LOD index buffer it bound before the
+  feature existed, so a cut never changes a shadow silhouette and a coarse parent never opens a gap in one.
+* **Distance LOD** (`buildModelLods`, item 15) still picks that shadow buffer; the colour passes ignore it for a
+  primitive with a tree, so the two do not fight.
 
 The renderer exposes `lastVGeomStats()` (clusters, leaves, triangles, culled).
 
@@ -129,14 +130,14 @@ On the Terrain Lab mesh, from the camera in the figure:
 | Budget | Clusters | Triangles | Share of source |
 | --- | --- | --- | --- |
 | source | — | 131 072 | 100 % |
-| 0.25 px | 352 | 45 159 | 34.5 % |
-| 1 px | 321 | 41 279 | 31.5 % |
-| 8 px | 91 | 17 306 | 13.2 % |
+| 0.25 px | 360 | 46 193 | 35.2 % |
+| 1 px | 322 | 41 407 | 31.6 % |
+| 8 px | 93 | 17 632 | 13.5 % |
 
 The response is gentle because a 256 m tile seen from 300 m is *large on screen*: at a 1 px budget most of it still
-needs leaf-level detail. The same tree from a hover 400 m up collapses to the root's 2 408 triangles. The intended use
-is what the numbers on the right show: a static prop that fills a small part of the frame stops paying for triangles
-nobody can see.
+needs leaf-level detail. The same tree from a 400 m hover at 8 px is 19 360 triangles in 31 clusters (levels 2–3); at
+24 px it is the root, 2 408 triangles, which is exactly what a static prop that fills a small part of the frame
+collapses to.
 
 Costs, measured on this machine (single thread, `-O2`):
 
@@ -162,15 +163,14 @@ with stale-hash and stale-setting rejection.
 mesh, builds the real tree, selects real cuts and rasterizes them with a flat Lambert, tinting each cluster by level.
 
 ```sh
-c++ -O2 -std=c++17 -I src -I third_party -I third_party/meshoptimizer tools/vgeom_preview.cpp
-    src/engine/terrain.cpp src/engine/vgeom.cpp third_party/meshoptimizer/simplifier.cpp
-    third_party/meshoptimizer/allocator.cpp -o build/vgeom_preview
+cmake --build build --target vgeom_preview
 ./build/vgeom_preview docs/vgeom-levels.png . 1800 900
 ```
 
-`VG_EYE=x,y,z` and `VG_TARGET=x,y,z` move the camera; the tool prints the counts and the percentage of source pixels
-a cut left uncovered, which is how the frustum bug above was found (5 % before the fix, 0.000–0.005 % after, and those
-few pixels are the tile's own border).
+`VG_EYE=x,y,z` and `VG_TARGET=x,y,z` move the camera, and `VG_BUDGETS=a,b,c` replaces the three panels' error budgets.
+The tool prints every panel's triangles and clusters, and the percentage of source pixels its cut left uncovered —
+which is how the frustum bug above was found (5 % before the fix, 0.001–0.005 % after, and those few pixels are the
+tile's own border).
 
 ## 7. What is different from Nanite
 

@@ -714,8 +714,8 @@ void Renderer::render(const OrbitCamera& cam, const std::vector<Model*>& models,
         uint32_t ic = 0;
         lodIndices(*r.prim, r.lod, &ib, &ic);
         dev_.bindVertexBuffer(r.prim->vertices.get());
-        // A cut replaces the distance LOD in every pass except the shadow one: a shadow wants the source surface, and
-        // that is the primitive's own index buffer (the leaves of the tree hold exactly those triangles).
+        // A cut replaces the distance LOD in every pass except the shadow one: a shadow keeps the classic index
+        // buffer, so a coarse parent can never open a gap in a shadow map.
         const bool vgeom = r.vgeomCut != nullptr && pipe != pShadow_.get();
         dev_.bindIndexBuffer(vgeom ? r.prim->vgeomIndices.get() : ib);
         dev_.pushConstants(&pc, sizeof(pc));

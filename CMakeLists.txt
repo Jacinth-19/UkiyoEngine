@@ -165,6 +165,15 @@ target_link_libraries(terrain_preview PRIVATE glm::glm)
 target_compile_options(terrain_preview PRIVATE -Wall -Wextra -Wno-missing-field-initializers)
 # Virtual geometry (docs/VGEOM.md). The builder and the selector are CPU code, so this test needs no device and runs
 # anywhere, including CI.
+# The docs figure for docs/VGEOM.md, rendered without a GPU: the same build and the same cuts the renderer uses, with a
+# flat software rasteriser on top. CI compiles it so the tool cannot rot.
+add_executable(vgeom_preview tools/vgeom_preview.cpp src/engine/terrain.cpp src/engine/vgeom.cpp
+               third_party/meshoptimizer/simplifier.cpp third_party/meshoptimizer/allocator.cpp)
+target_include_directories(vgeom_preview PRIVATE ${CMAKE_SOURCE_DIR}/src ${CMAKE_SOURCE_DIR}/third_party
+                           ${CMAKE_SOURCE_DIR}/third_party/meshoptimizer)
+target_link_libraries(vgeom_preview PRIVATE glm::glm)
+target_compile_options(vgeom_preview PRIVATE -Wall -Wextra -Wno-missing-field-initializers)
+
 add_executable(vgeom_test tests/vgeom_test.cpp src/engine/vgeom.cpp third_party/meshoptimizer/simplifier.cpp
                third_party/meshoptimizer/allocator.cpp)
 target_include_directories(vgeom_test PRIVATE ${CMAKE_SOURCE_DIR}/src ${CMAKE_SOURCE_DIR}/third_party

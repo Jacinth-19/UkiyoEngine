@@ -13,6 +13,7 @@
 //     ./build/vgeom_preview docs/vgeom-levels.png . 1800 900
 #include <algorithm>
 #include <cmath>
+#include <cstdint>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -118,6 +119,75 @@ glm::vec3 toSrgb(glm::vec3 c) {
     return glm::vec3(std::pow(c.x, 1.0f / 2.2f), std::pow(c.y, 1.0f / 2.2f), std::pow(c.z, 1.0f / 2.2f));
 }
 
+// A 5x7 bitmap font, just the glyphs this sheet needs. Text is drawn into the final image so the figure stays
+// readable wherever the PNG is embedded; nothing here is part of the engine.
+const uint8_t kGlyphRows[][7] = {
+    {14, 17, 17, 31, 17, 17, 17}, {30, 17, 17, 30, 17, 17, 30}, {14, 17, 16, 16, 16, 17, 14},
+    {30, 17, 17, 17, 17, 17, 30}, {31, 16, 16, 30, 16, 16, 31}, {31, 16, 16, 30, 16, 16, 16},
+    {14, 17, 16, 23, 17, 17, 15}, {17, 17, 17, 31, 17, 17, 17}, {14, 4, 4, 4, 4, 4, 14},
+    {7, 2, 2, 2, 2, 18, 12},     {17, 18, 20, 24, 20, 18, 17}, {16, 16, 16, 16, 16, 16, 31},
+    {17, 27, 21, 21, 17, 17, 17}, {17, 17, 25, 21, 19, 17, 17}, {14, 17, 17, 17, 17, 17, 14},
+    {30, 17, 17, 30, 16, 16, 16}, {14, 17, 17, 17, 21, 18, 13}, {30, 17, 17, 30, 20, 18, 17},
+    {15, 16, 16, 14, 1, 1, 30},   {31, 4, 4, 4, 4, 4, 4},      {17, 17, 17, 17, 17, 17, 14},
+    {17, 17, 17, 17, 17, 10, 4},  {17, 17, 17, 21, 21, 21, 10}, {17, 17, 10, 4, 10, 17, 17},
+    {17, 17, 10, 4, 4, 4, 4},     {31, 1, 2, 4, 8, 16, 31},
+    {14, 17, 19, 21, 25, 17, 14}, {4, 12, 4, 4, 4, 4, 14},      {14, 17, 1, 2, 4, 8, 31},
+    {31, 2, 4, 2, 1, 17, 14},     {2, 6, 10, 18, 31, 2, 2},     {31, 16, 30, 1, 1, 17, 14},
+    {6, 8, 16, 30, 17, 17, 14},   {31, 1, 2, 4, 8, 8, 8},       {14, 17, 17, 14, 17, 17, 14},
+    {14, 17, 17, 15, 1, 2, 12},   {0, 0, 0, 0, 0, 12, 12},      {1, 1, 2, 4, 8, 16, 16},
+    {0, 12, 12, 0, 12, 12, 0},    {24, 25, 2, 4, 8, 19, 3},     {0, 0, 0, 31, 0, 0, 0},
+};
+// Index of a glyph in kGlyphRows, or -1 for a character the sheet does not use.
+int glyphIndex(char c) {
+    if (c >= 'A' && c <= 'Z') return c - 'A';
+    if (c >= '0' && c <= '9') return 26 + (c - '0');
+    switch (c) {
+        case '.': return 36;
+        case '/': return 37;
+        case ':': return 38;
+        case '-': return 39;
+        default: return -1;
+    }
+}
+
+void fillRect(std::vector<glm::vec3>& px, int w, int h, int x0, int y0, int rw, int rh, glm::vec3 c, float alpha) {
+    for (int y = std::max(0, y0); y < std::min(h, y0 + rh); ++y)
+        for (int x = std::max(0, x0); x < std::min(w, x0 + rw); ++x) {
+            glm::vec3& d = px[size_t(y) * w + x];
+            d = glm::mix(d, c, alpha);
+        }
+}
+
+int textWidth(const char* text, int scale) {
+    int n = 0;
+    for (const char* p = text; *p; ++p) n += (*p == ' ' ? 4 : 6) * scale;
+    return n > 0 ? n - scale : 0;
+}
+
+void drawText(std::vector<glm::vec3>& px, int w, int h, int x, int y, const char* text, int scale, glm::vec3 c) {
+    for (const char* p = text; *p; ++p) {
+        if (*p == ' ') { x += 4 * scale; continue; }
+        const int g = glyphIndex(*p);
+        if (g < 0) { x += 6 * scale; continue; }
+        for (int row = 0; row < 7; ++row) {
+            const uint8_t bits = kGlyphRows[g][row];
+            for (int col = 0; col < 5; ++col)
+                if (bits & (1u << (4 - col))) fillRect(px, w, h, x + col * scale, y + row * scale, scale, scale, c, 1.0f);
+        }
+        x += 6 * scale;
+    }
+}
+
+std::string withThousands(size_t v) {
+    std::string digits = std::to_string(v);
+    std::string out;
+    for (size_t i = 0; i < digits.size(); ++i) {
+        if (i && (digits.size() - i) % 3 == 0) out.push_back(' ');
+        out.push_back(digits[i]);
+    }
+    return out;
+}
+
 } // namespace
 
 int main(int argc, char** argv) {
@@ -189,7 +259,7 @@ int main(int argc, char** argv) {
         }
     }
 
-    const int gutter = 12, margin = 12, legend = 34;
+    const int gutter = 12, margin = 12, legend = 46;
     const int panelW = (outW - margin * 2 - gutter * 2) / 3;
     const int panelH = outH - margin * 2 - legend;
 
@@ -211,6 +281,7 @@ int main(int argc, char** argv) {
     view.cull = std::getenv("VG_NOCULL") == nullptr;
     std::vector<glm::vec3> finalPixels(size_t(outW) * outH, glm::vec3(0.045f, 0.050f, 0.058f));
     std::vector<uint8_t> sourceMask(size_t(panelW) * panelH, 0);
+    std::string headline[3], detail[3];
 
     for (int p = 0; p < 3; ++p) {
         Image img;
@@ -238,6 +309,17 @@ int main(int argc, char** argv) {
         const size_t drawn = tris.size();
         std::printf("%-6s %6zu triangles in %5zu clusters -> %.1f%% of the source", panels[p].label, drawn, cut.size(),
                     100.0 * double(drawn) / double(indices.size() / 3));
+        char head[48], sub[64];
+        if (panels[p].pixels > 0.0f) {
+            std::snprintf(head, sizeof(head), "CUT AT %g PX", double(panels[p].pixels));
+            std::snprintf(sub, sizeof(sub), "%s TRIS / %s CLUSTERS", withThousands(drawn).c_str(),
+                          withThousands(cut.size()).c_str());
+        } else {
+            std::snprintf(head, sizeof(head), "SOURCE");
+            std::snprintf(sub, sizeof(sub), "%s TRIS", withThousands(drawn).c_str());
+        }
+        headline[p] = head;
+        detail[p] = sub;
         if (!cut.empty()) {
             int perLevel[8] = {0, 0, 0, 0, 0, 0, 0, 0};
             for (uint32_t id : cut) ++perLevel[std::min<uint32_t>(mesh.clusters[id].level, 7)];
@@ -279,14 +361,29 @@ int main(int argc, char** argv) {
         }
     }
 
+    // Panel captions, on a soft plate so they read over both sky and terrain.
+    for (int p = 0; p < 3; ++p) {
+        const int ox = margin + p * (panelW + gutter) + 3;
+        const int oy = margin + 3;
+        const int tw = std::max(textWidth(headline[p].c_str(), 2), textWidth(detail[p].c_str(), 2));
+        fillRect(finalPixels, outW, outH, ox, oy, tw + 26, 56, glm::vec3(0.02f, 0.025f, 0.035f), 0.55f);
+        drawText(finalPixels, outW, outH, ox + 13, oy + 8, headline[p].c_str(), 2, glm::vec3(0.95f, 0.95f, 0.93f));
+        drawText(finalPixels, outW, outH, ox + 13, oy + 31, detail[p].c_str(), 2, glm::vec3(0.68f, 0.72f, 0.72f));
+    }
+
     // Legend: one swatch per level at the foot of the sheet, in the same tint order the panels use.
+    static const char* kLevelNames[6] = {"LEAF", "L1", "L2", "L3", "L4", "ROOT"};
     for (uint32_t l = 0; l < 6; ++l) {
-        const int sw = 26, gap = 8;
-        const int x0 = margin + int(l) * (sw + gap);
+        const int sw = 26, slot = 92;
+        const int x0 = margin + int(l) * slot;
         for (int y = 0; y < 10; ++y)
             for (int x = 0; x < sw; ++x)
-                finalPixels[size_t(outH - 20 + y) * outW + (x0 + x)] = toSrgb(levelColor(l));
+                finalPixels[size_t(outH - 25 + y) * outW + (x0 + x)] = toSrgb(levelColor(l));
+        drawText(finalPixels, outW, outH, x0 + 34, outH - 29, kLevelNames[l], 2, glm::vec3(0.70f, 0.73f, 0.74f));
     }
+    static const char* kFooter = "TINT BY CLUSTER LEVEL";
+    drawText(finalPixels, outW, outH, outW - margin - textWidth(kFooter, 2), outH - 29, kFooter, 2,
+             glm::vec3(0.46f, 0.50f, 0.52f));
 
     std::vector<uint8_t> bytes(size_t(outW) * outH * 3);
     for (size_t i = 0; i < finalPixels.size(); ++i) {
