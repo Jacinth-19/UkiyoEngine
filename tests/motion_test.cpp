@@ -28,7 +28,8 @@ void check(bool ok, const char* what) {
 
 // A synthetic walk: the hips advance along +z at `speed`, with the two feet stepping past each other. Enough for
 // the matcher to have to choose by velocity and foot phase.
-MotionClip makeWalk(const char* name, float speed, float turnRate, int frames = 180, float fps = 30.0f) {
+MotionClip makeWalk(const char* name, float speed, float turnRate, int frames = 180, float fps = 30.0f,
+                    float phaseOffset = 0.0f) {
     MotionClip clip;
     clip.name = name;
     clip.fps = fps;
@@ -44,7 +45,7 @@ MotionClip makeWalk(const char* name, float speed, float turnRate, int frames = 
         MotionFrame& f = clip.frames[size_t(i)];
         f.rootRot = rot;
         f.rootPos = pos;
-        const float phase = t * 2.0f * 3.14159265f * 1.7f;
+        const float phase = phaseOffset + t * 2.0f * 3.14159265f * 1.7f;
         const glm::vec3 side = rot * glm::vec3(0.13f, 0.0f, 0.0f);
         const glm::vec3 forward = rot * glm::vec3(0.0f, 0.0f, 0.42f * std::sin(phase));
         const glm::vec3 up = glm::vec3(0.0f, 0.08f + 0.06f * std::max(0.0f, std::sin(phase)), 0.0f);
@@ -94,6 +95,126 @@ int main() {
     check(std::fabs(bvh.frames[2].rootPos.z - 1.0f) < 1e-4f, "root translation is read");
     check(std::fabs(bvh.frames[2].world[1].z - 1.0f) < 1e-4f, "the child follows the root");
 
+    // A capture in centimetres, in the MotionBuilder layout: the root's OFFSET and its position channels are the
+    // same number, so the parser must use the channel as the absolute position rather than adding the two.
+    const char* kCentimetreBvh = R"(HIERARCHY
+ROOT Hips
+{
+  OFFSET 173.4 91.95 -518.3
+  CHANNELS 6 Xposition Yposition Zposition Zrotation Xrotation Yrotation
+  JOINT LeftLeg
+  {
+    OFFSET 43.5 0.0 0.0
+    CHANNELS 3 Zrotation Yrotation Xrotation
+    End Site
+    {
+      OFFSET 17.3 0.0 0.0
+    }
+  }
+}
+MOTION
+Frames: 2
+Frame Time: 0.0333333
+173.4 91.95 -518.3 0 0 0 0 0 0
+200.0 95.00 -518.3 0 0 0 0 0 0
+)";
+    {
+        MotionClip cm;
+        std::string why;
+        check(loadMotionBvh(kCentimetreBvh, &cm, &why), "a centimetre capture parses");
+        check(std::fabs(cm.unitScale - 0.01f) < 1e-6f, "a centimetre capture is recognised by its hip height");
+        check(std::fabs(cm.frames[1].rootPos.y - 0.95f) < 1e-3f,
+              "the root's offset is not added to its position channel");
+        check(std::fabs(cm.frames[1].rootPos.x - 2.0f) < 1e-3f, "the capture is scaled to metres");
+        check(std::fabs(cm.joints[1].offset.x - 0.435f) < 1e-4f, "bone lengths are scaled too");
+
+        // Recentring: the feet land on 0 and the first frame starts at the origin.
+        recentreMotionClip(&cm);
+        float lowest = 1e9f;
+        for (const MotionFrame& f : cm.frames)
+            for (const glm::vec3& p : f.world) lowest = std::min(lowest, p.y);
+        check(std::fabs(lowest) < 1e-4f, "recentring puts the lowest joint on the ground");
+        check(std::fabs(cm.frames[0].rootPos.x) < 1e-4f && std::fabs(cm.frames[0].rootPos.z) < 1e-4f,
+              "recentring starts the clip at the origin");
+    }
+
+    // ---- Rest-pose lead-in --------------------------------------------------------------------------------
+    // A capture export opens with the performer standing in a T-pose while the suit calibrates. It is not motion and
+    // the matcher must not be able to match into it, or a player started at frame 0 stands with its arms out.
+    {
+        MotionClip hold;
+        hold.name = "hold";
+        hold.fps = 30.0f;
+        hold.joints = {{"Hips", -1, glm::vec3(0.0f)},
+                       {"LeftHand", 0, glm::vec3(0.0f)},
+                       {"RightHand", 0, glm::vec3(0.0f)}};
+        hold.frames.resize(90);
+        for (int i = 0; i < 90; ++i) {
+            MotionFrame& f = hold.frames[size_t(i)];
+            f.rootPos = glm::vec3(0.0f);
+            f.rootRot = glm::quat(1.0f, 0.0f, 0.0f, 0.0f);
+            if (i < 60) {
+                f.world = {f.rootPos, f.rootPos + glm::vec3(0.75f, 0.55f, 0.0f),
+                           f.rootPos - glm::vec3(0.75f, -0.55f, 0.0f)};
+            } else {
+                // The arms come down over a second of real motion, a couple of centimetres a frame: a capture does
+                // not jump out of its calibration pose, and the trimmer must not read the transition as more hold.
+                const float drop = std::min(1.0f, float(i - 59) / 30.0f);
+                f.world = {f.rootPos, f.rootPos + glm::vec3(0.75f - 0.55f * drop, 0.55f - 0.40f * drop, 0.0f),
+                           f.rootPos - glm::vec3(0.75f - 0.55f * drop, -0.55f + 0.40f * drop, 0.0f)};
+            }
+        }
+        const int removed = trimRestLeadIn(&hold);
+        check(removed >= 55 && removed <= 61, "the T-pose hold at the head of a capture is trimmed");
+        check(hold.frameCount() == 90 - removed, "trimming keeps the motion that follows the hold");
+        check(glm::length(hold.frames.back().world[1] - hold.frames.back().rootPos) < 0.65f,
+              "the motion that follows the hold survives the trim");
+
+        MotionClip plain = makeWalk("plain", 1.4f, 0.0f, 60);
+        check(trimRestLeadIn(&plain) == 0 && plain.frameCount() == 60, "a clip without a hold is left alone");
+    }
+
+    // ---- Facing -------------------------------------------------------------------------------------------
+    // The hips' local +Z is not the direction the character faces: on LAFAN1 it is a quarter turn off, so a yaw read
+    // off the hips draws the character walking sideways and makes every forward query match backwards motion. The
+    // loader takes forward from the toes instead.
+    {
+        const char* kSidewaysBvh = R"(HIERARCHY
+ROOT Hips
+{
+  OFFSET 0.0 0.0 0.0
+  CHANNELS 6 Xposition Yposition Zposition Zrotation Xrotation Yrotation
+  JOINT LeftFoot
+  {
+    OFFSET 0.0 -0.9 0.0
+    CHANNELS 3 Zrotation Xrotation Yrotation
+    End Site
+    {
+      OFFSET 0.2 -0.2 0.0
+    }
+  }
+}
+MOTION
+Frames: 4
+Frame Time: 0.0333333
+0 0 0 0 0 0 0 0 0
+0.05 0 0 0 0 0 0 0 0
+0.10 0 0 0 0 0 0 0 0
+0.15 0 0 0 0 0 0 0 0
+)";
+        MotionClip crab;
+        std::string why;
+        check(loadMotionBvh(kSidewaysBvh, &crab, &why), "a capture whose toes are not along the hips' +Z parses");
+        // The toes point along +x and the character travels along +x, so forward must come out as the local +Z.
+        MotionDatabase db2;
+        std::vector<MotionClip> one;
+        one.push_back(crab);
+        db2.build(std::move(one), MotionSettings{}, &why);
+        const auto f = db2.entry(db2.entryAt(0, 1)).feature;
+        check(f[1] > 0.05f, "travel is forward in the character's own frame, not sideways");
+        check(std::fabs(f[0]) < 0.02f, "the trajectory has no lateral component when the toes define forward");
+    }
+
     // ---- Database -----------------------------------------------------------------------------------------
     std::vector<MotionClip> clips;
     clips.push_back(makeWalk("walk", 1.4f, 0.0f));
@@ -132,9 +253,12 @@ int main() {
                 same = false;
                 break;
             }
+            // The tree searches the kIndexFeatures subspace, so that is the metric to validate it against. The
+            // remaining dimensions belong to the re-rank, which is a scan over the returned candidates and is
+            // checked by the pose test below.
             float brute[4] = {1e30f, 1e30f, 1e30f, 1e30f};
             for (int e = 0; e < database.size(); ++e) {
-                const float d = database.weightedDistance(query, database.entry(e).feature);
+                const float d = database.indexDistance(query, database.entry(e).feature);
                 for (int i = 0; i < 4; ++i)
                     if (d < brute[i]) {
                         for (int j = 3; j > i; --j) brute[j] = brute[j - 1];
@@ -143,7 +267,7 @@ int main() {
                     }
             }
             for (int i = 0; i < 4; ++i) {
-                const float got = database.weightedDistance(query, database.entry(hit[i]).feature);
+                const float got = database.indexDistance(query, database.entry(hit[i]).feature);
                 if (std::fabs(got - brute[i]) > 1e-3f) same = false;
             }
         }
@@ -160,6 +284,42 @@ int main() {
         if (database.entry(hits[i]).clip == 1) walking = false;
     check(walking, "a 1.4 m/s query never matches the 4.2 m/s run clip");
     check(database.entry(hits[0]).clip == 0, "the best match is the walk");
+
+    // The root-velocity features belong to the trajectory: they must say where the character is going, not what the
+    // pose it is standing in happened to be doing. Copying them from the pose source made a 1.6 m/s query look like a
+    // standing query with a long future trajectory, and the search preferred slow frames.
+    {
+        const auto runQuery = database.query(glm::vec3(0.0f, 0.0f, 4.2f), 0.0f, database.entryAt(0, 10));
+        check(std::fabs(runQuery[22]) < 1e-4f && std::fabs(runQuery[23] - 4.2f) < 1e-3f,
+              "the query's root velocity is the requested velocity, not the pose's");
+    }
+
+    // Same trajectory, opposite foot phase. Without a pose term the two are a tie; with one, the frame the body is
+    // already in wins, which is what keeps the blend small.
+    {
+        std::vector<MotionClip> phases;
+        phases.push_back(makeWalk("phaseA", 1.4f, 0.0f, 120));
+        phases.push_back(makeWalk("phaseB", 1.4f, 0.0f, 120, 30.0f, 3.14159265f));
+        MotionSettings settings;
+        settings.poseWeight = 1.0f;
+        MotionDatabase phaseDb;
+        std::string phaseError;
+        phaseDb.build(std::move(phases), settings, &phaseError);
+        const int from = phaseDb.entryAt(0, 40);
+        const auto q = phaseDb.query(glm::vec3(0.0f, 0.0f, 1.4f), 0.0f, from);
+        int pick[8];
+        phaseDb.nearest(q, 8, pick);
+        int bestEntry = -1;
+        float best = 1e30f;
+        for (int i = 0; i < 8; ++i) {
+            const float c = phaseDb.cost(q, pick[i], from);
+            if (c < best) { best = c; bestEntry = pick[i]; }
+        }
+        check(bestEntry >= 0 && phaseDb.entry(bestEntry).clip == 0,
+              "the pose term keeps the match in the frame the body is already in");
+        check(phaseDb.poseDistance(phaseDb.entryAt(0, 40), phaseDb.entryAt(1, 40)) > 0.5f,
+              "the two phases really are far apart in body pose");
+    }
 
     MotionPlayer player;
     player.setDatabase(&database);

@@ -21,7 +21,7 @@ The workspace is three programs and two libraries:
 | ![Terrain](docs/terrain-hero.png) | ![Virtual geometry](docs/vgeom-levels.png) |
 | The Terrain Lab tile with the vendored ground textures and grass, rendered offline by `terrain_preview` (see [docs/TERRAIN.md](docs/TERRAIN.md)). | The same 131 072-triangle tile built into a virtual-geometry cluster tree, cut at 1 px and 8 px (see [docs/VGEOM.md](docs/VGEOM.md)). |
 | ![Path traced](docs/pathtrace-terrain.png) | ![Motion matching](docs/motion-demo.png) |
-| The same scene through a CPU path tracer — one cosine bounce, ray-marched sun shadows, the engine's layer weights and textures. The ground truth the real-time renderer is measured against, and it runs on any machine (see [docs/PATHTRACE.md](docs/PATHTRACE.md)). | Ten seconds of motion matching: the route, the footprints, and four poses from the run (see [docs/MOTION.md](docs/MOTION.md)). |
+| The same scene through a CPU path tracer — one cosine bounce, ray-marched sun shadows, the engine's layer weights and textures. The ground truth the real-time renderer is measured against, and it runs on any machine (see [docs/PATHTRACE.md](docs/PATHTRACE.md)). | Ten seconds of motion matching: the route, the footprints, and four poses from the run. Walk, run and idle are chosen by the matcher from 900 database entries (see [docs/MOTION.md](docs/MOTION.md)). |
 
 The hub is the first thing anyone sees, so it is checked like a screen and not like a build artifact: CI captures its
 three pages offscreen with `ukiyo_hub --screenshots renders` and commits them to `docs/hub/`, so the images below are
@@ -92,9 +92,12 @@ Vulkan backend and an OpenGL backend; `--backend gl` selects the latter.
 ### Animation
 
 * glTF/VRM loading, humanoid retargeting, crossfades, idle state machine, clip editing (`.ukanim`).
-* **Motion matching** — BVH motion capture into a 24-dimensional feature database, a KD-tree search, continuity
-  pricing and blended playback, plus a controller that turns stick input into a world-space pose and a demo that
-  drives it through a route. See [docs/MOTION.md](docs/MOTION.md).
+* **Motion matching** — BVH motion capture into a 33-dimensional feature database (trajectory, feet, and a pose
+  descriptor), a KD-tree over the 17 dimensions that separate one gait from another, a full-skeleton pose cost, and
+  inertialized playback, plus a controller that turns stick input into a world-space pose. All 77 LAFAN1 captures —
+  490 000 poses — build in 0.7 s and match in 0.37 ms. The capture reader trims the T-pose calibration hold and takes
+  the character's forward from the toes, both of which the corpus proved necessary. See
+  [docs/MOTION.md](docs/MOTION.md).
 * Two-bone and FABRIK arm IK, hand-on-waist constraints, spring bones, hit reactions and sway.
 
 ### Systems
@@ -136,7 +139,7 @@ Every push builds everything and runs:
 ./build/network_test
 ./build/project_test
 ./build/vgeom_test        # 29 checks
-./build/motion_test       # 31 checks
+./build/motion_test       # 48 checks
 ./build/motion_demo renders/motion-demo.png
 QT_QPA_PLATFORM=offscreen ./build/ukiyo_hub --selftest
 ```

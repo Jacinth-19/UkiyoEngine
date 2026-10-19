@@ -4,7 +4,9 @@
 #include <cctype>
 #include <cmath>
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
+#include <filesystem>
 #include <fstream>
 #include <limits>
 #include <sstream>
@@ -108,7 +110,7 @@ int MotionClip::indexOf(const std::string& joint) const {
     return -1;
 }
 
-bool loadMotionBvh(const std::string& text, MotionClip* out, std::string* error) {
+bool loadMotionBvh(const std::string& text, MotionClip* out, std::string* error, float unit) {
     if (!out) return false;
     BvhReader reader;
     reader.text = &text;
@@ -182,7 +184,16 @@ bool loadMotionBvh(const std::string& text, MotionClip* out, std::string* error)
         int cursor = 0;
         for (size_t j = 0; j < clip.joints.size(); ++j) {
             const auto& joint = reader.joints[j];
-            glm::mat4 local = glm::translate(glm::mat4(1.0f), joint.offset);
+            // A root's position channels are the root's position in world space, and its OFFSET is the same position
+            // in the rest pose — MotionBuilder writes them equal on frame 0. Adding the two puts the character half
+            // its own height into the air, which is exactly what LAFAN1 did here until this branch existed. Every
+            // other joint's offset is a bone length and is always added.
+            bool rootPositioned = false;
+            if (joint.parent < 0) {
+                for (const std::string& ch : joint.channels)
+                    if (ch.size() > 1 && ch[1] == 'p') rootPositioned = true;
+            }
+            glm::mat4 local = glm::translate(glm::mat4(1.0f), rootPositioned ? glm::vec3(0.0f) : joint.offset);
             for (const std::string& ch : joint.channels) {
                 const float v = values[size_t(cursor++)];
                 if (ch.size() > 1 && ch[1] == 'p') {
@@ -215,11 +226,139 @@ bool loadMotionBvh(const std::string& text, MotionClip* out, std::string* error)
         }
     }
 
+    // The root joint's local axes are not the character's axes. Measured on the whole corpus, the hips' local +Z
+    // points 90 degrees away from where the toes point, consistently across all 77 LAFAN1 captures — so a yaw read
+    // off the hips' +Z is a quarter turn from the way the performer is facing, and the character is drawn walking
+    // sideways. Take the character's forward from the toes (the only part of the skeleton that unambiguously points
+    // where the body is going) at the rest pose, and rotate every frame's yaw by the difference. Derived per file
+    // instead of hard-coding -90 degrees, so a skeleton with a different rest orientation still lands right.
+    {
+        const int lf = clip.indexOf("LeftFoot"), rf = clip.indexOf("RightFoot");
+        // A named toe if the skeleton has one; otherwise the foot's own child, which is where a BVH without toe joints
+        // (only an End Site) puts the same information.
+        const auto toeOf = [&](int foot, const char* name) {
+            const int named = clip.indexOf(name);
+            if (named >= 0 || foot < 0) return named;
+            for (size_t j = 0; j < clip.joints.size(); ++j)
+                if (clip.joints[j].parent == foot) return int(j);
+            return -1;
+        };
+        const int lt = toeOf(lf, "LeftToe"), rt = toeOf(rf, "RightToe");
+        const MotionFrame& rest = clip.frames.front();
+        glm::vec3 toe(0.0f);
+        if (lf >= 0 && lt >= 0) toe += rest.world[size_t(lt)] - rest.world[size_t(lf)];
+        if (rf >= 0 && rt >= 0) toe += rest.world[size_t(rt)] - rest.world[size_t(rf)];
+        toe.y = 0.0f;
+        if (glm::length(toe) > 1e-4f) {
+            const glm::vec3 hips = rest.rootRot * glm::vec3(0.0f, 0.0f, 1.0f);
+            float offset = std::atan2(toe.x, toe.z) - std::atan2(hips.x, hips.z);
+            while (offset > glm::pi<float>()) offset -= 2.0f * glm::pi<float>();
+            while (offset < -glm::pi<float>()) offset += 2.0f * glm::pi<float>();
+            for (MotionFrame& f : clip.frames) {
+                const float yaw = std::atan2(2.0f * (f.rootRot.w * f.rootRot.y), 1.0f - 2.0f * f.rootRot.y * f.rootRot.y);
+                f.rootRot = glm::angleAxis(yaw + offset, glm::vec3(0.0f, 1.0f, 0.0f));
+            }
+        }
+    }
+
+    // Units. A capture in centimetres (LAFAN1, MotionBuilder) puts the hips around 90-110; anything above 10 is
+    // centimetres, and the file is brought to metres. The rest pose is checked, not the animated root, because some
+    // clips start crouched.
+    if (unit <= 0.0f) {
+        float hipsHeight = 0.0f;
+        for (const MotionFrame& f : clip.frames) hipsHeight = std::max(hipsHeight, f.rootPos.y);
+        unit = hipsHeight > 10.0f ? 0.01f : 1.0f;
+    }
+    if (std::fabs(unit - 1.0f) > 1e-6f) {
+        for (MotionJoint& j : clip.joints) j.offset *= unit;
+        for (MotionFrame& f : clip.frames) {
+            for (glm::vec3& p : f.world) p *= unit;
+            f.rootPos *= unit;
+        }
+        clip.unitScale = unit;
+    }
+
     *out = std::move(clip);
     return true;
 }
 
-bool loadMotionBvhFile(const std::string& path, MotionClip* out, std::string* error) {
+void recentreMotionClip(MotionClip* clip) {
+    if (!clip || clip->frames.empty()) return;
+    glm::vec3 origin = clip->frames.front().rootPos;
+    origin.y = 0.0f;
+    // And the lowest joint over the whole clip, so the feet sit on 0. Seeded from the first frame rather than from
+    // zero: a capture can be entirely above the ground, and a zero start would then leave it floating.
+    float lowest = std::numeric_limits<float>::max();
+    for (const MotionFrame& f : clip->frames)
+        for (const glm::vec3& p : f.world) lowest = std::min(lowest, p.y);
+    if (lowest == std::numeric_limits<float>::max()) lowest = 0.0f;
+    for (MotionFrame& f : clip->frames) {
+        for (glm::vec3& p : f.world) p = p - origin - glm::vec3(0.0f, lowest, 0.0f);
+        f.rootPos = f.rootPos - origin - glm::vec3(0.0f, lowest, 0.0f);
+    }
+    clip->ground = 0.0f;
+}
+
+int trimRestLeadIn(MotionClip* clip, float minSeconds) {
+    if (!clip || clip->frames.empty() || clip->fps <= 0.0f) return 0;
+    const int lh = clip->indexOf("LeftHand"), rh = clip->indexOf("RightHand");
+    if (lh < 0 || rh < 0) return 0;
+    const size_t a = size_t(lh), b = size_t(rh);
+    if (clip->frames.front().world.size() <= std::max(a, b)) return 0;
+    const auto armsOut = [&](const MotionFrame& f) {
+        return glm::length(f.world[a] - f.world[b]) > 1.15f;   // wider than any shoulder, arms held sideways
+    };
+    // "Not moving" has to be a per-frame test, not drift from frame 0. The suit calibration is not perfectly still —
+    // the arms creep a couple of centimetres a second — so a drift test either never triggers or, told to ignore
+    // drift, trims a real transition. The speed of the fastest joint separates the two cleanly: the hold moves under
+    // 0.01 m per frame, the first real frames move 0.03 m or more.
+    const float quiet = 0.30f / clip->fps;
+    const auto still = [&](int f) {
+        if (f + 1 >= clip->frameCount()) return true;
+        const MotionFrame& x = clip->frames[size_t(f)];
+        const MotionFrame& y = clip->frames[size_t(f + 1)];
+        for (size_t j = 0; j < x.world.size() && j < y.world.size(); ++j)
+            if (glm::length(y.world[j] - x.world[j]) > quiet) return false;
+        return true;
+    };
+    int end = 0;
+    while (end < clip->frameCount() && armsOut(clip->frames[size_t(end)]) && still(end)) ++end;
+    if (float(end) / clip->fps < minSeconds || end >= clip->frameCount() - 1) return 0;
+    clip->frames.erase(clip->frames.begin(), clip->frames.begin() + end);
+    return end;
+}
+
+int loadMotionBvhFolder(const std::string& folder, std::vector<MotionClip>* clips, std::string* error, float unit) {
+    if (!clips) return 0;
+    std::vector<std::string> paths;
+    std::error_code ec;
+    for (const auto& entry : std::filesystem::directory_iterator(folder, ec)) {
+        if (entry.is_regular_file(ec) && lower(entry.path().extension().string()) == ".bvh")
+            paths.push_back(entry.path().string());
+    }
+    std::sort(paths.begin(), paths.end());
+    int loaded = 0, failed = 0;
+    std::string firstError;
+    for (const std::string& path : paths) {
+        MotionClip clip;
+        std::string why;
+        if (!loadMotionBvhFile(path, &clip, &why, unit)) {
+            ++failed;
+            if (firstError.empty()) firstError = why;
+            continue;
+        }
+        recentreMotionClip(&clip);
+        clips->push_back(std::move(clip));
+        ++loaded;
+    }
+    if (error) {
+        *error = "loaded " + std::to_string(loaded) + " of " + std::to_string(paths.size()) + " BVH files";
+        if (failed > 0) *error += " (" + std::to_string(failed) + " failed, first: " + firstError + ")";
+    }
+    return loaded;
+}
+
+bool loadMotionBvhFile(const std::string& path, MotionClip* out, std::string* error, float unit) {
     std::ifstream file(path, std::ios::binary);
     if (!file) {
         if (error) *error = "could not open " + path;
@@ -228,8 +367,12 @@ bool loadMotionBvhFile(const std::string& path, MotionClip* out, std::string* er
     std::ostringstream buffer;
     buffer << file.rdbuf();
     const std::string text = buffer.str();
-    const bool ok = loadMotionBvh(text, out, error);
-    if (ok && out) out->name = path.substr(path.find_last_of("/\\") + 1);
+    const bool ok = loadMotionBvh(text, out, error, unit);
+    if (ok && out) {
+        out->name = path.substr(path.find_last_of("/\\") + 1);
+        // Do this before recentring: the rest frames are where the performer is standing, and they move the origin.
+        trimRestLeadIn(out);
+    }
     return ok;
 }
 
@@ -252,9 +395,21 @@ bool MotionDatabase::build(std::vector<MotionClip> clips, const MotionSettings& 
         const MotionClip& clip = clips_[c];
         if (clip.frames.size() < 2) continue;
         clipStart_[c] = int(entries_.size());
+        // The clip's floor: the lowest any joint gets. See MotionClip::ground.
+        {
+            float low = std::numeric_limits<float>::max();
+            for (const MotionFrame& f : clip.frames)
+                for (const glm::vec3& p : f.world) low = std::min(low, p.y);
+            if (low != std::numeric_limits<float>::max()) clips_[c].ground = low;
+        }
         const int root = clip.root;
         const int leftFoot = clip.indexOf("LeftFoot") >= 0 ? clip.indexOf("LeftFoot") : clip.indexOf("leftFoot");
         const int rightFoot = clip.indexOf("RightFoot") >= 0 ? clip.indexOf("RightFoot") : clip.indexOf("rightFoot");
+        // The pose descriptor's three joints, by their common names across the corpora.
+        const int poseJoints[3] = {clip.indexOf("Head") >= 0 ? clip.indexOf("Head") : clip.indexOf("Neck"),
+                                   clip.indexOf("LeftHand") >= 0 ? clip.indexOf("LeftHand") : clip.indexOf("LeftForeArm"),
+                                   clip.indexOf("RightHand") >= 0 ? clip.indexOf("RightHand")
+                                                                  : clip.indexOf("RightForeArm")};
         const float fps = clip.fps;
         const int window = std::max(1, int(settings_.velocityWindow * fps));
         auto sample = [&](int frame, int joint) {
@@ -302,6 +457,13 @@ bool MotionDatabase::build(std::vector<MotionClip> clips, const MotionSettings& 
             const glm::vec3 rootLocal = glm::inverse(f.rootRot) * rootVel;
             e.feature[22] = rootLocal.x;
             e.feature[23] = rootLocal.z;
+            for (int k = 0; k < 3; ++k) {
+                const glm::vec3 local = poseJoints[k] >= 0 ? localOf(frame, sample(frame, poseJoints[k])) : glm::vec3(0.0f);
+                for (int axis = 0; axis < 3; ++axis) {
+                    e.pose[size_t(k * 3 + axis)] = (&local.x)[axis];
+                    e.feature[size_t(24 + k * 3 + axis)] = (&local.x)[axis];
+                }
+            }
             entries_.push_back(e);
         }
     }
@@ -321,10 +483,11 @@ int MotionDatabase::buildNode(std::vector<int>* order, int lo, int hi) {
     if (lo >= hi) return -1;
     int axis = 0;
     float bestSpread = -1.0f;
-    for (int a = 0; a < kMotionDims; ++a) {
+    for (int a = 0; a < kIndexDims; ++a) {
+        const int dim = kIndexFeatures[size_t(a)];
         float mn = kInf, mx = -kInf;
         for (int i = lo; i < hi; ++i) {
-            const float v = entries_[size_t((*order)[size_t(i)])].feature[size_t(a)];
+            const float v = entries_[size_t((*order)[size_t(i)])].feature[size_t(dim)];
             mn = std::min(mn, v);
             mx = std::max(mx, v);
         }
@@ -333,15 +496,16 @@ int MotionDatabase::buildNode(std::vector<int>* order, int lo, int hi) {
             axis = a;
         }
     }
+    const int dim = kIndexFeatures[size_t(axis)];
     const int mid = (lo + hi) / 2;
     std::nth_element(order->begin() + lo, order->begin() + mid, order->begin() + hi, [&](int a, int b) {
-        return entries_[size_t(a)].feature[size_t(axis)] < entries_[size_t(b)].feature[size_t(axis)];
+        return entries_[size_t(a)].feature[size_t(dim)] < entries_[size_t(b)].feature[size_t(dim)];
     });
     const int node = int(nodes_.size());
     nodes_.push_back(Node{});
     nodes_[size_t(node)].entry = (*order)[size_t(mid)];
     nodes_[size_t(node)].axis = axis;
-    nodes_[size_t(node)].split = entries_[size_t((*order)[size_t(mid)])].feature[size_t(axis)];
+    nodes_[size_t(node)].split = entries_[size_t((*order)[size_t(mid)])].feature[size_t(dim)];
     nodes_[size_t(node)].left = buildNode(order, lo, mid);
     nodes_[size_t(node)].right = buildNode(order, mid + 1, hi);
     return node;
@@ -352,6 +516,17 @@ int MotionDatabase::entryAt(int clip, int frame) const {
     const MotionClip& c = clips_[size_t(clip)];
     if (frame < 0 || frame >= c.frameCount()) return -1;
     return clipStart_[size_t(clip)] + frame;
+}
+
+float MotionDatabase::indexDistance(const std::array<float, kMotionDims>& a,
+                                    const std::array<float, kMotionDims>& b) const {
+    float sum = 0.0f;
+    for (int i = 0; i < kIndexDims; ++i) {
+        const int d = kIndexFeatures[size_t(i)];
+        const float diff = a[size_t(d)] - b[size_t(d)];
+        sum += settings_.weights[size_t(d)] * diff * diff;
+    }
+    return sum;
 }
 
 float MotionDatabase::weightedDistance(const std::array<float, kMotionDims>& a,
@@ -368,7 +543,7 @@ void MotionDatabase::search(int node, const std::array<float, kMotionDims>& quer
                             std::vector<std::pair<float, int>>* best) const {
     if (node < 0) return;
     const Node& n = nodes_[size_t(node)];
-    const float d = weightedDistance(query, entries_[size_t(n.entry)].feature);
+    const float d = indexDistance(query, entries_[size_t(n.entry)].feature);
     if (int(best->size()) < k) {
         best->emplace_back(d, n.entry);
         std::push_heap(best->begin(), best->end());
@@ -377,8 +552,9 @@ void MotionDatabase::search(int node, const std::array<float, kMotionDims>& quer
         best->back() = {d, n.entry};
         std::push_heap(best->begin(), best->end());
     }
-    const float delta = query[size_t(n.axis)] - n.split;
-    const float plane = settings_.weights[size_t(n.axis)] * delta * delta;
+    const int dim = kIndexFeatures[size_t(n.axis)];
+    const float delta = query[size_t(dim)] - n.split;
+    const float plane = settings_.weights[size_t(dim)] * delta * delta;
     const int near = delta < 0.0f ? n.left : n.right;
     const int far = delta < 0.0f ? n.right : n.left;
     search(near, query, k, best);
@@ -400,22 +576,58 @@ std::array<float, kMotionDims> MotionDatabase::query(glm::vec3 velocity, float f
     std::array<float, kMotionDims> q{};
     if (poseFrom >= 0 && poseFrom < size()) q = entries_[size_t(poseFrom)].feature;
     // The pose half of the query is the current frame's, which is what the cost function compares against.
-    const float speed = glm::length(glm::vec2(velocity.x, velocity.z));
-    const float yaw = speed > 0.05f ? std::atan2(velocity.x, velocity.z) : facingYaw;
-    const glm::quat rot = glm::angleAxis(yaw, glm::vec3(0.0f, 1.0f, 0.0f));
+    // Every feature in the database is expressed in the character's own frame, so the query must be too. A desired
+    // world velocity becomes a local one by taking the facing out of it; for the common case — the controller turns
+    // the character to face where it is going — that is a straight line up +z, and the local forward is (0, 1).
+    const float yaw = glm::length(glm::vec2(velocity.x, velocity.z)) > 0.05f
+                          ? std::atan2(velocity.x, velocity.z)
+                          : facingYaw;
+    const glm::vec3 localVelocity = glm::angleAxis(-yaw, glm::vec3(0.0f, 1.0f, 0.0f)) * velocity;
     for (int i = 0; i < 4; ++i) {
         const float t = float(i + 1) * settings_.trajectoryStep;
-        // The database's local frame points forward along +z, so a desired speed is a straight line up that axis.
-        q[size_t(i * 2 + 0)] = 0.0f;
-        q[size_t(i * 2 + 1)] = speed * t;
+        q[size_t(i * 2 + 0)] = localVelocity.x * t;
+        q[size_t(i * 2 + 1)] = localVelocity.z * t;
     }
-    const glm::vec3 forward = rot * glm::vec3(0.0f, 0.0f, 1.0f);
-    q[8] = forward.x;
-    q[9] = forward.z;
+    q[8] = 0.0f;
+    q[9] = 1.0f;
+    // The root velocity is part of the trajectory, not of the pose. Copying the pose entry's feature wholesale left it
+    // holding whatever speed the character already had, so a query for 1.6 m/s asked for 1.6 m of travel over the
+    // next 0.6 s and, at the same time, for the root to stand still — and the search then preferred slow frames that
+    // happened to drift forward, which is how a run query ended up matching a crawl.
+    q[22] = localVelocity.x;
+    q[23] = localVelocity.z;
     return q;
 }
 
-float MotionDatabase::continuationCost(const std::array<float, kMotionDims>& query, int from, float seconds) const {
+float MotionDatabase::cost(const std::array<float, kMotionDims>& query, int entry, int poseFrom) const {
+    if (entry < 0 || entry >= size()) return kInf;
+    float total = weightedDistance(query, entries_[size_t(entry)].feature);
+    if (settings_.poseWeight > 0.0f && poseFrom >= 0)
+        total += settings_.poseWeight * poseDistance(entry, poseFrom);
+    return total;
+}
+
+float MotionDatabase::poseDistance(int a, int b) const {
+    if (a < 0 || b < 0 || a >= size() || b >= size()) return 0.0f;
+    const MotionEntry& ea = entries_[size_t(a)];
+    const MotionEntry& eb = entries_[size_t(b)];
+    const MotionFrame& fa = clips_[size_t(ea.clip)].frames[size_t(ea.frame)];
+    const MotionFrame& fb = clips_[size_t(eb.clip)].frames[size_t(eb.frame)];
+    const size_t n = std::min(fa.world.size(), fb.world.size());
+    if (n == 0) return 0.0f;
+    const glm::quat ia = glm::inverse(fa.rootRot);
+    const glm::quat ib = glm::inverse(fb.rootRot);
+    float sum = 0.0f;
+    for (size_t j = 0; j < n; ++j) {
+        const glm::vec3 la = ia * (fa.world[j] - fa.rootPos);
+        const glm::vec3 lb = ib * (fb.world[j] - fb.rootPos);
+        sum += glm::length(la - lb);
+    }
+    return sum / float(n);
+}
+
+float MotionDatabase::continuationCost(const std::array<float, kMotionDims>& query, int from, float seconds,
+                                       int poseFrom) const {
     if (from < 0 || from >= size()) return kInf;
     const MotionEntry& e = entries_[size_t(from)];
     const MotionClip& clip = clips_[size_t(e.clip)];
@@ -423,7 +635,7 @@ float MotionDatabase::continuationCost(const std::array<float, kMotionDims>& que
     if (ahead >= clip.frameCount() - 1) return kInf;
     const int entry = entryAt(e.clip, ahead);
     if (entry < 0) return kInf;
-    return weightedDistance(query, entries_[size_t(entry)].feature);
+    return cost(query, entry, poseFrom);
 }
 
 // ---------------------------------------------------------------------------------------------------------------
@@ -437,6 +649,7 @@ void MotionPlayer::reset() {
     blend_ = 1.0f;
     matches_ = 0;
     cost_ = 0.0f;
+    lastMatchOffset_ = 0.0f;
     blendFrom_.clear();
     velocity_ = glm::vec3(0.0f);
     facing_ = 0.0f;
@@ -458,28 +671,55 @@ void MotionPlayer::setTarget(glm::vec3 velocity, float facingYaw) {
 }
 
 int MotionPlayer::bestMatch(const std::array<float, kMotionDims>& query, float* costOut) const {
-    int candidates[8];
-    const int n = database_->nearest(query, 8, candidates);
-    int best = -1;
-    float bestCost = kInf;
+    // Two passes. The KD-tree answers "where is the character going"; the pose pass then asks "and what is the body
+    // doing". Without the second pass a 1.4 m/s walk queries the walk clip at the opposite phase just as readily as
+    // the one the character is already in, and the blend has to travel half a metre of arm swing to fix it — which is
+    // exactly the pop inertialization exists to avoid.
+    const MotionSettings& settings = database_->settings();
+    const int k = std::clamp(settings.rerankCandidates, 1, 64);
+    std::vector<int> candidates(size_t(k), -1);
+    const int n = database_->nearest(query, k, candidates.data());
+
+    const int currentFrame = int(std::lround(frame_));
+    // The pose to compare against is the one *one match interval from now*, not the one on screen. The query is
+    // compared with the candidate's frame at the start of its trajectory, and staying is measured at the end of the
+    // interval; comparing a candidate at `t` with a pose at `t` makes every candidate win by half an interval and the
+    // player then jumps back to the frame it just left, forever. Asking for the pose at `t + interval` puts the
+    // continuation frame exactly on the query, which is what makes "stay" and "keep going" score the same.
+    const double clipFps = lastClip_ >= 0 ? database_->clips()[size_t(lastClip_)].fps : 30.0;
+    const int predictedFrame = currentFrame + int(std::lround(double(matchInterval_) * double(clipFps)));
+    const int predictedEntry = database_->entryAt(lastClip_, predictedFrame);
+
+    struct Scored {
+        int idx = -1;
+        float cost = kInf;
+    };
+    std::vector<Scored> scored;
+    scored.reserve(size_t(std::max(1, n)));
     for (int i = 0; i < n; ++i) {
-        const int idx = candidates[i];
+        const int idx = candidates[size_t(i)];
+        if (idx < 0) continue;
         const int clipIndex = database_->entry(idx).clip;
         const int frame = database_->entry(idx).frame;
-        float cost = database_->weightedDistance(query, database_->entry(idx).feature);
-        // A jump to another clip, or far along this one, is a visual cut: price it.
-        const int currentFrame = int(std::lround(frame_));
-        const float seconds = clipIndex == lastClip_ ? std::fabs(float(frame - currentFrame)) /
-                                                           std::max(1.0f, database_->clip(idx).fps)
-                                                     : 1.0f;
-        cost += database_->settings().continuity * seconds;
-        if (cost < bestCost) {
-            bestCost = cost;
-            best = idx;
+        float cost = database_->cost(query, idx, predictedEntry);
+        // A jump to another clip is a visual cut: price it. A jump *backwards* along this one is a rewind, which is
+        // just as visible and must not be cheaper than a short hop forward — otherwise the cheapest move is always to
+        // return to the frame just played, and the character animates in place while the controller walks it forward.
+        const float fps = std::max(1.0f, database_->clip(idx).fps);
+        float seconds = 1.0f;
+        if (clipIndex == lastClip_) {
+            const float ahead = float(frame - currentFrame) / fps;
+            seconds = ahead >= 0.0f ? ahead : 1.0f;
         }
+        cost += settings.continuity * seconds;
+        scored.push_back({idx, cost});
     }
-    if (costOut) *costOut = bestCost;
-    return best;
+    if (scored.empty()) return -1;
+
+    const auto best = std::min_element(scored.begin(), scored.end(),
+                                       [](const Scored& a, const Scored& b) { return a.cost < b.cost; });
+    if (costOut) *costOut = best->cost;
+    return best->idx;
 }
 
 void MotionPlayer::update(float dt) {
@@ -497,25 +737,49 @@ void MotionPlayer::update(float dt) {
     if (sinceMatch_ < matchInterval_) return;
     sinceMatch_ = 0.0f;
 
-    // The pose half of the query is where the character is now, not the entry it last jumped to.
-    const int currentEntry = database_->entryAt(lastClip_, int(std::lround(frame_)));
-    const auto query = database_->query(velocity_, facing_, currentEntry >= 0 ? currentEntry : index_);
+    // The pose half of the query is where the character will be one interval from now, for the same reason the
+    // re-rank uses it: a candidate is scored at the start of its trajectory, so the query has to describe the pose the
+    // trajectory should *arrive* at. Using the pose on screen makes every candidate a half-interval stale and the
+    // winner is the frame just left.
+    const int currentFrame = int(std::lround(frame_));
+    const int predictedFrame = currentFrame + int(std::lround(double(matchInterval_) * double(clip.fps)));
+    const int currentEntry = database_->entryAt(lastClip_, currentFrame);
+    const int predictedEntry = database_->entryAt(lastClip_, predictedFrame);
+    const auto query = database_->query(velocity_, facing_, predictedEntry >= 0 ? predictedEntry : index_);
     float winnerCost = 0.0f;
     const int winner = bestMatch(query, &winnerCost);
     if (winner < 0) return;
 
     // Compare against walking on for one match interval. Staying put would win forever if it were compared with the
     // current frame: the trajectory is relative, so "stand still" always looks like a perfect local fit.
-    const float stay = currentEntry >= 0 ? database_->continuationCost(query, currentEntry, matchInterval_) : kInf;
-    if (winnerCost + database_->settings().switchMargin >= stay && blend_ >= 1.0f) return;
+    // From the frame on screen, not the predicted entry: continuationCost walks forward by `matchInterval_` itself,
+    // and starting from the predicted entry would price an extra interval of mismatch against staying — which made
+    // every match look better than walking on by exactly that much.
+    const float stay = currentEntry >= 0
+                           ? database_->continuationCost(query, currentEntry, matchInterval_,
+                                                          predictedEntry >= 0 ? predictedEntry : currentEntry)
+                           : kInf;
+    if (std::getenv("UKIYO_MOTION_TRACE"))
+        std::fprintf(stderr, "  check winner %.3f  stay %.3f  (margin %.3f)  cur %d/%d  win %d/%d  pred %d\n",
+                     double(winnerCost), double(stay), double(database_->settings().switchMargin), lastClip_,
+                     currentFrame, database_->entry(winner).clip, database_->entry(winner).frame, predictedFrame);
+    // The margin always applies, including mid-blend. It used to be skipped while a blend was still running, on the
+    // theory that a clearly better match should be allowed to take over; but matches arrive every 0.16 s and a blend
+    // lasts 0.20 s, so *every* match lands mid-blend, and the guard turned into "always switch to the cheapest
+    // candidate" — which picks the frame just left and loops the animation over ten frames while the controller walks.
+    // If a match is worth taking during a blend, it is worth taking because it beats staying by the margin.
+    if (winnerCost + database_->settings().switchMargin >= stay) return;
 
-    // Sample the outgoing pose and its velocity before the jump, so the blend starts from what is on screen and at
-    // the speed it was moving.
+    // Sample what is on screen — pose *and* velocity — and what the incoming frame will be, then combine them with
+    // whatever offset is still decaying. Matches arrive every 0.16 s and a blend lasts 0.20 s, so a jump usually
+    // lands mid-blend; replacing the offset outright would throw away the motion still on screen and, worse, make
+    // every jump measure against a pose that is itself offset, so the errors compound into a body that comes apart.
     std::vector<glm::vec3> outPositions;
     glm::vec3 outRoot(0.0f);
     glm::quat outRot(1.0f, 0.0f, 0.0f, 0.0f);
     sample(&outPositions, &outRoot, &outRot);
     const MotionClip& fromClip = database_->clip(index_);
+    const int fromClipIndex = database_->entry(index_).clip;
     const int c0 = std::clamp(int(std::floor(frame_)), 0, fromClip.frameCount() - 1);
     const int c1 = std::min(c0 + 1, fromClip.frameCount() - 1);
     std::vector<glm::vec3> outVel(outPositions.size(), glm::vec3(0.0f));
@@ -523,29 +787,71 @@ void MotionPlayer::update(float dt) {
         outVel[j] = (fromClip.frames[size_t(c1)].world[j] - fromClip.frames[size_t(c0)].world[j]) * fromClip.fps;
     const glm::vec3 outRootVel =
         (fromClip.frames[size_t(c1)].rootPos - fromClip.frames[size_t(c0)].rootPos) * fromClip.fps;
-    outRoot = glm::mix(fromClip.frames[size_t(c0)].rootPos, fromClip.frames[size_t(c1)].rootPos,
-                       std::clamp(frame_ - float(c0), 0.0f, 1.0f));
 
-    // The incoming pose and its own velocity. What the inertialization has to cancel is the difference between the
-    // two, in position and in velocity, both measured at the instant of the jump.
-    const MotionClip& toClip = database_->clip(database_->entry(winner).clip);
-    const MotionFrame& inFrame = toClip.frames[size_t(database_->entry(winner).frame)];
+    // `clip()` takes an *entry* index; here we have a clip index, so go through the clip list directly.
+    const MotionClip& toClip = database_->clips()[size_t(database_->entry(winner).clip)];
     const int toFrame = database_->entry(winner).frame;
     const int toNext = std::min(toFrame + 1, toClip.frameCount() - 1);
-    std::vector<glm::vec3> toVel(inFrame.world.size(), glm::vec3(0.0f));
-    for (size_t j = 0; j < toVel.size(); ++j)
-        toVel[j] = (toClip.frames[size_t(toNext)].world[j] - inFrame.world[j]) * toClip.fps;
+    const MotionFrame& inFrame = toClip.frames[size_t(toFrame)];
+    std::vector<glm::vec3> inVel(inFrame.world.size(), glm::vec3(0.0f));
+    for (size_t j = 0; j < inVel.size(); ++j)
+        inVel[j] = (toClip.frames[size_t(toNext)].world[j] - inFrame.world[j]) * toClip.fps;
 
+    // `sample()` above returns the pose *with* the decaying offset already in it, so the position part of a
+    // mid-blend carry is already accounted for: adding it a second time is what made the offsets grow to a metre and
+    // stay there. Only the offset's velocity is missing from that sample, and that is what has to be carried.
+    const bool midBlend = blend_ < 1.0f;
+    std::vector<glm::vec3> carryVel(outPositions.size(), glm::vec3(0.0f));
+    if (midBlend) {
+        for (size_t j = 0; j < carryVel.size() && j < blendFrom_.size(); ++j)
+            carryVel[j] = inertializeVelocity(blendFrom_[j], j < blendVel_.size() ? blendVel_[j] : glm::vec3(0.0f), blend_);
+    }
+    const glm::vec3 carryRootVel = midBlend ? inertializeVelocity(blendRoot_, blendRootVel_, blend_) : glm::vec3(0.0f);
+
+    // Root-relative. The two clips are metres apart in their own space — each was recentred to its own origin and
+    // then walked forward from it — so subtracting absolute positions would put the whole separation of the two
+    // captures into the offset and slide the character a metre off its own feet for a fifth of a second. What has
+    // to carry across the seam is the *pose*, which is what is left after the root comes out.
     blendFrom_.resize(outPositions.size());
     blendVel_.resize(outPositions.size());
     for (size_t j = 0; j < outPositions.size(); ++j) {
-        const glm::vec3 toPos = j < inFrame.world.size() ? inFrame.world[j] : outPositions[j];
-        blendFrom_[j] = outPositions[j] - toPos;
-        blendVel_[j] = (j < outVel.size() ? outVel[j] : glm::vec3(0.0f)) - (j < toVel.size() ? toVel[j] : glm::vec3(0.0f));
+        const glm::vec3 toLocal = j < inFrame.world.size() ? inFrame.world[j] - inFrame.rootPos : glm::vec3(0.0f);
+        blendFrom_[j] = (outPositions[j] - outRoot) - toLocal;
+        blendVel_[j] = carryVel[j] + (j < outVel.size() ? outVel[j] - outRootVel : glm::vec3(0.0f)) -
+                       ((j < inVel.size() ? inVel[j] : glm::vec3(0.0f)) -
+                        (toClip.frames[size_t(toNext)].rootPos - inFrame.rootPos) * toClip.fps) *
+                           blendTime_;
     }
-    blendRoot_ = outRoot - inFrame.rootPos;
-    blendRootVel_ = outRootVel - (toClip.frames[size_t(toNext)].rootPos - inFrame.rootPos) * toClip.fps;
+    // The root's own offset is zero, not `outRoot - inFrame.rootPos`. Two captures are hundreds of frames apart in
+    // their own space, so that difference is metres; the controller renders `joint - root`, so a residual on the root
+    // becomes a residual on every joint with the opposite sign, and the character slides sideways for the whole blend.
+    // The pose is what carries across the seam, and the pose is root-relative. Only the root's *velocity* is carried,
+    // so the lift at the hips does not stop dead at the seam.
+    blendRoot_ = glm::vec3(0.0f);
+    blendRootVel_ = carryRootVel + (outRootVel - (toClip.frames[size_t(toNext)].rootPos - inFrame.rootPos) * toClip.fps) *
+                                       blendTime_;
     blendRot_ = outRot;
+    {
+        // Always measured, not just under the trace: the demo and any game-side telemetry want it.
+        float mx = 0.0f;
+        for (size_t j = 0; j < blendFrom_.size(); ++j) mx = std::max(mx, glm::length(blendFrom_[j]));
+        lastMatchOffset_ = mx;
+    }
+    if (std::getenv("UKIYO_MOTION_TRACE")) {
+        float mx = 0.0f, cv = 0.0f;
+        size_t worst = 0;
+        for (size_t j = 0; j < blendFrom_.size(); ++j) {
+            if (glm::length(blendFrom_[j]) > mx) {
+                mx = glm::length(blendFrom_[j]);
+                worst = j;
+            }
+            cv = std::max(cv, glm::length(blendVel_[j]));
+        }
+        std::fprintf(stderr, "JUMP %d->%d  maxOffset %.2f @%s  rootOff %.2f  maxVel %.2f  midBlend %d\n",
+                     fromClipIndex, database_->entry(winner).clip, double(mx),
+                     worst < toClip.joints.size() ? toClip.joints[worst].name.c_str() : "?", double(glm::length(blendRoot_)),
+                     double(cv), midBlend ? 1 : 0);
+    }
 
     index_ = winner;
     lastClip_ = database_->entry(winner).clip;
@@ -573,10 +879,10 @@ void MotionPlayer::sample(std::vector<glm::vec3>* positions, glm::vec3* rootPos,
         // old pose's position *and* velocity, so the seam does not stop the character dead the way a crossfade does.
         const float s = blend_;
         for (size_t j = 0; j < positions->size(); ++j) {
-            const glm::vec3 v = j < blendVel_.size() ? blendVel_[j] * blendTime_ : glm::vec3(0.0f);
+            const glm::vec3 v = j < blendVel_.size() ? blendVel_[j] : glm::vec3(0.0f);
             (*positions)[j] += inertialize(blendFrom_[j], v, s);
         }
-        if (rootPos) *rootPos = p + inertialize(blendRoot_, blendRootVel_ * blendTime_, s);
+        if (rootPos) *rootPos = p + inertialize(blendRoot_, blendRootVel_, s);
         if (rootRot) *rootRot = glm::slerp(blendRot_, r, s);
         return;
     }
@@ -591,6 +897,12 @@ glm::vec3 inertialize(glm::vec3 p, glm::vec3 v, float s) {
     s = std::clamp(s, 0.0f, 1.0f);
     const float s3 = s * s * s, s4 = s3 * s, s5 = s4 * s;
     return p + v * s - (p * 10.0f + v * 6.0f) * s3 + (p * 15.0f + v * 8.0f) * s4 - (p * 6.0f + v * 3.0f) * s5;
+}
+
+glm::vec3 inertializeVelocity(glm::vec3 p, glm::vec3 v, float s) {
+    s = std::clamp(s, 0.0f, 1.0f);
+    const float s2 = s * s, s3 = s2 * s, s4 = s3 * s;
+    return v - (p * 30.0f + v * 18.0f) * s2 + (p * 60.0f + v * 32.0f) * s3 - (p * 30.0f + v * 15.0f) * s4;
 }
 
 void MotionController::setDatabase(const MotionDatabase* database) {
@@ -641,8 +953,13 @@ void MotionController::update(glm::vec3 wishDir, float wishSpeed, float dt, floa
     glm::quat rootRot(1.0f, 0.0f, 0.0f, 0.0f);
     player_.sample(&sampled, &root, &rootRot);
     const glm::quat q = glm::angleAxis(yaw_, glm::vec3(0.0f, 1.0f, 0.0f)) * glm::inverse(rootRot);
+    // The clip's root is the hips, roughly a metre above its own floor. `position_` is the character's ground point,
+    // so the pose is lifted by the root's height over that floor; without this a capture is buried to the waist.
+    const MotionClip& clip = database_->clip(player_.index());
+    const float rootHeight = root.y - clip.ground;
     pose_.resize(sampled.size());
-    for (size_t i = 0; i < sampled.size(); ++i) pose_[i] = position_ + q * (sampled[i] - root);
+    for (size_t i = 0; i < sampled.size(); ++i)
+        pose_[i] = position_ + q * (sampled[i] - root) + glm::vec3(0.0f, rootHeight, 0.0f);
 }
 
 int MotionController::applyTo(Model& model, float scale) const {
