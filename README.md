@@ -23,8 +23,19 @@ The workspace is three programs and two libraries:
 | ![Path traced](docs/pathtrace-terrain.png) | ![Motion matching](docs/motion-demo.png) |
 | The same scene through a CPU path tracer — one cosine bounce, ray-marched sun shadows, the engine's layer weights and textures. The ground truth the real-time renderer is measured against, and it runs on any machine (see [docs/PATHTRACE.md](docs/PATHTRACE.md)). | Ten seconds of motion matching: the route, the footprints, and four poses from the run (see [docs/MOTION.md](docs/MOTION.md)). |
 
-The hub's own pages are captured on every CI run by `ukiyo_hub --screenshots renders` and uploaded with the terrain
-renders and the motion figure as the `terrain-renders` artifact.
+The hub is the first thing anyone sees, so it is checked like a screen and not like a build artifact: CI captures its
+three pages offscreen with `ukiyo_hub --screenshots renders` and commits them to `docs/hub/`, so the images below are
+the program at the commit you are reading, not a mockup.
+
+| | |
+| --- | --- |
+| ![Hub, Projects](docs/hub/hub_projects.png) | ![Hub, Templates](docs/hub/hub_templates.png) |
+| The Projects page: what you had open, a search, and the empty state that leads to a template. | The Templates page: the three starters the engine ships, with what each one gives you. |
+
+![Hub, About](docs/hub/hub_about.png)
+
+*The About page. The rail carries the hanko seal at 26 px — the ensō's gap closes at that size and reads as a letter
+C, so small sizes use the stamp instead — with the wordmark and 浮世エンジン beside it.*
 
 ## Quick start
 
