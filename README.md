@@ -20,6 +20,8 @@ The workspace is three programs and a library:
 | --- | --- |
 | ![Terrain](docs/terrain-hero.png) | ![Virtual geometry](docs/vgeom-levels.png) |
 | The Terrain Lab tile with the vendored ground textures and grass, rendered offline by `terrain_preview` (see [docs/TERRAIN.md](docs/TERRAIN.md)). | The same 131 072-triangle tile built into a virtual-geometry cluster tree, cut at 1 px and 8 px (see [docs/VGEOM.md](docs/VGEOM.md)). |
+| ![Path traced](docs/pathtrace-terrain.png) | |
+| The same scene through a CPU path tracer — one cosine bounce, ray-marched sun shadows, the engine's layer weights and textures. The ground truth the real-time renderer is measured against, and it runs on any machine (see [docs/PATHTRACE.md](docs/PATHTRACE.md)). | |
 
 The hub's own pages are captured on every CI run by `ukiyo_hub --screenshots renders` and uploaded as the
 `screenshots` artifact, together with the terrain renders.
@@ -69,6 +71,9 @@ Vulkan backend and an OpenGL backend; `--backend gl` selects the latter.
   and widening, and a chunked indirect-friendly draw. See [docs/GRASS.md](docs/GRASS.md).
 * **Virtual geometry** — static meshes are clustered into a 128-triangle hierarchy with per-cluster error and drawn
   through a screen-space cut, cached beside the model. See [docs/VGEOM.md](docs/VGEOM.md).
+* **Path-traced reference** — `tools/pathtrace_preview` renders the terrain on the CPU with true bounces and exact sun
+  shadows, at whatever sample count the machine can afford. No RT cores, no DLSS, no GPU at all. See
+  [docs/PATHTRACE.md](docs/PATHTRACE.md).
 * **Shadows** — three cascades into a 3 × 2048² atlas, slope-scaled bias, PCF.
 * **Water, particles, foliage, face SDF, PMX models**, and a shader graph with a node editor that generates
   GLSL and compiles it to SPIR-V at runtime.
@@ -166,4 +171,5 @@ Japanese line is the brand's second name, not a translation layer. The font is r
 
 The engine builds and tests on Linux CI, and the editor and hub run on Windows, Linux and macOS. Known gaps are
 listed at the end of each doc — the largest are GPU-driven virtual geometry (no compute or multi-draw in the RHI
-yet), a real-time path-traced mode, and foot locking in motion matching.
+yet), real-time interreflection (the CPU tracer in [docs/PATHTRACE.md](docs/PATHTRACE.md) is the reference), and foot
+locking in motion matching.

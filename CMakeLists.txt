@@ -175,6 +175,13 @@ target_include_directories(vgeom_preview PRIVATE ${CMAKE_SOURCE_DIR}/src ${CMAKE
 target_link_libraries(vgeom_preview PRIVATE glm::glm)
 target_compile_options(vgeom_preview PRIVATE -Wall -Wextra -Wno-missing-field-initializers)
 
+# The CPU path tracer behind docs/PATHTRACE.md and docs/pathtrace-terrain.png: the ground-truth render of the Terrain
+# Lab scene, on any CPU and with no GPU at all. STB is implemented in the tool itself, so it does not link ukiyo_core.
+add_executable(pathtrace_preview tools/pathtrace_preview.cpp src/engine/terrain.cpp)
+target_include_directories(pathtrace_preview PRIVATE ${CMAKE_SOURCE_DIR}/src ${CMAKE_SOURCE_DIR}/third_party)
+target_link_libraries(pathtrace_preview PRIVATE glm::glm)
+target_compile_options(pathtrace_preview PRIVATE -Wall -Wextra -Wno-missing-field-initializers)
+
 # Motion matching (docs/MOTION.md). The database, the BVH reader and the player are CPU code; the model retarget is
 # compiled here too, so the test links the engine's model header without needing the renderer.
 add_executable(motion_test tests/motion_test.cpp src/engine/motion_match.cpp)

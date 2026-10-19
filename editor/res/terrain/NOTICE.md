@@ -27,6 +27,27 @@ The conversion is reproducible: `python3 tools/import_reference_terrain.py [path
 file from a checkout of the reference. 512 is not arbitrary: the terrain atlas cell is 512 texels, so the engine
 resamples once at upload and the files are exactly the size the shader wants.
 
+## Coverage against the reference folder
+
+The reference's `Assets/TerrainSampleAssets/Textures` holds 39 texture files: 30 under `Details/` and 9 under
+`Terrain/`. This folder carries 10 of them, and the split is deliberate.
+
+| Reference set | Files there | Here | What uses it here |
+| --- | --- | --- | --- |
+| `Terrain/{Grass_Moss, Heather, Muddy}_{BaseColor, Normal, MaskMap}` | 9 | 9 | the terrain's layer atlas, and the path tracer in `tools/pathtrace_preview.cpp` |
+| `Details/Plant_{BaseColor, MaskMap, Normal, Thickness}` | 4 | 1 (`Plant_BaseColor`) | the near-field detail overlay in `shaders/terrain.frag` |
+| `Details/{BushDry, Bush_A, Fern, GrassDry, Grass_A, Grass_C, Heather_A}_*` | 26 | 0 | nothing yet |
+
+The 26 missing files are the reference's **billboard plants**: `BaseColor` plus a `MaskMap` (opacity in alpha) and a
+`Thickness` map for translucency, drawn as camera-facing cards with alpha test. Ukiyo's grass is real geometry — eight
+blades of four quads per tuft, shaded in `shaders/grass.vert`/`grass.frag` — so it has no card alpha and no
+transmission term to feed, and the shader would have to grow an entirely different path before those files meant
+anything. They are not copied rather than copied and never read; if a future card-based impostor LOD needs them,
+`tools/import_reference_terrain.py` is the place to add the conversion, and the licence above already covers them.
+
+`Details/*_Thickness.tif` is the one set with no destination at all: the engine's grass shading has a single
+transmission colour, not a per-pixel thickness map.
+
 ## MIT licence
 
 ```
