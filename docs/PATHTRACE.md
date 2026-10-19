@@ -159,24 +159,49 @@ a 15 W integrated part does in a few milliseconds. The editor's self-test runs t
 (`11v: traced bounce light runs without breaking the frame`), the setting is in the Screen Effects panel next to SSAO,
 and `tests/gi_test.cpp` checks the algorithm's maths against analytic answers on every build.
 
-## 5. What the renderer does around it
+## 5. What the reference does, and what this engine does instead
+
+The reference's whole argument is that one path tracer should replace the raster lighting stack, so the honest test of
+this item is a job-by-job comparison rather than a screenshot. The left column is its list; the right column is what an
+iGPU can actually run here.
+
+| Job the reference traces | This engine | Where |
+| --- | --- | --- |
+| Sky occlusion / ambient occlusion | traced, one cosine bounce into the heightfield | §4 |
+| One-bounce interreflection (colour bleed) | traced, the same bounce, composited as a delta | §4 |
+| Shadow maps / PCSS | cascaded shadow atlas with PCF, unchanged: a traced sun would cost a march per pixel per light and the atlas already resolves the terrain's own ridges | `shadows` |
+| SSR / reflection probes | screen-space reflections, with a depth-and-normal ray march | `shaders/effects.frag` |
+| Lightmaps / light-probe volumes | not used; daylight and a hemisphere ambient are the lighting | — |
+| NiloToon characters inside the path tracer | the toon materials are rasterised, not traced, and characters do not occlude the traced bounce | below |
+
+**Where the reference is stronger, and this document says so.** It traces reflection rays, transmission, refraction and
+NiloToon's translucent cloth; it denoises with a network trained on those signals; and it handles geometry a
+heightfield cannot express. This engine traces one diffuse bounce over terrain only, so a character standing in a
+valley does not block the light that reaches it, and a wet rock does not reflect the sky with a traced ray. Those are
+the costs of the requirement: **16 GB of RTX silicon is not something an integrated GPU has**, and the pass here runs
+in a fragment shader with no ray-tracing feature at all.
+
+## 6. What the renderer does around it
 
 On an iGPU the editor draws the same scene with rasterisation, and the differences are the whole story of this item:
 
 | Effect | Ground truth | Real-time |
 | --- | --- | --- |
 | Sun visibility | exact ray march, soft where the ridge is | 3-cascade shadow atlas with a PCF kernel |
-| Ambient | sky dome sampled over the hemisphere, plus one bounce | hemispherical ambient in the toon shader and SSAO in `shaders/effects.frag` |
+| Ambient | sky dome sampled over the hemisphere, plus one bounce | hemispherical ambient in the toon shader, darkened by SSAO, corrected by the traced bounce (§4) |
 | Interreflection | one cosine bounce | traced at half resolution, accumulated over frames, composited at full resolution (§4) |
 | Grass | albedo only | 262 144 tufts a tile, scattered on the CPU, wind and distance bands in the vertex shader |
 | AA | jittered supersampling | FXAA, SSAA 2×, or TAA |
 
-The honest gap that remains is contact occlusion: SSAO covers it at a fraction of a millisecond, and the estimator's
-rays start 5 cm off the surface, so a crease narrower than that is not seen. Everything else in the reference's list of
-jobs it takes over from rasterisation — ambient occlusion of the sky, one-bounce interreflection, shadowing of the
-ambient term — is now traced rather than guessed, which is what the estimator in §4 is for.
+The honest gaps that remain are contact occlusion and anything that is not terrain. SSAO covers the first at a
+fraction of a millisecond, and the estimator's rays start 5 cm off the surface, so a crease narrower than that is not
+seen. The second is structural: the rays march a heightfield, so a character, a rock or a tree standing between a
+surface and the sky does not block the bounce. Their contact is still darkened by SSAO, and they still cast into the
+sun's cascade; what they cannot do is change the colour of the light in their shadow. Closing that needs a
+three-dimensional acceleration structure, which is exactly the thing an iGPU cannot traverse fast enough to be worth
+the trade — so it is written down rather than hidden.
 
-## 6. Reproducing
+## 7. Reproducing
 
 ```sh
 cmake --build build --target pathtrace_preview
