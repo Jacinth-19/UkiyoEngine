@@ -149,10 +149,10 @@ ojson foliageJson(const std::string& name, ukiyo::FoliageShape shape, float dens
 ojson grassJson() {
     ukiyo::GrassSettings g;
     g.enabled = true;
-    g.density = 0.55f;
-    g.height = 0.46f;
+    g.density = 0.9f;
+    g.height = 0.45f;
     g.width = 0.052f;
-    g.blades = 3;
+    g.blades = 4;
     g.segments = 4;
     g.scaleMin = 0.8f;
     g.scaleMax = 1.4f;

@@ -9,6 +9,12 @@ It is **not** a port. The reference is a GPU-driven pipeline built on constructs
 stages were re-cut for the hardware interface that exists here. This page is the honest mapping: what runs where, what
 was changed, and what was dropped.
 
+![The scatter on the sample terrain](grass-scatter-preview.png)
+
+*The real scatter on `tests/data/terrain_hills_257.u16` at the new-project settings, rasterised offline (painter's
+algorithm, the shader's band hash and toon ramp applied on the CPU). It is a look at the geometry and the density, not
+an engine frame — the engine's own frame is `renders/terrain_grass.png`, written by the hub self-test.*
+
 ## What the reference does
 
 | Stage | Unity (URP) |

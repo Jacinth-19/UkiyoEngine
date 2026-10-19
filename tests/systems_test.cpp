@@ -1435,7 +1435,9 @@ static void testGrass() {
     check(cappedSame, "grass: the budget's subset is the same every build");
 
     // The mesh: 3 blades of 4 segments, uv.y from root to tip, one normal per vertex, indices in range.
-    GrassSettings meshSettings;
+    GrassSettings meshSettings;   // three blades of four quads, so the counts below are easy to read
+    meshSettings.blades = 3;
+    meshSettings.segments = 4;
     const GrassMesh mesh = buildGrassMesh(meshSettings);
     check(mesh.positions.size() == 3 * 5 * 2 && mesh.indices.size() == 3 * 4 * 6,
           "grass: the tuft mesh is three blades of four quads", std::to_string(mesh.positions.size()));

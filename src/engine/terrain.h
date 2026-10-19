@@ -59,7 +59,7 @@ struct GrassSettings {
     bool enabled = false;
     // Candidates per square metre. The scatter puts one jittered candidate in every cell of a square grid whose side
     // is 1 / sqrt(density) metres, so this is the ceiling before the detail map and the layer masks thin it.
-    float density = 0.35f;
+    float density = 0.9f;
     // Image whose red channel scales the density. Empty means the detail map is full everywhere. Resampled to the
     // heightmap's sample grid, like a foliage density map.
     std::string densityMap;
@@ -69,9 +69,9 @@ struct GrassSettings {
     float slopeMax = 35.0f;
 
     // Blade size. The mesh is built at these metres and then scaled per instance.
-    float height = 0.42f;          // metres to the tip of the tallest blade
+    float height = 0.45f;          // metres to the tip of the tallest blade
     float width = 0.055f;          // metres across the base of one blade
-    uint32_t blades = 3;           // blades per tuft
+    uint32_t blades = 4;           // blades per tuft
     uint32_t segments = 4;         // quads along each blade; more segments bend more smoothly
     float scaleMin = 0.75f, scaleMax = 1.35f;
     uint32_t seed = 3;

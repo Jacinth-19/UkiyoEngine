@@ -45,29 +45,33 @@ float coverageRamp(float coverage, float edge) {
 
 GrassMesh buildGrassMesh(const GrassSettings& s) {
     GrassMesh m;
-    const uint32_t blades = std::clamp(s.blades, 1u, 8u);
+    const uint32_t blades = std::clamp(s.blades, 1u, 16u);
     const uint32_t segments = std::clamp(s.segments, 1u, 12u);
     const float height = std::max(0.01f, s.height);
     const float halfWidth = std::max(0.001f, s.width) * 0.5f;
+    // A tuft is not a star of blades from one point: the roots sit on a small disc, so at a metre or two the tuft reads
+    // as a clump of grass instead of a spike. The radius follows the blade height, so a tuft keeps its proportions.
+    const float tuftRadius = height * 0.22f;
     // The blades fan out on the golden angle, so a tuft never looks like a symmetric star.
     const float kGolden = 2.39996323f;
     for (uint32_t b = 0; b < blades; ++b) {
-        const float yaw = float(b) * kGolden + 0.35f;
-        // Each blade leans out and away a little, so the tuft has a silhouette from every side.
-        const float lean = 0.18f + 0.22f * float((b * 7) % 5) / 4.0f;
-        const float c = std::cos(yaw), sn = std::sin(yaw);
+        const float phi = float(b) * kGolden + 0.35f;
+        const float outX = std::cos(phi), outZ = std::sin(phi);
+        // A third of the blades lean outward more than the rest, which is what gives a tuft its silhouette.
+        const float lean = 0.55f + 0.45f * float((b * 7) % 5) / 4.0f;
+        const float root = tuftRadius * std::sqrt(float((b * 3) % 4) / 3.0f);
         const uint32_t first = uint32_t(m.positions.size());
         // Mostly-up normal with a third of the blade's facing, so the field shades as a soft mass instead of as flat
         // cards that go black when the sun is overhead.
-        const glm::vec3 facing(c, 0.0f, sn);
+        const glm::vec3 facing(outX, 0.0f, outZ);
         const glm::vec3 normal = glm::normalize(glm::vec3(0.0f, 0.9f, 0.0f) + facing * 0.45f);
         for (uint32_t j = 0; j <= segments; ++j) {
             const float t = float(j) / float(segments);
             const float w = halfWidth * (1.0f - 0.92f * t * t);   // tapers to a near point
-            const float y = height * t * (1.0f - 0.12f * lean);   // leaning blades are a little shorter
-            const float out = lean * height * t * t;              // the lean grows towards the tip
-            const glm::vec3 mid(c * out, y, sn * out);
-            const glm::vec3 side(-sn * w, 0.0f, c * w);
+            // The blade leans outward as it rises: a cantilever, so the base never moves.
+            const float reach = root + tuftRadius * lean * t * t;
+            const glm::vec3 mid(outX * reach, height * t, outZ * reach);
+            const glm::vec3 side(-outZ * w, 0.0f, outX * w);
             m.positions.push_back(mid - side);
             m.normals.push_back(normal);
             m.uvs.push_back({0.0f, t});
