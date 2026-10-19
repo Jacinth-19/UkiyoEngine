@@ -7,6 +7,9 @@ on:
     branches: [ "main" ]
   workflow_dispatch:
 
+permissions:
+  contents: write
+
 jobs:
   build:
     runs-on: ubuntu-latest
@@ -39,6 +42,21 @@ jobs:
       # The launcher's pages, grabbed offscreen: downloadable as the screenshots artifact and used by the docs.
       - name: Capture hub screenshots
         run: QT_QPA_PLATFORM=offscreen ./build/ukiyo_hub --screenshots renders
+      # The artifact host is not reachable from every environment, so the pictures a reviewer needs also land in the
+      # repository: the hub's three pages are committed under docs/hub/ from CI, where they are actually rendered.
+      # [skip ci] stops that commit from starting another build.
+      - name: Publish hub screenshots
+        if: github.event_name == 'push'
+        run: |
+          mkdir -p docs/hub
+          cp renders/hub_projects.png renders/hub_templates.png renders/hub_about.png docs/hub/
+          git config user.name "ukiyo-ci"
+          git config user.email "ci@ukiyo.invalid"
+          git add docs/hub
+          if git diff --cached --quiet; then echo "no change"; exit 0; fi
+          git commit -m "Hub screenshots from CI [skip ci]"
+          git push
+
       # The self-test draws the sample terrain to renders/terrain_*.png. Keep them, so a graphics change can be
       # looked at without a local GL context.
       - name: Upload terrain renders
