@@ -41,11 +41,11 @@ carries 10 of them, and the split is deliberate.
 | `Details/Plant_{BaseColor, MaskMap, Normal, Thickness}` | 4 | 1 (`Plant_BaseColor`) | the near-field detail overlay in `shaders/terrain.frag` |
 | `Details/{BushDry, Bush_A, Fern, GrassDry, Grass_A, Grass_C, Heather_A}_*` | 27 | 0 | nothing yet |
 
-The 30 files not copied are the reference's **billboard plants**: a `BaseColor`, a `MaskMap` (opacity in alpha), a
-`Normal`, and, for most of the sets, a `Thickness` map for translucency, drawn as camera-facing cards with alpha test. Ukiyo's grass is real geometry — eight
-blades of four quads per tuft, shaded in `shaders/grass.vert`/`grass.frag` — so it has no card alpha and no
-transmission term to feed, and the shader would have to grow an entirely different path before those files meant
-anything. They are not copied rather than copied and never read; if a future card-based impostor LOD needs them,
+The 30 files not copied are the reference's **billboard plants and their masks**: for each of the seven plant sets a
+`BaseColor` and a `MaskMap` (opacity in alpha), and a `Normal` and a `Thickness` map for most of them, drawn as
+camera-facing cards with alpha test. Ukiyo's grass is real geometry — eight blades of four quads per tuft, shaded in
+`shaders/grass.vert`/`grass.frag` — so it has no card alpha and no transmission term to feed, and the shader would have
+to grow an entirely different path before those files meant anything. They are not copied rather than copied and never read; if a future card-based impostor LOD needs them,
 `tools/import_reference_terrain.py` is the place to add the conversion, and the licence above already covers them.
 
 `Details/*_Thickness.tif` is the one set with no destination at all: the engine's grass shading has a single
