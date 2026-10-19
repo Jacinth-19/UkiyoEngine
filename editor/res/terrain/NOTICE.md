@@ -24,22 +24,25 @@ so a Ukiyo project can look like the scene the system was designed against inste
 use for ground, so only the occlusion channel is kept, and it travels in the alpha of the terrain's normal atlas.
 
 The conversion is reproducible: `python3 tools/import_reference_terrain.py [path/to/UnityGrass]` regenerates every
-file from a checkout of the reference. 512 is not arbitrary: the terrain atlas cell is 512 texels, so the engine
+file from a checkout of the reference. Verified on a fresh sparse checkout of the reference (`Assets/TerrainSampleAssets/
+Textures` only): the script rewrote all ten files pixel for pixel, so what is committed here is exactly what the
+reference's art becomes under the documented transforms. 512 is not arbitrary: the terrain atlas cell is 512 texels, so the engine
 resamples once at upload and the files are exactly the size the shader wants.
 
 ## Coverage against the reference folder
 
-The reference's `Assets/TerrainSampleAssets/Textures` holds 39 texture files: 30 under `Details/` and 9 under
-`Terrain/`. This folder carries 10 of them, and the split is deliberate.
+The reference's `Assets/TerrainSampleAssets/Textures` holds 40 `.tif` files: 31 under `Details/` and 9 under
+`Terrain/` (counted with `find … -name '*.tif'` on a checkout of the reference, not from its README). This folder
+carries 10 of them, and the split is deliberate.
 
 | Reference set | Files there | Here | What uses it here |
 | --- | --- | --- | --- |
 | `Terrain/{Grass_Moss, Heather, Muddy}_{BaseColor, Normal, MaskMap}` | 9 | 9 | the terrain's layer atlas, and the path tracer in `tools/pathtrace_preview.cpp` |
 | `Details/Plant_{BaseColor, MaskMap, Normal, Thickness}` | 4 | 1 (`Plant_BaseColor`) | the near-field detail overlay in `shaders/terrain.frag` |
-| `Details/{BushDry, Bush_A, Fern, GrassDry, Grass_A, Grass_C, Heather_A}_*` | 26 | 0 | nothing yet |
+| `Details/{BushDry, Bush_A, Fern, GrassDry, Grass_A, Grass_C, Heather_A}_*` | 27 | 0 | nothing yet |
 
-The 26 missing files are the reference's **billboard plants**: `BaseColor` plus a `MaskMap` (opacity in alpha) and a
-`Thickness` map for translucency, drawn as camera-facing cards with alpha test. Ukiyo's grass is real geometry — eight
+The 30 files not copied are the reference's **billboard plants**: a `BaseColor`, a `MaskMap` (opacity in alpha), a
+`Normal`, and, for most of the sets, a `Thickness` map for translucency, drawn as camera-facing cards with alpha test. Ukiyo's grass is real geometry — eight
 blades of four quads per tuft, shaded in `shaders/grass.vert`/`grass.frag` — so it has no card alpha and no
 transmission term to feed, and the shader would have to grow an entirely different path before those files meant
 anything. They are not copied rather than copied and never read; if a future card-based impostor LOD needs them,

@@ -110,24 +110,26 @@ the previous frame's composited image) keeps the estimator from feeding its own 
 **Measured against the tracer.** Same scene, same camera, same curves (`pathtrace_preview realtime out.png . 480 270
 16 8 64` renders the estimate, the 64-spp reference and the difference):
 
-| Rays per half-res pixel | Frames accumulated | RMSE vs 64 spp | Worst pixel |
-| --- | --- | --- | --- |
-| 4 | 8 | 0.038 | 0.33 |
-| 8 | 8 | 0.038 | 0.34 |
-| 8 | 16 | 0.038 | 0.31 |
+| Resolution | Rays per half-res pixel | Frames accumulated | Reference | RMSE | Worst pixel |
+| --- | --- | --- | --- | --- | --- |
+| 480 × 270 | 4 | 8 | 32 spp | 0.0381 | 0.333 |
+| 480 × 270 | 8 | 8 | 32 spp | 0.0380 | 0.343 |
+| 480 × 270 | 8 | 8 | 64 spp | 0.0376 | 0.310 |
+| 960 × 540 | 8 | 16 | 64 spp | **0.0335** | 0.328 |
 
-The error does not move with the ray count because it is not the estimator's noise: at these settings it is the
+The error barely moves with the ray count because it is not the estimator's noise: at these settings it is the
 difference between the estimator's model (a raster frame plus one bounce) and the tracer's (every ray a path), which
-is a systematic 1.5 % of the range, mostly along silhouette edges where the half-resolution GI meets the full-resolution
-frame. That is the honest description of what a half-resolution, one-bounce, raster-fed estimator can be: *the
-lighting matches the reference closely, the fine detail cannot*.
+is a systematic 1.3–1.5 % of the range, concentrated along silhouette edges where the half-resolution GI meets the
+full-resolution frame and in the tracer's own sample noise. That is the honest description of what a half-resolution,
+one-bounce, raster-fed estimator can be: *the lighting matches the reference closely, the fine detail cannot*.
 
 | | The estimate | The same pixels from the tracer | Difference, ×4 |
 | --- | --- | --- | --- |
 | 960 × 540 | ![estimate](gi-realtime.png) | ![reference](gi-reference.png) | ![difference](gi-diff.png) |
 
-*The bounce light in the basins and the shading on the far ridges match; the residual is trace noise in the reference
-and a one-pixel silhouette line.*
+*The bounce light in the basins and the shading on the far ridges match; what is left in the difference image is the
+tracer's own sample noise (the blue grain — 64 spp is not a converged reference) and a one-pixel line along every
+silhouette, where the half-resolution estimate meets the full-resolution depth buffer.*
 
 **Where the albedo and the normals come from.** A bounce is `albedo × incoming radiance`, and a full-resolution
 albedo is not something a half-resolution pass has: the trace takes the terrain's own layer blend, averaged to the
@@ -136,13 +138,14 @@ and characters are not in the heightfield, so their pixels take the ground's alb
 the engine's normal pre-pass where it has a surface and from the heightfield's own gradient on terrain, which is not
 in that pre-pass — the same surface the rays march, so the two agree.
 
-**Cost on the CPU twin**, two threads, 480 × 270: the raster pass (whose direct light comes from shadow rays in the
-twin) is 286 ms one-off, and the estimator is 114 ms a frame at eight rays — 0.31 M rays. On the GPU the same work is a
+**Cost on the CPU twin**, two threads: at 480 × 270 the raster pass (whose direct light comes from shadow rays in the
+twin) is 286 ms one-off and the estimator is 114 ms a frame at eight rays — 0.31 M rays; at 960 × 540, sixteen frames
+at eight rays is 527 ms a frame for 1.0 M rays. On the GPU the same work is a
 fragment shader with no divergence and texture-cached height lookups, and the two halves of the twin are exactly the
 kinds of work an integrated GPU is built for; the pass's own budget is 7.4 M texture fetches at 720p with four rays.
 **No GPU number is quoted here because none was measured on a GPU** — this container has no Vulkan device. What can be
-said without a measurement is the work: three half-resolution passes, 0.92 M rays, 7.4 M fetches, no synchronisation
-and no readback, which is inside what a 15 W integrated part does in a few milliseconds. The editor's self-test runs the
+said without a measurement is the work: two half-resolution passes, 0.92 M rays, 7.4 M fetches at 720p with four
+rays, no synchronisation and no readback, which is inside what a 15 W integrated part does in a few milliseconds. The editor's self-test runs the
 pass on whatever device it is on (`11v: traced bounce light runs without breaking the frame`), and the setting is in
 the Screen Effects panel next to SSAO.
 

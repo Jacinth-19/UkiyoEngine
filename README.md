@@ -88,7 +88,7 @@ Vulkan backend and an OpenGL backend; `--backend gl` selects the latter.
 * **Shadows** — three cascades into a 3 × 2048² atlas, slope-scaled bias, PCF.
 * **Traced bounce light** — one diffuse bounce traced against the terrain heightfield at half resolution, accumulated
   over sixteen frames and composited at full resolution. A fragment shader with no ray-tracing or compute feature, so
-  it runs on any integrated GPU; measured against the CPU path tracer at 1.5 % mean error. See
+  it runs on any integrated GPU; measured against the CPU path tracer at 1.3–1.5 % RMSE. See
   [docs/PATHTRACE.md](docs/PATHTRACE.md).
 * **Water, particles, foliage, face SDF, PMX models**, and a shader graph with a node editor that generates
   GLSL and compiles it to SPIR-V at runtime.

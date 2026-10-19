@@ -12,8 +12,9 @@ What this script does, for each layer:
 and from Textures/Details/Plant_BaseColor.tif:
   * plant_detail.png, 512 x 512, used as a near-field detail overlay by shaders/terrain.frag
 
-512 is deliberate: the terrain atlas cell is 256, so the engine downsamples from twice the texel count (clean
-filtering, no aliasing at grazing angles), and the files stay small enough to live in the repository.
+512 is deliberate: the terrain atlas cell is 512 (kTerrainAtlasCell), and the reference's own files are 2048, so
+the engine downsamples once, at import, to exactly the size the shader wants; the files also stay small enough to
+live in the repository.
 
 Run from the repository root:
     python3 tools/import_reference_terrain.py [path/to/UnityGrass]
