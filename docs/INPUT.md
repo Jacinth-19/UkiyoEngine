@@ -9,7 +9,7 @@ The implementation is Unity's Input System minus touch and XR: Keyboard, Mouse a
 PassThrough actions; 1D and 2D composites; Press, Hold, Tap, SlowTap and MultiTap interactions; the processors an
 everyday project uses; runtime rebinding; control schemes; and the asset format in both directions.
 
-The runtime is plain C++ with no window, no GPU and no GLFW in it, which is why `tests/input_test.cpp` can drive 123
+The runtime is plain C++ with no window, no GPU and no GLFW in it, which is why `tests/input_test.cpp` can drive 128
 checks of it from synthetic devices on every push. The GLFW backend is a separate target that only applications link.
 
 ```
@@ -255,13 +255,13 @@ Where it is used:
 
 | Place | What it does |
 | --- | --- |
-| `src/systems/world.cpp` | Builds a real `Gameplay` action map from the project's actions (name + portable key). `setKeyHeld` writes the keyboard device, `actionDown` reads the action, `input()` exposes the whole state to game code. Input runs on unscaled time, so a paused game can still read a menu key. |
+| `src/systems/world.cpp` | Builds a real `Gameplay` action map from the project's actions (name + portable key). `setKeyHeld` writes the keyboard device, `actionDown` reads the action, `input()` exposes the whole state to game code. Input runs on unscaled time, so a paused game can still read a menu key. The key text may be Qt's (`Shift`, `Esc`, `PgUp`) or a Unity control name (`leftShift`, `escape`, `pageUp`); both spellings reach the same control. |
 | `src/app/main.cpp` | The standalone viewer's bindings live in `assets/input/viewer.inputactions`; the camera, its toggles and its screenshot key are actions. |
 | `editor/src/main_window.cpp` | The editor's own chrome (Ctrl+S, menu shortcuts) stays on Qt. Key presses in the Game view are forwarded to the running world as portable key text, which `World::setKeyHeld` translates to a control name. |
 
 ## 9. The test
 
-`tests/input_test.cpp` drives the runtime with synthetic devices: no window, no GPU, no GLFW. 123 checks, grouped:
+`tests/input_test.cpp` drives the runtime with synthetic devices: no window, no GPU, no GLFW. 128 checks, grouped:
 
 1. devices and control paths — a keyboard has `space`, a trigger is an Axis, `readPath` resolves a control;
 2. button actions — press, hold, release, and `triggered()` being true for exactly one frame;

@@ -676,7 +676,7 @@ static void testVfx() {
 // scripts read them through actionDown(). docs/INPUT.md.
 static void testWorldInput() {
     World w(true);
-    w.setInputActions({{"Jump", "Space"}, {"Run", "LeftShift"}, {"Typo", "Hyper"}});
+    w.setInputActions({{"Jump", "Space"}, {"Run", "Shift"}, {"Typo", "Hyper"}});
     check(w.input().action("Gameplay", "Jump") != nullptr, "input: a project action becomes an action in the Gameplay map");
     check(w.input().map("Gameplay") && w.input().map("Gameplay")->enabled, "input: the Gameplay map is enabled");
     check(!w.actionDown("Jump"), "input: an action nobody is pressing is false");
@@ -689,15 +689,23 @@ static void testWorldInput() {
     w.setKeyHeld("Space", false);
     check(!w.actionDown("Jump"), "input: releasing the key ends the action");
 
-    // A modifier is a normal control name here, not a chord; the key text is Qt's.
-    w.setKeyHeld("LeftShift", true);
-    check(w.actionDown("Run"), "input: LeftShift maps to leftShift and drives its action");
+    // A modifier is a normal control name here, not a chord; the key text is the one Qt's QKeySequence writes.
+    w.setKeyHeld("Shift", true);
+    check(w.actionDown("Run"), "input: Qt's Shift maps to leftShift and drives its action");
 
     // An unknown key is ignored on both sides, so a typo in the project settings cannot half-work.
     w.setKeyHeld("Hyper", true);
     check(!w.actionDown("Typo"), "input: an action with an unknown key never fires");
-    w.setKeyHeld("LeftShift", false);
+    w.setKeyHeld("Shift", false);
     check(!w.actionDown("Run"), "input: the modifier releases too");
+
+    // A project file may spell the control the way Unity does, and setting the actions again mid-session replaces the
+    // map instead of growing it.
+    w.setInputActions({{"Run", "LeftShift"}});
+    w.setKeyHeld("Shift", false);
+    w.setKeyHeld("LeftShift", true);
+    check(w.actionDown("Run"), "input: LeftShift is accepted as an alias for leftShift");
+    check(w.input().action("Gameplay", "Jump") == nullptr, "input: replacing the actions drops the old ones");
 }
 
 static void testActions() {

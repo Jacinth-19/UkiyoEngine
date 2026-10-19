@@ -696,6 +696,14 @@ void testParserEdges() {
     checkTrue(controlNameFromPortableKey("W", &control) && control == "w", "portable W -> w");
     checkTrue(controlNameFromPortableKey("Left", &control) && control == "leftArrow", "portable Left -> leftArrow");
     checkTrue(controlNameFromPortableKey("F7", &control) && control == "f7", "portable F7 -> f7");
+    // Qt says "Shift" for the left shift key; a project file may say "LeftShift", and Unity says "leftShift".
+    checkTrue(controlNameFromPortableKey("Shift", &control) && control == "leftShift", "portable Shift -> leftShift");
+    checkTrue(controlNameFromPortableKey("LeftShift", &control) && control == "leftShift",
+              "LeftShift is accepted as an alias");
+    checkTrue(controlNameFromPortableKey("leftShift", &control) && control == "leftShift",
+              "a Unity control name is accepted as it is");
+    checkTrue(controlNameFromPortableKey("Esc", &control) && control == "escape", "portable Esc -> escape");
+    checkTrue(controlNameFromPortableKey("PgUp", &control) && control == "pageUp", "portable PgUp -> pageUp");
     checkTrue(controlNameFromPortableKey(";", &control) && control == "semicolon", "portable ; -> semicolon");
     checkTrue(!controlNameFromPortableKey("Hyper", &control), "an unknown key name is refused, not guessed");
 

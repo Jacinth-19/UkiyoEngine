@@ -49,6 +49,13 @@ bool deviceKindFromPath(const std::string& path, DeviceKind* out) {
 
 bool controlNameFromPortableKey(const std::string& portable, std::string* out) {
     if (portable.empty()) return false;
+    // A project setting may already spell the control the way Unity does ("space", "leftShift"); that is the name a
+    // rebind produces, so accepting it here keeps a hand-edited action and a rebound one identical.
+    for (const std::string& control : keyboardControls())
+        if (portable == control) {
+            if (out) *out = portable;
+            return true;
+        }
     std::string name = portable;
     if (name.size() == 1 && name[0] >= 'A' && name[0] <= 'Z') name[0] = char(name[0] - 'A' + 'a');
     // Letters and digits are their own names; the punctuation keys are named after what they print, as Unity does.
@@ -76,12 +83,16 @@ bool controlNameFromPortableKey(const std::string& portable, std::string* out) {
         }
     }
     static const std::pair<const char*, const char*> kTable[] = {
-        {"Space", "space"}, {"Return", "enter"}, {"Enter", "enter"}, {"Escape", "escape"}, {"Tab", "tab"},
-        {"Backspace", "backspace"}, {"Delete", "delete"}, {"Insert", "insert"}, {"Home", "home"}, {"End", "end"},
-        {"PageUp", "pageUp"}, {"PageDown", "pageDown"}, {"Left", "leftArrow"}, {"Right", "rightArrow"},
-        {"Up", "upArrow"}, {"Down", "downArrow"}, {"Shift", "leftShift"}, {"Ctrl", "leftCtrl"}, {"Alt", "leftAlt"},
-        {"Meta", "leftMeta"}, {"CapsLock", "capsLock"}, {"NumLock", "numLock"}, {"Print", "printScreen"},
-        {"Pause", "pause"}, {"ScrollLock", "scrollLock"}, {"Backquote", "backquote"}, {"Quote", "quote"},
+        {"Space", "space"}, {"Return", "enter"}, {"Enter", "enter"}, {"Escape", "escape"}, {"Esc", "escape"},
+        {"Tab", "tab"}, {"Backspace", "backspace"}, {"Delete", "delete"}, {"Del", "delete"}, {"Insert", "insert"},
+        {"Ins", "insert"}, {"Home", "home"}, {"End", "end"}, {"PageUp", "pageUp"}, {"PgUp", "pageUp"},
+        {"PageDown", "pageDown"}, {"PgDown", "pageDown"}, {"Left", "leftArrow"}, {"Right", "rightArrow"},
+        {"Up", "upArrow"}, {"Down", "downArrow"}, {"Shift", "leftShift"}, {"LeftShift", "leftShift"},
+        {"RightShift", "rightShift"}, {"Ctrl", "leftCtrl"}, {"LeftCtrl", "leftCtrl"}, {"RightCtrl", "rightCtrl"},
+        {"Alt", "leftAlt"}, {"LeftAlt", "leftAlt"}, {"RightAlt", "rightAlt"}, {"Meta", "leftMeta"},
+        {"LeftMeta", "leftMeta"}, {"RightMeta", "rightMeta"}, {"CapsLock", "capsLock"}, {"NumLock", "numLock"},
+        {"Print", "printScreen"}, {"Pause", "pause"}, {"ScrollLock", "scrollLock"}, {"Backquote", "backquote"},
+        {"Quote", "quote"},
         {"Semicolon", "semicolon"}, {"Comma", "comma"}, {"Period", "period"}, {"Slash", "slash"},
         {"Backslash", "backslash"}, {"BracketLeft", "leftBracket"}, {"BracketRight", "rightBracket"},
         {"Minus", "minus"}, {"Equal", "equals"}, {"Plus", "numpadPlus"},
