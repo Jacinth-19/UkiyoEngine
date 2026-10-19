@@ -181,19 +181,22 @@ QWidget* HubWindow::buildRail() {
     subFont.setLetterSpacing(QFont::AbsoluteSpacing, 2.6);
     sub->setFont(subFont);
     titles->addWidget(sub);
-    brandRow->addLayout(titles);
-    column->addWidget(brand);
 
-    // The name in Japanese, under the lockup: the engine is English-first, but the face carries both.
+    // The second name, in the same stack as the Latin one: the engine is English-first, but the face carries both.
+    // Inside the lockup it aligns to the wordmark; as a separate row it lined up under the seal instead, which read
+    // as a stray caption.
     auto* jp = new QLabel(QStringLiteral("浮世エンジン"));
     jp->setObjectName(QStringLiteral("hubWordmarkJp"));
     QFont jpFont = jp->font();
     jpFont.setPixelSize(10);
     jpFont.setWeight(QFont::Medium);
-    jpFont.setLetterSpacing(QFont::AbsoluteSpacing, 2.6);
+    jpFont.setLetterSpacing(QFont::AbsoluteSpacing, 2.2);
     jp->setFont(jpFont);
-    column->addSpacing(6);
-    column->addWidget(jp);
+    titles->addSpacing(3);
+    titles->addWidget(jp);
+
+    brandRow->addLayout(titles);
+    column->addWidget(brand);
 
     auto* rule = new QFrame;
     rule->setFixedSize(26, 2);
