@@ -186,6 +186,13 @@ public:
 
     std::vector<Binding> bindings;
 
+    // Unity's action callbacks (action.performed += ...), the alternative to polling triggered(). They fire from
+    // State::update, in started → performed → canceled order, on the same frame the polling accessors would report.
+    // A callback must not add or remove actions or maps: the update is iterating them.
+    std::function<void(const Action&)> onStarted;
+    std::function<void(const Action&)> onPerformed;
+    std::function<void(const Action&)> onCanceled;
+
     // True on the frame the action started performing (a button press, a tap, a hold that completed).
     bool triggered() const { return phase == Phase::Performed && prevPhase != Phase::Performed; }
     // True when the action is performing now.

@@ -626,6 +626,10 @@ void State::update(float dt) {
         }
         for (Action& a : m.actions) {
             evaluateAction(a, dt);
+            // Callbacks see exactly the frames the polling accessors report: started, then performed, then canceled.
+            if (a.startedThisFrame && a.onStarted) a.onStarted(a);
+            if (a.triggered() && a.onPerformed) a.onPerformed(a);
+            if (a.canceled() && a.onCanceled) a.onCanceled(a);
             if (m.onActionPerformed && a.triggered()) m.onActionPerformed(a.name);
         }
     }

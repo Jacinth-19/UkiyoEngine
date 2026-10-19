@@ -111,12 +111,30 @@ void pollMouse(State& state, GLFWwindow* w) {
 }
 
 void pollGamepads(State& state) {
+    // Which pads exist this frame. GLFW enumerates joysticks; only gamepad-mapped ones count.
+    int padCount = 0;
+    for (int jid = GLFW_JOYSTICK_1; jid <= GLFW_JOYSTICK_LAST; ++jid)
+        if (glfwJoystickPresent(jid) && glfwJoystickIsGamepad(jid)) ++padCount;
+
+    // A pad that disappears has to read as absent, and one that appears has to bind: resolveBindings() skips a control
+    // whose device is disconnected, so the flags must be right before evaluation. Hot-plugging is the one device
+    // change the backend can see on its own.
+    std::vector<Device*> pads = state.devices(DeviceKind::Gamepad);
+    bool connectionChanged = false;
+    for (size_t i = 0; i < pads.size(); ++i) {
+        const bool connected = int(i) < padCount;
+        if (pads[i]->connected != connected) {
+            pads[i]->connected = connected;
+            connectionChanged = true;
+        }
+    }
+    if (connectionChanged) state.resolveBindings();
+
     int deviceIndex = 0;
     for (int jid = GLFW_JOYSTICK_1; jid <= GLFW_JOYSTICK_LAST; ++jid) {
         if (!glfwJoystickPresent(jid) || !glfwJoystickIsGamepad(jid)) continue;
         Device* pad = state.device(DeviceKind::Gamepad, deviceIndex);
         if (!pad) continue;
-        pad->connected = true;
         GLFWgamepadstate gs{};
         if (!glfwGetGamepadState(jid, &gs)) continue;
         auto button = [&](int b) { return gs.buttons[b] == GLFW_PRESS; };

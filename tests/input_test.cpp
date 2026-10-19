@@ -643,6 +643,23 @@ void testPassThroughAndCallbacks() {
     checkTrue(any.triggered(), "pass-through: B performs after A is released");
     checkTrue(fired.size() == 2 && fired[0] == "Any" && fired[1] == "Any", "the map callback fired twice");
 
+    // Action callbacks fire on the same frames as the accessors, and only on those frames.
+    Action& cb = map.add("Callback", ActionType::Button);
+    cb.bindings.push_back(Binding{"", "", "<Keyboard>/x", "Callback", "", "", "", false, false, -1});
+    int starts = 0, performs = 0, cancels = 0;
+    cb.onStarted = [&](const Action&) { ++starts; };
+    cb.onPerformed = [&](const Action&) { ++performs; };
+    cb.onCanceled = [&](const Action&) { ++cancels; };
+    f.state.resolveBindings();
+    f.keyboard->setButton("x", true);
+    f.tick();
+    checkTrue(starts == 1 && performs == 1 && cancels == 0, "callbacks: a press reports started and performed once");
+    f.tick();
+    checkTrue(starts == 1 && performs == 1, "callbacks: holding does not repeat them");
+    f.keyboard->setButton("x", false);
+    f.tick();
+    checkTrue(cancels == 1, "callbacks: the release reports canceled");
+
     // An action-level interaction is honoured the same way a binding's is.
     ActionMap& m2 = f.state.addMap("Menu");
     Action& hold = m2.add("Hold", ActionType::Button);

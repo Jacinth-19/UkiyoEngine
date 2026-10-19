@@ -9,7 +9,7 @@ The implementation is Unity's Input System minus touch and XR: Keyboard, Mouse a
 PassThrough actions; 1D and 2D composites; Press, Hold, Tap, SlowTap and MultiTap interactions; the processors an
 everyday project uses; runtime rebinding; control schemes; and the asset format in both directions.
 
-The runtime is plain C++ with no window, no GPU and no GLFW in it, which is why `tests/input_test.cpp` can drive 120
+The runtime is plain C++ with no window, no GPU and no GLFW in it, which is why `tests/input_test.cpp` can drive 123
 checks of it from synthetic devices on every push. The GLFW backend is a separate target that only applications link.
 
 ```
@@ -81,6 +81,11 @@ evaluating them (§6).
 | `pressed()` | the value is non-zero or the phase is Started/Performed |
 | `held()` | the phase is Started or Performed |
 | `readFloat()` / `readVector2()` | the current value |
+
+Polling and callbacks are both supported, and see the same frame: `action.onStarted`, `onPerformed` and `onCanceled`
+are `std::function<void(const Action&)>` members invoked from `update()` in that order. `ActionMap::onActionPerformed`
+fires with the action's name for maps that want one place to listen. A callback must not add or remove actions or maps
+while `update()` is iterating them.
 
 ## 3. The asset format
 
@@ -256,7 +261,7 @@ Where it is used:
 
 ## 9. The test
 
-`tests/input_test.cpp` drives the runtime with synthetic devices: no window, no GPU, no GLFW. 120 checks, grouped:
+`tests/input_test.cpp` drives the runtime with synthetic devices: no window, no GPU, no GLFW. 123 checks, grouped:
 
 1. devices and control paths — a keyboard has `space`, a trigger is an Axis, `readPath` resolves a control;
 2. button actions — press, hold, release, and `triggered()` being true for exactly one frame;
@@ -267,7 +272,7 @@ Where it is used:
 7. the asset format — a Unity-shaped file, warnings, save/load/save byte equality, a file on disk;
 8. rebinding — a device-kind mismatch ignored, the new key working and the old one dead, cancel leaving it alone;
 9. absent devices — inactive, then live when hot-plugged, then dead when disabled;
-10. pass-through actions and the `onActionPerformed` callback;
+10. pass-through actions, the action callbacks and the map's `onActionPerformed` callback;
 11. parser edges — interactions, processors, GUID stability, portable key names;
 12. the shipped `viewer.inputactions`: every action the viewer reads exists, and WASD/E/Q/wheel drive it.
 
