@@ -54,8 +54,18 @@ jobs:
           git config user.email "ci@ukiyo.invalid"
           git add docs/hub
           if git diff --cached --quiet; then echo "no change"; exit 0; fi
+          # actions/checkout leaves a detached HEAD, so there is no branch to push to: name the ref explicitly, and
+          # rebase first in case another push landed while this job was building.
+          branch="${GITHUB_REF_NAME}"
           git commit -m "Hub screenshots from CI [skip ci]"
-          git push
+          for attempt in 1 2 3; do
+            git fetch origin "$branch"
+            git rebase "origin/$branch" || { git rebase --abort; exit 1; }
+            if git push origin "HEAD:$branch"; then exit 0; fi
+            sleep 5
+          done
+          echo "could not publish the screenshots; the artifact still has them" >&2
+          exit 1
 
       # The self-test draws the sample terrain to renders/terrain_*.png. Keep them, so a graphics change can be
       # looked at without a local GL context.
