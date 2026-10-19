@@ -189,6 +189,13 @@ target_include_directories(motion_test PRIVATE ${CMAKE_SOURCE_DIR}/src ${CMAKE_S
 target_link_libraries(motion_test PRIVATE glm::glm)
 target_compile_options(motion_test PRIVATE -Wall -Wextra -Wno-missing-field-initializers)
 
+# The motion demo (docs/MOTION.md): drives the controller through a scripted route with synthetic clips and writes
+# the figure, so the runtime half of motion matching is exercised on every build.
+add_executable(motion_demo tools/motion_demo.cpp src/engine/motion_match.cpp)
+target_include_directories(motion_demo PRIVATE ${CMAKE_SOURCE_DIR}/src ${CMAKE_SOURCE_DIR}/third_party)
+target_link_libraries(motion_demo PRIVATE glm::glm)
+target_compile_options(motion_demo PRIVATE -Wall -Wextra -Wno-missing-field-initializers)
+
 add_executable(vgeom_test tests/vgeom_test.cpp src/engine/vgeom.cpp third_party/meshoptimizer/simplifier.cpp
                third_party/meshoptimizer/allocator.cpp)
 target_include_directories(vgeom_test PRIVATE ${CMAKE_SOURCE_DIR}/src ${CMAKE_SOURCE_DIR}/third_party

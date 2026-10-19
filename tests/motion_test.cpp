@@ -175,6 +175,30 @@ int main() {
     check(pose.size() == 3, "the sampled pose has one position per joint");
     check(std::fabs(root.y) < 1e-3f, "the root stayed on the ground plane");
 
+    // ---- Controller ----------------------------------------------------------------------------------------
+    {
+        MotionController controller;
+        controller.setDatabase(&database);
+        controller.reset(glm::vec3(0.0f), 0.0f);
+        const glm::vec3 start = controller.position();
+        for (int i = 0; i < 90; ++i) controller.update(glm::vec3(0.0f, 0.0f, 1.0f), 1.4f, 1.0f / 30.0f, 0.0f);
+        check(glm::length(controller.position() - start) > 2.5f, "the controller walks the character forward");
+        check(controller.pose().size() == 3, "the controller publishes one position per joint");
+
+        glm::vec3 mean(0.0f);
+        for (const glm::vec3& p : controller.pose()) mean += p;
+        mean /= float(controller.pose().size());
+        check(glm::length(glm::vec2(mean.x - controller.position().x, mean.z - controller.position().z)) < 1.0f,
+              "the pose is re-centred on the character, not left in clip space");
+
+        for (int i = 0; i < 90; ++i) controller.update(glm::vec3(0.0f), 0.0f, 1.0f / 30.0f, 0.0f);
+        check(controller.speed() < 0.2f, "releasing the stick decelerates to a stop");
+
+        controller.reset(glm::vec3(0.0f), 0.0f);
+        for (int i = 0; i < 60; ++i) controller.update(glm::vec3(1.0f, 0.0f, 0.0f), 1.4f, 1.0f / 30.0f, 1.5708f);
+        check(std::fabs(controller.yaw() - 1.5708f) < 0.05f, "the controller turns the body to the requested facing");
+    }
+
     std::printf("MOTION: %d checks, %d failures\n", gChecks, gFailures);
     return gFailures == 0 ? 0 : 1;
 }

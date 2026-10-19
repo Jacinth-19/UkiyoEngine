@@ -30,6 +30,10 @@ jobs:
         run: ./build/vgeom_test
       - name: Run Motion Matching Test
         run: ./build/motion_test
+      # The controller, driven through a route: writes docs/motion-demo.png and fails if the run is not sane.
+      - name: Run Motion Demo
+        run: mkdir -p renders && ./build/motion_demo renders/motion-demo.png
+
       - name: Run Hub Self-Test
         run: QT_QPA_PLATFORM=offscreen ./build/ukiyo_hub --selftest
       # The launcher's pages, grabbed offscreen: downloadable as the screenshots artifact and used by the docs.
@@ -45,4 +49,5 @@ jobs:
           path: |
             renders/terrain_*.png
             renders/hub_*.png
+            renders/motion-demo.png
           if-no-files-found: warn

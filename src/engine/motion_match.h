@@ -1,14 +1,14 @@
-// Motion matching, the animation layer behind a controllable character.
+// Motion matching: the animation layer behind a controllable character.
 //
-// The idea is older than the name: instead of a state machine that blends between clips, keep one database of
-// every pose in every clip, describe the pose you are in and the path you want to take next as a small feature
-// vector, and once every few frames jump to the frame in the database that fits best. Locomotion stops being
-// "walk, run, turn" and becomes "the eight hundredth frame of walk5".
+// The idea is older than the name: instead of a state machine that blends between clips, keep one database of every
+// pose in every clip, describe the pose you are in and the path you want to take next as a small feature vector, and
+// once every few frames jump to the frame in the database that fits best. Locomotion stops being "walk, run, turn"
+// and becomes "the eight hundredth frame of walk5".
 //
 // This is a port of the method in Jacinth-19/MotionMatchingInUnity, with the Unity-specific parts replaced:
 //
-//   * the database is built from BVH motion-capture files (the reference ships LAFAN1) as well as from the
-//     engine's own clips, because BVH is the format the data actually comes in;
+//   * the database is built from BVH motion-capture files (the reference ships LAFAN1) as well as from the engine's
+//     own clips, because BVH is the format the data actually comes in;
 //   * the nearest-neighbour search is a static KD-tree over the feature vectors, built once; the reference does a
 //     linear scan, which is fine for a demo and not for a thousand frames;
 //   * the cut is chosen with a continuity term, so the matcher prefers the frame it is already walking into over a
@@ -22,8 +22,8 @@
 //   16..18, 19..21  left and right foot velocity
 //   22..23  the root velocity
 //
-// Everything is measured against the root's yaw, so a walk that curves left and a walk that curves right are the
-// same data, and the same database serves any heading.
+// Everything is measured against the root's yaw, so a walk that curves left and a walk that curves right are the same
+// data, and the same database serves any heading.
 #pragma once
 
 #include <array>
@@ -184,6 +184,44 @@ private:
     std::vector<glm::vec3> blendFrom_;
     glm::vec3 blendRoot_{0.0f};
     glm::quat blendRot_{1.0f, 0.0f, 0.0f, 0.0f};
+};
+
+// A character driven by motion matching: input in, world pose out. The controller owns the world transform — the
+// clip's root motion is discarded, so a gamepad, an AI or a cutscene curve can all drive it — and every frame it asks
+// the player for the pose that fits the wanted velocity, then re-expresses that pose around the character's own
+// position and heading.
+//
+// The heading is the velocity's, eased, so a character that strafes still faces forward; that is the whole point of
+// the trajectory features. Call update() once a frame, then read pose() for skinning or debug drawing.
+class MotionController {
+public:
+    void setDatabase(const MotionDatabase* database);
+    void reset(glm::vec3 position = glm::vec3(0.0f), float yaw = 0.0f);
+
+    // `wishDir` is the desired world direction on the ground plane, `wishSpeed` metres per second, `dt` seconds.
+    // A zero wishDir decelerates towards the idle clip. `facing` is the heading the body should settle to, which a
+    // third-person camera usually owns; pass the velocity heading to let the character turn into its motion.
+    void update(glm::vec3 wishDir, float wishSpeed, float dt, float facing);
+
+    // World-space joint positions for the current frame, in the clip's joint order.
+    const std::vector<glm::vec3>& pose() const { return pose_; }
+    glm::vec3 position() const { return position_; }
+    float yaw() const { return yaw_; }
+    float speed() const { return glm::length(velocity_); }
+    const MotionPlayer& player() const { return player_; }
+
+    // Writes the current pose onto a model's humanoid rig, if the clip's joints line up with the rig's names.
+    int applyTo(Model& model, float scale = 1.0f) const;
+
+private:
+    const MotionDatabase* database_ = nullptr;
+    MotionPlayer player_;
+    glm::vec3 position_{0.0f};
+    glm::vec3 velocity_{0.0f};
+    float yaw_ = 0.0f;
+    std::vector<glm::vec3> pose_;
+    float acceleration_ = 7.0f;    // m/s^2 towards the wish velocity
+    float turnRate_ = 7.5f;        // radians per second towards the facing
 };
 
 // Writes a motion frame onto a model's humanoid rig, as the animation pose the rest of the engine already consumes

@@ -85,7 +85,32 @@ catches it.
 On a jump, the player snapshots the pose it was showing, switches to the new clip and frame, and crossfades the joint
 positions over 0.18 s with a smoothstep. The root rotation is slerped with the same weight.
 
-## 5. Driving a model
+## 5. The controller
+
+`MotionController` is the runtime layer between a gamepad and the database. It owns the world transform — position and
+heading — and every frame:
+
+1. approaches the wished velocity at a fixed acceleration (7 m/s²), so the matcher never sees a step change it cannot
+   find a pose for;
+2. turns the body towards the facing at 7.5 rad/s by the shortest arc;
+3. hands the resulting velocity and yaw to the `MotionPlayer`;
+4. takes the sampled clip pose, strips the clip's own root translation **and rotation**, and re-expresses it around
+   the character.
+
+Step 4 is the part that is easy to get wrong: a turning clip already carries its own yaw, and applying the controller's
+yaw on top of it spins the character twice. The controller therefore computes `q = yawQ · inverse(rootRot)` and places
+every joint at `position + q · (clipJoint − clipRoot)`.
+
+`applyTo(model)` then writes that world pose onto a humanoid rig through the directional retarget of §6.
+
+![The controller driven through a route](motion-demo.png)
+
+*`tools/motion_demo.cpp`: five synthetic clips, ten seconds of input. Left: the route (walk, a left-hand curve, a run
+leg that overshoots the curve, then a stop) with footprints in vermilion. Right: four poses projected along each
+moment's own forward axis, so the stride is visible. The run covers 17.18 m, peaks at 5.00 m/s and ends at rest; the
+matcher re-chooses 60 times. The tool fails if the character does not move, never re-matches, or does not stop.*
+
+## 6. Driving a model
 
 `applyMotionFrame(model, clip, frame)` writes the frame into the pose arrays the rest of the engine already consumes
 (`poseActive`, `poseRot`, `poseTrans`), so `updateModel` then runs IK, spring bones and the skin palette as usual.
@@ -96,27 +121,30 @@ multiplies it into the node's rest rotation. Bone lengths stay the model's own, 
 both read. It is the right retarget for locomotion and the wrong one for a hand plant: foot and hand positions are
 not solved for, only directions.
 
-## 6. Tests
+## 7. Tests
 
 `tests/motion_test.cpp` runs without a device and is built as `motion_test`; CI runs it on every push.
 
 ```sh
-./build/motion_test     # 20 checks, exit code 0
+./build/motion_test     # 25 checks, exit code 0
+./build/motion_demo renders/motion-demo.png
 ```
 
 It parses a three-joint BVH (including `End Site`), rejects a malformed one, checks that a straight walk has no
 lateral trajectory and that its root-velocity feature equals the clip speed, compares the KD-tree's four nearest
 against a brute-force scan over forty random queries, verifies that a 1.4 m/s query never matches a 4.2 m/s run, and
-plays three seconds of walking: the character must move forward and sample one position per joint.
+plays three seconds of walking: the character must move forward and sample one position per joint. The controller
+adds five more: it walks the character forward, publishes one position per joint, keeps the pose centred on the
+character rather than in clip space, stops when the stick is released, and turns the body to a requested facing.
 
-## 7. Limits
+## 8. Limits
 
 * **No inertialization.** Jumps crossfade positions over 0.18 s; a production matcher would blend the *velocities*
   and decay them with a spring, which removes the softness at the seam.
 * **No foot locking.** The database keeps the capture's feet; there is no IK pass that plants them on slopes.
 * **No tags or events.** LAFAN1 has footsteps and jumps marked in its own tooling; this reader ignores annotations.
 * **The search is static.** Clips added at runtime need a rebuild (8.7 ms for 12 000 frames, so that is cheap).
-* **Directional retarget only** (§5).
+* **Directional retarget only** (§6).
 * **No editor page yet.** The API is in `src/engine/motion_match.h`; the animation panel still plays clip libraries.
 
 Those are the honest gaps, and they are the order the system would grow: foot locking first, then inertialization,

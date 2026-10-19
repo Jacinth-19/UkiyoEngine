@@ -553,6 +553,67 @@ void MotionPlayer::sample(std::vector<glm::vec3>* positions, glm::vec3* rootPos,
 // ---------------------------------------------------------------------------------------------------------------
 // Retarget
 
+void MotionController::setDatabase(const MotionDatabase* database) {
+    database_ = database;
+    player_.setDatabase(database);
+    reset();
+}
+
+void MotionController::reset(glm::vec3 position, float yaw) {
+    position_ = position;
+    velocity_ = glm::vec3(0.0f);
+    yaw_ = yaw;
+    pose_.clear();
+    player_.reset();
+    if (database_ && !database_->empty()) player_.start(0);
+}
+
+void MotionController::update(glm::vec3 wishDir, float wishSpeed, float dt, float facing) {
+    if (!database_ || database_->empty() || dt <= 0.0f) return;
+    if (!player_.ready()) reset(position_, yaw_);
+
+    // The ground plane only: a character's wish direction is never vertical, and the database's features are 2D.
+    wishDir.y = 0.0f;
+    const float len = glm::length(wishDir);
+    wishDir = len > 1e-4f ? wishDir / len : glm::vec3(0.0f);
+    const glm::vec3 wish = wishDir * std::max(0.0f, wishSpeed);
+
+    // Approach the wish velocity at a finite acceleration, so the matcher never sees a step change it cannot match.
+    const glm::vec3 delta = wish - velocity_;
+    const float step = acceleration_ * dt;
+    velocity_ += glm::length(delta) > step ? glm::normalize(delta) * step : delta;
+
+    // Turn towards the facing by the shortest way; when decelerating the body keeps the heading it had.
+    const auto wrap = [](float a) { return std::fmod(a + 3.14159265f, 6.2831853f) - 3.14159265f; };
+    float diff = wrap(facing - yaw_);
+    if (len < 1e-4f) diff = 0.0f;
+    const float maxTurn = turnRate_ * dt;
+    yaw_ = wrap(yaw_ + std::clamp(diff, -maxTurn, maxTurn));
+
+    position_ += velocity_ * dt;
+    player_.setTarget(velocity_, yaw_);
+    player_.update(dt);
+
+    // Re-express the clip pose around the character. Stripping `rootRot` matters: a turning clip already carries its
+    // own yaw, and applying the controller's yaw on top of it would spin the character twice.
+    std::vector<glm::vec3> sampled;
+    glm::vec3 root(0.0f);
+    glm::quat rootRot(1.0f, 0.0f, 0.0f, 0.0f);
+    player_.sample(&sampled, &root, &rootRot);
+    const glm::quat q = glm::angleAxis(yaw_, glm::vec3(0.0f, 1.0f, 0.0f)) * glm::inverse(rootRot);
+    pose_.resize(sampled.size());
+    for (size_t i = 0; i < sampled.size(); ++i) pose_[i] = position_ + q * (sampled[i] - root);
+}
+
+int MotionController::applyTo(Model& model, float scale) const {
+    if (!database_ || !player_.ready() || pose_.empty()) return 0;
+    MotionFrame frame;
+    frame.world = pose_;
+    frame.rootPos = pose_.front();
+    frame.rootRot = glm::angleAxis(yaw_, glm::vec3(0.0f, 1.0f, 0.0f));
+    return applyMotionFrame(model, database_->clip(player_.index()), frame, scale);
+}
+
 int applyMotionFrame(Model& model, const MotionClip& clip, const MotionFrame& frame, float scale) {
     if (frame.world.size() != clip.joints.size()) return 0;
     // Rest world positions of the model, which give each bone's own direction and length.

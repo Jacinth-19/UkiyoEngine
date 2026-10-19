@@ -82,7 +82,8 @@ Vulkan backend and an OpenGL backend; `--backend gl` selects the latter.
 
 * glTF/VRM loading, humanoid retargeting, crossfades, idle state machine, clip editing (`.ukanim`).
 * **Motion matching** — BVH motion capture into a 24-dimensional feature database, a KD-tree search, continuity
-  pricing and blended playback. See [docs/MOTION.md](docs/MOTION.md).
+  pricing and blended playback, plus a controller that turns stick input into a world-space pose and a demo that
+  drives it through a route. See [docs/MOTION.md](docs/MOTION.md).
 * Two-bone and FABRIK arm IK, hand-on-waist constraints, spring bones, hit reactions and sway.
 
 ### Systems
