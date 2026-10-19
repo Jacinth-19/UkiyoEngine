@@ -113,10 +113,14 @@ the previous frame's composited image) keeps the estimator from feeding its own 
 
 | Resolution | Rays per half-res pixel | Frames accumulated | Reference | RMSE | Worst pixel |
 | --- | --- | --- | --- | --- | --- |
-| 480 × 270 | 4 | 8 | 32 spp | 0.0381 | 0.333 |
-| 480 × 270 | 8 | 8 | 32 spp | 0.0380 | 0.343 |
-| 480 × 270 | 8 | 8 | 64 spp | 0.0376 | 0.310 |
-| 960 × 540 | 8 | 16 | 64 spp | **0.0335** | 0.328 |
+| 480 × 270 | 4 | 8 | 32 spp | 0.03802 | 0.3116 |
+| 480 × 270 | 8 | 8 | 32 spp | 0.03801 | 0.3127 |
+| 480 × 270 | 8 | 8 | 64 spp | 0.03757 | 0.3140 |
+| 960 × 540 | 8 | 16 | 64 spp | **0.03346** | 0.3389 |
+
+These numbers are reproducible to the last digit: the twin seeds every pixel's rays from the pixel and frame index
+rather than the thread, so a rerun writes a byte-identical PNG. (It did not, until that was fixed — the RMSE moved by
+a thousandth between runs, which is larger than any of the differences being compared here.)
 
 The error barely moves with the ray count because it is not the estimator's noise: at these settings it is the
 difference between the estimator's model (a raster frame plus one bounce) and the tracer's (every ray a path), which
