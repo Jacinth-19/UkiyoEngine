@@ -112,6 +112,8 @@ Vulkan backend and an OpenGL backend; `--backend gl` selects the latter.
 * **Jolt** rigid bodies and character controllers, colliders written by the editor.
 * **Recast/Detour** navigation and pathfinding.
 * **Lua** scripting with a bound world API; prefabs, scenes and materials are JSON.
+* **Input** as action maps with Unity's `.inputactions` assets: keyboard, mouse and gamepads, 1D/2D composites,
+  press/hold/tap interactions, processors, control schemes and rebinding ([docs/INPUT.md](docs/INPUT.md)).
 * **Audio** through miniaudio; **networking** over UDP with snapshots and interpolation.
 * **Virtual file system** with a pak format (`tools/ukiyo_pak.cpp`), so a shipped project is one folder.
 

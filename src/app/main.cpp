@@ -37,6 +37,12 @@
 #include "rhi/rhi.h"
 #include "stb_image_write.h"
 
+// The repository root, for the default asset paths. CMake defines it; a standalone build of this file uses the working
+// directory, which is where the assets are when the viewer is run the documented way.
+#ifndef UKIYO_ROOT
+#define UKIYO_ROOT "."
+#endif
+
 using namespace ukiyo;
 
 namespace {
