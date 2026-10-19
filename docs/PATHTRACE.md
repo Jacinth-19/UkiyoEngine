@@ -94,8 +94,9 @@ texture fetches. At 1280 × 720 with four rays per half-resolution pixel that is
 a frame — arithmetic and texture bandwidth an integrated GPU has, unlike BVH traversal.
 
 **Why it is not noise.** Eight rays are noisy, but the sun and the geometry do not move much per frame, and the GI
-signal is low-frequency. The accumulation pass averages sixteen frames of samples, reprojecting the history with the
-engine's motion vectors and throwing it away where the reprojected depth belongs to another surface, so what reaches
+signal is low-frequency. The accumulation pass averages sixteen frames of samples, reprojecting the history — with
+the engine's motion vectors where a surface moved, and with the camera matrix on terrain, which the velocity pass does
+not draw — and throwing the history away where the reprojected depth belongs to another surface, so what reaches
 the screen has 64–128 rays of effective sampling at the cost of eight. That is the same trade the reference makes with
 DLSS Ray Reconstruction, done with a reprojection and a blur instead of a neural network — less sharp, and it runs
 anywhere.

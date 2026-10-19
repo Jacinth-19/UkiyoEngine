@@ -1006,7 +1006,8 @@ void Renderer::render(const OrbitCamera& cam, const std::vector<Model*>& models,
         dev_.endPass();
     };
 
-    // 2a. Per-object motion vectors (TAA or motion blur). Opaque geometry is drawn again against the scene depth
+    // 2a. Per-object motion vectors (TAA, motion blur, or the GI history). Opaque geometry is drawn again against the
+    // scene depth
     // with this frame's transforms and last frame's (joint palette, or model matrix, plus the previous
     // unjittered viewProj). Camera motion is included, so a still object reprojects as the camera does.
     // Pixels with no opaque geometry keep a zero vector and fall back to camera reprojection in TAA.
@@ -1015,7 +1016,9 @@ void Renderer::render(const OrbitCamera& cam, const std::vector<Model*>& models,
         prevViewProj_ = viewProjUnjittered;
         prevViewReady_ = true;
     }
-    const bool needVelocity = taaOn || s.motionBlur > 0.0f;
+    // The GI accumulator reprojects its history with this buffer, so GI needs it even when TAA and motion blur are
+    // both off — otherwise it would read whatever the last frame that had TAA left behind.
+    const bool needVelocity = taaOn || s.motionBlur > 0.0f || s.gi > 0.0f;
     if (needVelocity) {
         if (taaReset)   // no valid history (first frame, or TAA just switched on): no previous transforms
             for (auto& entry : motion_) entry.second.last.clear();
@@ -1158,8 +1161,11 @@ void Renderer::render(const OrbitCamera& cam, const std::vector<Model*>& models,
         // Accumulate into the write history, reading the other one. The first frame and every tenth after it take the
         // trace as is, so a moving camera never lags more than a few frames of light.
         const float weight = (giFrame_ % 10 == 0) ? 1.0f : std::max(0.03125f, s.giHistory);
+        // prevViewProj_ is still last frame's here: section 2b advances it after this pass. The gatherer needs it to
+        // reproject the history of surfaces the velocity pass does not draw — the terrain, which is the scene.
+        const glm::mat4 giReproj = prevViewProj_ * glm::inverse(f.viewProj);
         post(giHist_[giWrite_].get(), true, pGiAccum_.get(), setGiAccum_[giWrite_].get(),
-             pcWith(glm::mat4(1.0f), glm::vec4(weight, 0, 0, 0),
+             pcWith(giReproj, glm::vec4(weight, 0, 0, 0),
                     glm::vec4(1.0f / float(intW_), 1.0f / float(intH_), 0, 0)),
              int(intW_) / 2, int(intH_) / 2);
         // The effects pass composites it: binding 5 carries the accumulated GI, and p3.w its strength.

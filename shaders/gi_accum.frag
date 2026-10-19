@@ -4,13 +4,15 @@
 // move and the camera moves slowly, so the samples are accumulated over frames: an exponential average with a weight
 // that starts at 1 and settles at 1/16 — sixteen frames of samples for a fifth of the cost of tracing them all.
 //
-// The history is reprojected with the engine's screen-space velocity buffer (shaders/velocity.frag writes current
-// minus previous UV), so a pan rotates the old samples with the scene instead of smearing them. Where the reprojected
-// depth disagrees with this pixel's, the history belongs to another surface: the pixel falls back to the new sample.
+// The history is reprojected, so a pan rotates the old samples with the scene instead of smearing them. Moving
+// geometry uses the engine's screen-space velocity buffer (shaders/velocity.frag writes current minus previous UV);
+// terrain has no velocity, so it reprojects with the camera matrix in pc.model, exactly as shaders/taa.frag does.
+// Where the reprojected depth disagrees with this pixel's, the history belongs to another surface and the pixel falls
+// back to the new sample.
 //
 // Inputs:  uTex0 this frame's trace, uTex1 last frame's accumulator, uDepth scene depth, uVel screen-space velocity.
 // Output:  the accumulated half-resolution GI (the delta written by gi_trace.frag).
-// pc.p0.x = blend weight for the new sample (1 resets).
+// pc.model = previous viewProj * inverse(this frame's viewProj), pc.p0.x = blend weight for the new sample (1 resets).
 #include "common.glsl"
 TEX(0, 1) uniform sampler2D uTex0;
 TEX(0, 2) uniform sampler2D uTex1;
@@ -21,7 +23,16 @@ layout(location = 0) out vec4 outColor;
 
 void main() {
     vec4 cur = texture(uTex0, vUV);
-    vec2 prevUV = vUV - texture(uVel, vUV).xy;
+    // Velocity where the surface moved; the camera matrix where it did not (terrain is not in the velocity pass).
+    const vec2 vel = texture(uVel, vUV).xy;
+    vec2 prevUV;
+    if (dot(vel, vel) > 1e-14) {
+        prevUV = vUV - vel;
+    } else {
+        const float z = texture(uDepth, vUV).r;
+        const vec4 p = pc.model * vec4(vUV * 2.0 - 1.0, z, 1.0);
+        prevUV = (p.xy / p.w) * 0.5 + 0.5;
+    }
     if (pc.p0.x >= 0.999 || any(lessThan(prevUV, vec2(0.0))) || any(greaterThan(prevUV, vec2(1.0)))) {
         outColor = cur;
         return;
