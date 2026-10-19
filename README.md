@@ -6,7 +6,7 @@ A C++17 game engine and world editor with an anime-leaning renderer: cel shading
 terrain with grass, virtual geometry for static meshes, an animation stack with humanoid retargeting and motion
 matching, Jolt physics, Lua scripting, Recast navigation, networking and a project hub.
 
-The workspace is three programs and a library:
+The workspace is three programs and two libraries:
 
 * **Ukiyo Hub** (`ukiyo_hub`) — the launcher: recent projects, templates, new-project dialog.
 * **Ukiyo World Editor** (`ukiyo_editor`) — the editor: viewport, hierarchy, inspector, terrain brushes, animation
@@ -125,7 +125,8 @@ Every push builds everything and runs:
 ./build/network_test
 ./build/project_test
 ./build/vgeom_test        # 29 checks
-./build/motion_test       # 20 checks
+./build/motion_test       # 25 checks
+./build/motion_demo renders/motion-demo.png
 QT_QPA_PLATFORM=offscreen ./build/ukiyo_hub --selftest
 ```
 
