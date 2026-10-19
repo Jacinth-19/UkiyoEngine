@@ -1647,6 +1647,52 @@ int buildModelLods(rhi::Device& device, Model& model, const std::vector<float>& 
     return built;
 }
 
+int buildModelVGeom(rhi::Device& device, Model& model, const VGeomSettings& settings, const std::string& cachePath) {
+    constexpr size_t kMinSourceTriangles = 256;
+    // A skinned draw moves the vertices every frame, so the tree's rest-pose error is not the error on screen. This is
+    // a static mesh feature; leave the model on its ordinary index buffer rather than cull it wrongly.
+    for (const DrawItem& d : model.draws)
+        if (d.skin >= 0) return 0;
+
+    std::vector<uint32_t> candidates;
+    std::vector<uint64_t> hashes;
+    for (uint32_t i = 0; i < model.primitives.size(); ++i) {
+        Primitive& p = model.primitives[i];
+        p.vgeom = VGeomMesh{};
+        p.vgeomIndices.reset();
+        if (p.cpuVertices.size() < 3 || p.cpuIndices.size() < kMinSourceTriangles * 3 || !p.morphPos.empty()) continue;
+        candidates.push_back(i);
+        hashes.push_back(vgeomHash(&p.cpuVertices[0].pos.x, p.cpuVertices.size(), sizeof(rhi::Vertex),
+                                   p.cpuIndices.data(), p.cpuIndices.size()));
+    }
+    if (candidates.empty()) return 0;
+
+    std::vector<VGeomMesh> meshes(candidates.size());
+    if (!cachePath.empty()) loadVGeomSet(meshes, cachePath, hashes, settings);
+
+    bool builtAny = false;
+    std::vector<VGeomMesh> finalMeshes(candidates.size());
+    for (size_t k = 0; k < candidates.size(); ++k) {
+        Primitive& p = model.primitives[candidates[k]];
+        VGeomMesh mesh = std::move(meshes[k]);
+        if (!mesh.valid() || mesh.sourceHash != hashes[k]) {
+            mesh = buildVGeom(&p.cpuVertices[0].pos.x, p.cpuVertices.size(), sizeof(rhi::Vertex), p.cpuIndices.data(),
+                              p.cpuIndices.size(), settings);
+            builtAny = true;
+        }
+        if (!mesh.valid()) continue;
+        finalMeshes[k] = mesh;   // kept for the cache write below; the primitive owns the moved copy
+        p.vgeomIndices = device.createBuffer(rhi::BufferUsage::Index, mesh.indices.size() * sizeof(uint32_t));
+        p.vgeomIndices->upload(mesh.indices.data(), mesh.indices.size() * sizeof(uint32_t));
+        p.vgeom = std::move(mesh);
+    }
+    int built = 0;
+    for (const VGeomMesh& m : finalMeshes)
+        if (m.valid()) ++built;
+    if (builtAny && !cachePath.empty()) saveVGeomSet(finalMeshes, cachePath, settings);
+    return built;
+}
+
 void worldTriangles(const Model& model, std::vector<glm::vec3>* verts, std::vector<uint32_t>* tris) {
     for (const Node& n : model.nodes) {
         if (n.mesh < 0) continue;

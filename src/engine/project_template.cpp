@@ -441,7 +441,13 @@ ojson sceneFor(const std::string& templateId, const std::string& engineRoot, con
         model["terrain"] = terrainJson("assets/Terrain/hills.u16", engineRoot, root);
         scene["models"] = ojson::array({model});
         scene["active"] = 0;
-        scene["settings"] = sceneSettings(false);
+        // A low sun and a little distance haze: the two settings that turn a height field into a place. The fog colour
+        // comes from the sky shader, so only the density and the sun in-scatter are scene data.
+        ojson settings = sceneSettings(false);
+        settings["sunDir"] = numbers({0.46, 0.38, 0.80});
+        settings["fogDensity"] = 0.0035;
+        settings["fogSun"] = 0.6;
+        scene["settings"] = settings;
         ojson camera = cameraJson(4.0, 78.0, 0.62, 0.30);
         camera["target"] = numbers({128.0, 4.0, 128.0});
         camera["farZ"] = 900.0;

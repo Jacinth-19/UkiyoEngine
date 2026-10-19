@@ -92,6 +92,10 @@ std::unique_ptr<Model> readModelFile(rhi::Device& dev, const QString& path, bool
     }
     m->physics = true;
     m->armCollision = true;
+    // Cluster LODs for static meshes, cached beside the file. A skinned model returns at once (its error is measured on
+    // the rest pose), so the character costs nothing here; a static prop pays a few milliseconds once and then reads
+    // the sidecar. A read-only asset folder simply rebuilds.
+    ukiyo::buildModelVGeom(dev, *m, ukiyo::VGeomSettings{}, m->sourcePath + ".vgeom");
     return m;
 }
 

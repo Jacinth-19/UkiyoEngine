@@ -1027,6 +1027,8 @@ QWidget* MainWindow::buildProjectSettings() {
         QFormLayout* q = addSection(v, "Quality");
         combo(q, "Anti-aliasing", &settings_.aaMode, {"Off", "FXAA", "SSAA 2x", "SSAA 2x + FXAA", "TAA (FXAA on reset frames)"});
         check(q, "Shadows", &settings_.shadows);
+        check(q, "Virtual geometry", &settings_.vgeom);
+        number(q, "VGeom error (px)", &settings_.vgeomPixels, 0.25, 8.0, 0.25);
         check(q, "Outlines", &settings_.outlines);
         number(q, "Outline scale", &settings_.outlineScale, 0.0, 3.0, 0.05);
     });
@@ -5666,6 +5668,8 @@ QJsonObject MainWindow::sceneDocument() {
     QJsonObject s;
     s["aaMode"] = settings_.aaMode;
     s["shadows"] = settings_.shadows;
+    s["vgeom"] = settings_.vgeom;
+    s["vgeomPixels"] = double(settings_.vgeomPixels);
     s["sky"] = settings_.sky;
     s["grid"] = settings_.grid;
     s["outlines"] = settings_.outlines;
@@ -6791,6 +6795,8 @@ bool MainWindow::applySceneDocument(const QJsonObject& root, const QString& sour
     ukiyo::RenderSettings st;
     st.aaMode = s.value("aaMode").toInt(st.aaMode);
     st.shadows = s.value("shadows").toBool(st.shadows);
+    st.vgeom = s.value("vgeom").toBool(st.vgeom);
+    st.vgeomPixels = std::clamp(float(s.value("vgeomPixels").toDouble(st.vgeomPixels)), 0.25f, 8.0f);
     st.sky = s.value("sky").toBool(st.sky);
     st.grid = s.value("grid").toBool(st.grid);
     st.outlines = s.value("outlines").toBool(st.outlines);

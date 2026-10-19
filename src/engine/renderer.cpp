@@ -8,6 +8,7 @@
 #include <algorithm>
 #include <cmath>
 #include <cstring>
+#include <deque>
 #include <fstream>
 #include <sstream>
 
@@ -528,6 +529,7 @@ void Renderer::render(const OrbitCamera& cam, const std::vector<Model*>& models,
                       float time, uint32_t frameIndex, const RenderSettings& s) {
     drawCalls_ = 0;
     triangles_ = 0;
+    vgeomStats_ = VGeomStats{};
     // Smear input: each model's hips displacement since the last render call (world units). The hips
     // carry the animated motion; the root only moves when the app moves the model.
     motionDisp_.clear();
@@ -568,6 +570,12 @@ void Renderer::render(const OrbitCamera& cam, const std::vector<Model*>& models,
     const glm::mat4 viewProjUnjittered = projUnjittered * f.view;
     glm::vec3 eye = cam.eye();
     f.camPos = glm::vec4(eye, 1.0f);
+    // Selection view for virtual geometry (item 21). pixelScale is world metres at one metre of depth in pixels, which
+    // for a perspective projection is height * P11 / 2; with it, a cluster's error converts straight to pixels.
+    VGeomView vgView;
+    vgView.viewProj = viewProjUnjittered;
+    vgView.eye = eye;
+    vgView.pixelScale = 0.5f * float(intH_) * projUnjittered[1][1];
     f.sunDir = glm::vec4(L, 0.0f);
     f.sunColor = glm::vec4(glm::vec3(1.0f, 0.95f, 0.88f) * s.sunIntensity, 1.0f);
     f.skyColor = glm::vec4(0.62f, 0.72f, 0.92f, 1.0f) * 0.9f;
@@ -627,6 +635,7 @@ void Renderer::render(const OrbitCamera& cam, const std::vector<Model*>& models,
     // the colour passes. Skinned draws are never frustum-culled, because the rest bounds do not follow the animation.
     constexpr float kCullMargin = 0.25f;   // metres, covers morph targets that move past the rest bounds
     std::vector<Rec> opaque, colorOpaque, blended, outlined, mmdEdges, graph, graphBlend, graphOutlined;
+    std::deque<VGeomCut> vgeomCuts;   // stable addresses: Rec keeps a pointer into this
     for (Model* m : models) {
         if (!m) continue;
         const glm::vec3 centre = glm::vec3(m->root * glm::vec4(0.5f * (m->boundsMin + m->boundsMax), 1.0f));
@@ -640,6 +649,29 @@ void Renderer::render(const OrbitCamera& cam, const std::vector<Model*>& models,
             // Opt-in LOD (item 15): static draws pick their level by distance from the eye to the model centre.
             if (d.skin < 0 && !m->lodSwitch.empty())
                 r.lod = lodForDistance(glm::length(cam.eye() - centre), m->lodSwitch);
+            // Virtual geometry: choose the cut once per draw, before the lists copy the record, so every pass this
+            // frame draws the same clusters. Runs of adjacent clusters collapse into one indexed draw.
+            if (s.vgeom && prim->hasVGeom()) {
+                vgeomCuts.emplace_back();
+                VGeomCut& cut = vgeomCuts.back();
+                VGeomStats stats;
+                selectVGeom(prim->vgeom, m->nodes[d.node].world, vgView, s.vgeomPixels, cut.clusters, &stats);
+                vgeomStats_.clusters += stats.clusters;
+                vgeomStats_.leaves += stats.leaves;
+                vgeomStats_.triangles += stats.triangles;
+                vgeomStats_.culled += stats.culled;
+                std::sort(cut.clusters.begin(), cut.clusters.end(), [&](uint32_t a, uint32_t b) {
+                    return prim->vgeom.clusters[a].firstIndex < prim->vgeom.clusters[b].firstIndex;
+                });
+                for (uint32_t id : cut.clusters) {
+                    const VGeomCluster& cl = prim->vgeom.clusters[id];
+                    if (!cut.runs.empty() && cut.runs.back().first + cut.runs.back().second == cl.firstIndex)
+                        cut.runs.back().second += cl.indexCount;
+                    else
+                        cut.runs.emplace_back(cl.firstIndex, cl.indexCount);
+                }
+                r.vgeomCut = &cut;
+            }
             if (graphMaterials_.count(prim)) {
                 GraphMaterial* gm = graphMaterials_.at(prim);
                 (gm->transparent() ? graphBlend : graph).push_back(r);
@@ -682,11 +714,22 @@ void Renderer::render(const OrbitCamera& cam, const std::vector<Model*>& models,
         uint32_t ic = 0;
         lodIndices(*r.prim, r.lod, &ib, &ic);
         dev_.bindVertexBuffer(r.prim->vertices.get());
-        dev_.bindIndexBuffer(ib);
+        // A cut replaces the distance LOD in every pass except the shadow one: a shadow wants the source surface, and
+        // that is the primitive's own index buffer (the leaves of the tree hold exactly those triangles).
+        const bool vgeom = r.vgeomCut != nullptr && pipe != pShadow_.get();
+        dev_.bindIndexBuffer(vgeom ? r.prim->vgeomIndices.get() : ib);
         dev_.pushConstants(&pc, sizeof(pc));
-        dev_.drawIndexed(ic);
-        ++drawCalls_;
-        triangles_ += ic / 3;
+        if (vgeom) {
+            for (const auto& run : r.vgeomCut->runs) {
+                dev_.drawIndexed(run.second, run.first);
+                ++drawCalls_;
+                triangles_ += run.second / 3;
+            }
+        } else {
+            dev_.drawIndexed(ic);
+            ++drawCalls_;
+            triangles_ += ic / 3;
+        }
     };
     auto bindAndDraw = [&](const Rec& r, rhi::Pipeline* pipe, rhi::DescriptorSet* frameSet, glm::vec4 p0) {
         drawWith(r, pipe, frameSet, r.prim->material->set.get(), p0);

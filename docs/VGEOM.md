@@ -1,0 +1,198 @@
+# Virtual geometry for static meshes (item 21)
+
+A static mesh no longer has to be drawn as one index buffer. It is split into 128-triangle clusters, four clusters are
+welded into a coarser one, and that repeats until a single root is left. At draw time the renderer walks that tree and
+keeps the clusters whose geometric error is small enough for the pixels they cover — close geometry stays fine, distant
+geometry is replaced by its parents, and the vertex buffer never changes.
+
+This is the idea behind Nanite, and the implementation here follows the reference project
+[`Jacinth-19/nanite-at-home`](https://github.com/Jacinth-19/nanite-at-home) (a fork of `P1ben/nanite-at-home`): METIS
+k-way partitioning of the face graph into 128-triangle clusters, a cluster hierarchy with per-cluster error, and a cut
+selected against a view-dependent metric. It is **not** a port. The reference is an OpenGL/Windows program built on
+METIS, OpenMesh and SSBO-driven draws; none of those exist in Ukiyo. The stages were re-cut for what the engine
+actually has, and the differences are written down in [§7](#7-what-is-different-from-nanite).
+
+![The Terrain Lab tile, source and two cuts](vgeom-levels.png)
+
+*The 131 072-triangle Terrain Lab tile built into one tree, from the same camera. **Left:** every source triangle.
+**Middle:** the cut at a 1 px error budget — 41 279 triangles in 321 clusters, almost all leaves. **Right:** the cut at
+8 px — 17 306 triangles in 91 clusters, mostly level 1–2. Clusters are tinted by level (green leaf → blue root). Made
+offline by `tools/vgeom_preview.cpp`; the cut, the ranges and the counts are the engine's, only the shading is the
+tool's. A pixel-exact comparison against the source leaves 3 of 373 280 pixels uncovered, all on the tile's border.*
+
+## 1. What the reference does, and what carries over
+
+| Stage | nanite-at-home | Ukiyo |
+| --- | --- | --- |
+| Cluster the faces | METIS `METIS_PartGraphKway` on the face-adjacency graph, `BASE_CLUSTER_SIZE` 128, with METIS' balance and cut objectives | Own BFS over welded edges, 128 triangles a leaf, plus a pocket merge. **METIS is not vendored** and its `libraries/` folder is MSVC-only, so the dependency is gone rather than shipped |
+| Build the hierarchy | Parent groups, `children`, `neighbours`, `_parental_siblings`, per-cluster `error`, `parental_area`, `parental_triangle_density` | Groups of four in Morton order, per-parent `meshopt_simplify`, error = max(children, measured residual). Area and density metrics are not kept: the cut uses projected error directly |
+| Simplify | `StaticDecimator`/`Decimator` on an OpenMesh copy, per cluster | `meshopt_simplify` on a compacted `rhi::Vertex` array, border locked, absolute error budget. OpenMesh is not used; `meshoptimizer` is already part of the engine for item 15 |
+| Choose the cut | `LodTree::FillFaceVertRecursive`, `ShouldShow(metric)`: leaves always, else `error * childsib_triangle_density < metric² / 25` (the reference's own comment calls this "prone to error") | Screen-space error: `error · scale · pixelScale / distance`, refine while it exceeds a pixel budget. A non-positive budget forces the leaves |
+| Draw | SSBO cluster/face/vertex buffers, compute passes, a traversal that concatenates selected clusters into a fresh vertex and face list | The cut is a list of index ranges into **one** index buffer that indexes the primitive's **existing** vertex buffer. No vertex duplication, no storage buffers, no compute, no indirect draw |
+
+## 2. The tree
+
+`buildVGeom` (`src/engine/vgeom.h`, `src/engine/vgeom.cpp`) is plain CPU code: no device, no RHI, so it is testable
+without a GPU and the offline tools can use it.
+
+1. **Weld and adjacency.** Position-only welding at 1 mm (`llround(coord · 1000)`, 21 bits per axis) builds an
+   edge → triangle map; two triangles sharing an edge are neighbours. This also closes the seams a glTF loader leaves
+   when it splits a vertex for normals or UVs, which is what keeps cluster borders shared.
+2. **Leaves.** Grow breadth-first from the lowest unassigned triangle until 128 triangles are claimed. A BFS always
+   leaves pockets — triangles whose neighbours are all claimed — and those would become one-triangle clusters with
+   every vertex on the border. `mergePockets` folds any cluster under `max(8, clusterTriangles/8)` into its largest
+   neighbouring cluster before the tree is built.
+3. **Parents.** Each level sorts its clusters by a Morton key (21 bits per axis over the model bounds) and groups four
+   consecutive ones. Morton order keeps a group's patch compact and its locked border short. Group sizes are spread so
+   that no group is left with a single member: a one-child parent is a duplicate LOD, and a chain of them is how a tree
+   stops getting coarser near the root.
+4. **Simplify.** A group's triangles are gathered over the original vertex ids, the vertices are compacted into a local
+   array, and `meshopt_simplify` runs with `meshopt_SimplifyLockBorder | meshopt_SimplifyErrorAbsolute`. The border is
+   never moved, so a child's edge and its neighbour's edge are still the same vertices at every level. The target is
+   `max(minTriangles, groupTriangles · targetRatio)` — a quarter of the group at the default, which is what makes the
+   triangle count per level actually halve. The error budget is `max(levelError, 2 · worstChildError)` where
+   `levelError` is 0.2 % of the model's diagonal. The stored error is `max(worstChildError, meshopt's result)`: a
+   parent is never allowed to look better than the children it replaces.
+5. **Ranges, not copies.** A cluster stores `firstIndex`/`indexCount` into `VGeomMesh::indices`. Leaves come first and
+   their ranges are contiguous, so the leaves as a set are exactly the primitive's source index buffer.
+
+For the Terrain Lab mesh (131 072 triangles, 66 049 vertices, 256 m across), the build takes **109 ms** and produces:
+
+| Level | Clusters | Triangles | Average |
+| --- | --- | --- | --- |
+| 0 (leaves) | 1024 | 131 072 | 128 |
+| 1 | 256 | 37 856 | 148 |
+| 2 | 64 | 27 894 | 436 |
+| 3 | 16 | 16 748 | 1 047 |
+| 4 | 4 | 9 638 | 2 410 |
+| 5 (root) | 1 | 2 408 | 2 408 |
+| **Total** | **1365** | **225 616** | |
+
+The root holds 1.8 % of the source triangles. The first level barely shrinks (148 against 128) because almost all of a
+four-leaf patch's vertices are on its locked border; level 2 is where the border stops dominating.
+
+## 3. The cut
+
+`selectVGeom` walks from the root. For each cluster it tests the bounding sphere against five frustum planes (left,
+right, bottom, top, far — the near plane is left out on purpose, because its convention differs between zero-to-one and
+minus-one-to-one clip spaces and a cluster behind the camera only costs a clipped draw), then computes
+
+```
+pixels = error · scale · pixelScale / max(|eye − centre| − radius, 0.05)
+```
+
+and refines while `pixels > errorPixels && childCount > 0`. `pixelScale` is `height / (2 tan(fovY/2))`, so the result
+is in pixels of the current viewport; the renderer passes `0.5 · intH · P11` from the projection it is about to use.
+A zero or negative budget forces the leaves: that is what a shadow pass or a hero shot wants.
+
+Culling is conservative and that matters: the planes come from the view-projection's rows, **normalized** before the
+sphere test. The raw rows carry the projection's scale, which differs per plane; without the normalization the side
+planes over-cull by two to three times and the edges of every coarse patch drop out. That was a real hole in the first
+image of this page, and `tests/vgeom_test.cpp` now checks that no triangle whose three vertices project inside the clip
+cube is missing from a leaf cut.
+
+The traversal writes into a caller-provided vector (the renderer keeps one for the frame) and a returning overload
+exists for tools and tests. A full call over 1365 clusters takes **12 µs**.
+
+## 4. In the renderer
+
+`Renderer` (`src/engine/renderer.cpp`) computes one cut per draw per frame, at gather time, and every pass that frame
+reuses it:
+
+* **Colour, depth prepass, outlines, graph materials** draw the cut. The selected clusters are sorted by `firstIndex`
+  and adjacent ranges are merged, so a near cut of contiguous leaves becomes a handful of `drawIndexed` calls instead
+  of one per cluster.
+* **Shadows** do not use the cut. The pass wants the source surface, and the leaves *are* the source index buffer, so
+  it draws exactly what it drew before the feature existed.
+* **Distance LOD** (`buildModelLods`, item 15) is skipped for a primitive that has a tree; the two do not fight.
+
+The renderer exposes `lastVGeomStats()` (clusters, leaves, triangles, culled).
+
+**Building and caching.** `buildModelVGeom` (`src/engine/model.cpp`) runs from the editor's model load and writes the
+tree's index stream into one GPU index buffer per primitive, alongside the existing per-LOD buffers. It skips primitives under 256 triangles, any
+primitive with morph targets, and every primitive of a model with a skinned draw: the error is measured on the rest
+pose, which is wrong once a skin deforms it. Virtual geometry is a static-mesh feature here, as in the reference.
+
+The tree is cached beside the model as `<model>.vgeom` — one small versioned binary (`UKVGSET`) holding one `UKVG1`
+blob per primitive plus a hash of the build settings. `loadVGeomSet` accepts the entries whose `sourceHash` still
+matches the primitive and returns the rest empty, so a changed mesh rebuilds only itself. A read-only asset folder
+simply rebuilds every load; nothing breaks. The hash is FNV-1a over positions and indices, and the cache is not written
+unless something was actually rebuilt.
+
+**Editor.** Project Settings → Quality has **Virtual geometry** and **VGeom error (px)** (0.25–8, step 0.25). Both are
+written to the scene's `settings` object as `vgeom` and `vgeomPixels`, so a scene keeps the look it was tuned with.
+
+## 5. What it costs, and what it buys
+
+On the Terrain Lab mesh, from the camera in the figure:
+
+| Budget | Clusters | Triangles | Share of source |
+| --- | --- | --- | --- |
+| source | — | 131 072 | 100 % |
+| 0.25 px | 352 | 45 159 | 34.5 % |
+| 1 px | 321 | 41 279 | 31.5 % |
+| 8 px | 91 | 17 306 | 13.2 % |
+
+The response is gentle because a 256 m tile seen from 300 m is *large on screen*: at a 1 px budget most of it still
+needs leaf-level detail. The same tree from a hover 400 m up collapses to the root's 2 408 triangles. The intended use
+is what the numbers on the right show: a static prop that fills a small part of the frame stops paying for triangles
+nobody can see.
+
+Costs, measured on this machine (single thread, `-O2`):
+
+* build: **109 ms / 131 k triangles** (0.83 µs a triangle), once per mesh, cached afterwards;
+* selection: **12 µs / 1 365 clusters**, per draw per frame — less than the draw-call bookkeeping it saves;
+* memory: the index stream is 1.7× the source index buffer (225 616 vs 131 072 triangles, 4 bytes an index) and the
+  vertices are shared with the ordinary path.
+
+## 6. Tests and the preview tool
+
+`tests/vgeom_test.cpp` runs without a device and is built by CMake as `vgeom_test`; CI runs it on every push. It builds
+a 9 216-triangle sphere and checks 29 things: the leaves partition the source triangles exactly (no hole, no duplicate),
+parent error is at least the worst child, a parent is coarser than its children together, every cluster range is valid,
+triangles fall with distance and with the budget, a zero budget inside the frustum equals the source, the plane test
+never drops a fully visible triangle, `cull = false` never culls, the build is deterministic, and the cache round-trips
+with stale-hash and stale-setting rejection.
+
+```sh
+./build/vgeom_test       # 29 checks, exit code 0
+```
+
+`tools/vgeom_preview.cpp` renders the figure on this page without a GPU: it welds the Terrain Lab heightmap into one
+mesh, builds the real tree, selects real cuts and rasterizes them with a flat Lambert, tinting each cluster by level.
+
+```sh
+c++ -O2 -std=c++17 -I src -I third_party -I third_party/meshoptimizer tools/vgeom_preview.cpp
+    src/engine/terrain.cpp src/engine/vgeom.cpp third_party/meshoptimizer/simplifier.cpp
+    third_party/meshoptimizer/allocator.cpp -o build/vgeom_preview
+./build/vgeom_preview docs/vgeom-levels.png . 1800 900
+```
+
+`VG_EYE=x,y,z` and `VG_TARGET=x,y,z` move the camera; the tool prints the counts and the percentage of source pixels
+a cut left uncovered, which is how the frustum bug above was found (5 % before the fix, 0.000–0.005 % after, and those
+few pixels are the tile's own border).
+
+## 7. What is different from Nanite
+
+* **Selection is CPU, once per draw.** No compute shader, no GPU culling, no Hi-Z. The RHI has no compute or storage
+  buffers, and adding them is a renderer project of its own. The CPU cost is small (12 µs a draw) but it scales with
+  draws, not with pixels.
+* **No indirect or multi-draw.** A cut is a few `drawIndexed` calls after run merging — one per contiguous range, not
+  one per cluster, but still more calls than one `glMultiDrawElementsIndirect`.
+* **No streaming.** Nanite pages cluster data in and out of a virtual texture; here the whole tree lives in RAM and in
+  one index buffer. A 1 M-triangle mesh costs ~12 MB of indices.
+* **Border vertices are locked rather than stitched.** Neighbouring clusters at different levels share the same border
+  vertices, so the cut has no T-junction cracks and nothing needs stitching; the price is that the first level barely
+  simplifies (see the table in §2).
+* **Static meshes only.** Skinned and morph-targeted primitives keep the ordinary path, because their error cannot be
+  measured on the rest pose.
+* **No two-pass occlusion, no cluster compression, no mesh shaders.**
+
+Those are the honest gaps, and they are the order in which the system would grow if the RHI grew compute and indirect
+draw: GPU selection first, then page streaming.
+
+## 8. Turning it off
+
+`RenderSettings::vgeom` (Quality → Virtual geometry) is read every frame. With it off, a primitive that has a tree is
+drawn from its ordinary index buffer and its distance LOD, exactly as before item 21. The tree stays resident; nothing
+is rebuilt when it is switched back on.

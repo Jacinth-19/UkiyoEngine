@@ -1,0 +1,10 @@
+# Build output
+/build/
+/build-*/
+
+# Offline preview renders (tools/terrain_preview, CI artifacts)
+/renders/
+
+# Virtual geometry caches, written beside the model it belongs to
+*.vgeom
+*.vgeomset

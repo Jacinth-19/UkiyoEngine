@@ -26,6 +26,8 @@ jobs:
         run: ./build/network_test
       - name: Run Project Template Test
         run: ./build/project_test
+      - name: Run Virtual Geometry Test
+        run: ./build/vgeom_test
       - name: Run Hub Self-Test
         run: QT_QPA_PLATFORM=offscreen ./build/ukiyo_hub --selftest
       # The self-test draws the sample terrain to renders/terrain_*.png. Keep them, so a graphics change can be

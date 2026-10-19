@@ -12,8 +12,9 @@
 #include <glm/gtc/quaternion.hpp>
 
 #include "engine/gpu_types.h"
-#include "rhi/rhi.h"
 #include "engine/rig.h"
+#include "engine/vgeom.h"
+#include "rhi/rhi.h"
 
 namespace ukiyo {
 
@@ -52,6 +53,12 @@ struct Primitive {
     // CPU copy of the geometry, for navmesh baking and other queries. Not uploaded again.
     std::vector<rhi::Vertex> cpuVertices;
     std::vector<uint32_t> cpuIndices;
+
+    // Virtual geometry (vgeom.h), built by buildModelVGeom for static primitives only. `vgeom.indices` is uploaded
+    // once into `vgeomIndices`; every cluster is a range of it, so the renderer draws a cut with no extra vertex data.
+    VGeomMesh vgeom;
+    std::unique_ptr<rhi::Buffer> vgeomIndices;
+    bool hasVGeom() const { return vgeomIndices != nullptr && vgeom.valid(); }
 };
 
 // A morph target driven by an expression: target `target` of mesh `mesh` at `weight`.
@@ -279,5 +286,13 @@ void worldTriangles(const Model& model, std::vector<glm::vec3>* verts, std::vect
 // distance (from the model centre) at which each level starts; empty switches turn LOD off and free nothing.
 // Returns the number of LOD levels built across the model.
 int buildModelLods(rhi::Device& device, Model& model, const std::vector<float>& switches);
+
+// Builds cluster LODs for the static primitives of `model` and uploads each tree's index stream. Primitives under
+// 256 triangles, primitives with morph targets and every primitive of a model with a skinned draw are skipped: the
+// tree's error is measured on the rest pose, which is wrong once a skin deforms it. Must run on the render thread
+// (it creates buffers). `cachePath`, when not empty, is read first and rewritten after a build; a cache that does not
+// match the geometry is ignored. Returns the number of primitives that ended up with a tree.
+int buildModelVGeom(rhi::Device& device, Model& model, const VGeomSettings& settings = {},
+                    const std::string& cachePath = {});
 
 } // namespace ukiyo

@@ -106,6 +106,7 @@ add_library(ukiyo_core STATIC
   src/engine/terrain_layers.cpp
   src/engine/foliage.cpp
   src/engine/grass.cpp
+  src/engine/vgeom.cpp
   src/engine/terrain_edit.cpp
   third_party/meshoptimizer/simplifier.cpp
   third_party/meshoptimizer/allocator.cpp
@@ -162,6 +163,15 @@ add_executable(terrain_preview tools/terrain_preview.cpp src/engine/terrain.cpp 
 target_include_directories(terrain_preview PRIVATE ${CMAKE_SOURCE_DIR}/src ${CMAKE_SOURCE_DIR}/third_party)
 target_link_libraries(terrain_preview PRIVATE glm::glm)
 target_compile_options(terrain_preview PRIVATE -Wall -Wextra -Wno-missing-field-initializers)
+# Virtual geometry (docs/VGEOM.md). The builder and the selector are CPU code, so this test needs no device and runs
+# anywhere, including CI.
+add_executable(vgeom_test tests/vgeom_test.cpp src/engine/vgeom.cpp third_party/meshoptimizer/simplifier.cpp
+               third_party/meshoptimizer/allocator.cpp)
+target_include_directories(vgeom_test PRIVATE ${CMAKE_SOURCE_DIR}/src ${CMAKE_SOURCE_DIR}/third_party
+                           ${CMAKE_SOURCE_DIR}/third_party/meshoptimizer)
+target_link_libraries(vgeom_test PRIVATE glm::glm)
+target_compile_options(vgeom_test PRIVATE -Wall -Wextra -Wno-missing-field-initializers)
+
 add_executable(particles_gpu_test tests/particles_gpu_test.cpp)
 add_executable(water_render tests/water_render.cpp)
 target_link_libraries(water_render PRIVATE ukiyo_core)

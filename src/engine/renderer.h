@@ -8,6 +8,7 @@
 #include <map>
 #include <memory>
 #include <optional>
+#include <utility>
 #include <vector>
 
 #include <glm/glm.hpp>
@@ -26,6 +27,8 @@ struct RenderSettings {
     bool shadows = true;
     bool depthPrepass = true;       // opaque toon draws write depth before the colour pass
     bool frustumCull = true;        // colour passes skip static draws outside the camera frustum
+    bool vgeom = true;              // virtual geometry (item 21) for static primitives that have a tree
+    float vgeomPixels = 1.0f;       // projected error budget: a cluster refines while its error exceeds this many px
     bool sky = true;
     bool grid = true;
     bool outlines = true;
@@ -195,6 +198,10 @@ public:
     uint32_t lastDrawCalls() const { return drawCalls_; }
     uint32_t lastTriangles() const { return triangles_; }
 
+    // Totals of the virtual-geometry cuts collected by the last render(): clusters chosen, source triangles those
+    // clusters hold, and subtrees rejected by the frustum. Zero when no primitive in the scene has a tree.
+    VGeomStats lastVGeomStats() const { return vgeomStats_; }
+
     // Draws a primitive with a Shader Graph material instead of its MToon material. Pass nullptr to
     // restore the MToon path. The renderer does not own the GraphMaterial; it must outlive the draws.
     // Graph primitives are drawn opaque in the scene pass and are not shadowed. A graph material whose
@@ -225,6 +232,12 @@ public:
     void clearGraphMaterials() { graphMaterials_.clear(); }
 
 private:
+    // One frame's selection for one draw: the clusters the walk chose, and the contiguous runs of the cluster index
+    // stream they form, so the renderer issues one draw per run instead of one per cluster.
+    struct VGeomCut {
+        std::vector<uint32_t> clusters;
+        std::vector<std::pair<uint32_t, uint32_t>> runs;   // (firstIndex, indexCount)
+    };
     struct Rec {
         Model* model;
         int node;
@@ -233,6 +246,7 @@ private:
         float fade = 0.0f;     // distance fade of the model (colour passes)
         bool inView = true;    // false when the camera frustum culls the draw (colour passes skip it)
         int lod = 0;           // mesh LOD level for this draw (0 = full detail); static draws only
+        const VGeomCut* vgeomCut = nullptr;   // null when the primitive has no tree or the setting is off
     };
 
     void rebuildTargets(uint32_t scale);
@@ -243,6 +257,7 @@ private:
     rhi::Device& dev_;
     uint32_t drawCalls_ = 0;
     uint32_t triangles_ = 0;     // triangles in the mesh draws of the last frame
+    VGeomStats vgeomStats_{};
     float bloomScale_ = 0.5f;     // bloom size the targets were built with
     uint32_t scale_ = 0;          // internal resolution scale (1 or 2); 0 = not built
     uint32_t displayW_ = 0, displayH_ = 0;
