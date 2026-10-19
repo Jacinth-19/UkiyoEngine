@@ -10,9 +10,43 @@ endif()
 
 find_package(Python3 COMPONENTS Interpreter REQUIRED)
 find_package(Vulkan REQUIRED)
-find_package(glfw3 REQUIRED)
-find_package(glm REQUIRED)
-find_package(nlohmann_json REQUIRED)
+# ---- Vendored dependencies -------------------------------------------------
+# GLM, nlohmann_json and GLFW live in third_party/ so a checkout builds without fetching anything and CI does not
+# spend a package install on them (see third_party/VENDOR.md for versions and the upgrade commands). Each one falls
+# back to the system package if the directory is missing, so an older checkout still configures.
+if(EXISTS ${CMAKE_SOURCE_DIR}/third_party/glm/glm/glm.hpp)
+  add_library(ukiyo_glm INTERFACE)
+  # No compile definitions: the vendored copy must behave exactly like the system package it replaces.
+  target_include_directories(ukiyo_glm INTERFACE ${CMAKE_SOURCE_DIR}/third_party/glm)
+  add_library(glm::glm ALIAS ukiyo_glm)
+  message(STATUS "glm: vendored (third_party/glm)")
+else()
+  find_package(glm REQUIRED)
+endif()
+
+if(EXISTS ${CMAKE_SOURCE_DIR}/third_party/nlohmann/include/nlohmann/json.hpp)
+  add_library(ukiyo_json INTERFACE)
+  target_include_directories(ukiyo_json INTERFACE ${CMAKE_SOURCE_DIR}/third_party/nlohmann/include)
+  add_library(nlohmann_json::nlohmann_json ALIAS ukiyo_json)
+  message(STATUS "nlohmann_json: vendored (third_party/nlohmann)")
+else()
+  find_package(nlohmann_json REQUIRED)
+endif()
+
+if(EXISTS ${CMAKE_SOURCE_DIR}/third_party/glfw/CMakeLists.txt)
+  set(GLFW_BUILD_EXAMPLES OFF CACHE BOOL "Build GLFW's examples")
+  set(GLFW_BUILD_TESTS OFF CACHE BOOL "Build GLFW's tests")
+  set(GLFW_BUILD_DOCS OFF CACHE BOOL "Build GLFW's documentation")
+  set(GLFW_INSTALL OFF CACHE BOOL "Add GLFW's install rules")
+  # GLFW 3.4 builds the Wayland backend by default, which needs wayland-scanner and the wayland protocols at
+  # configure time. The editor is an X11 application here and CI has no Wayland toolchain, so X11 is the default.
+  # Pass -DGLFW_BUILD_WAYLAND=ON to build it where the headers and scanner are installed.
+  set(GLFW_BUILD_WAYLAND OFF CACHE BOOL "Build GLFW's Wayland backend")
+  add_subdirectory(third_party/glfw EXCLUDE_FROM_ALL)
+  message(STATUS "glfw: vendored (third_party/glfw)")
+else()
+  find_package(glfw3 REQUIRED)
+endif()
 find_program(GLSLANG_VALIDATOR glslangValidator REQUIRED)
 # glslang is linked into the engine: GLSL -> SPIR-V at runtime (generated material shaders).
 find_package(glslang CONFIG REQUIRED)
