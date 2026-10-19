@@ -8,13 +8,16 @@ of VRAM or more** — and its point is to replace the raster lighting stack outr
 SSAO/GTAO, no SSR or reflection probes, no shadow maps, no PCSS. Every one of those jobs is done by traced rays.
 
 An integrated GPU has no RT cores and no BVH traversal units; DLSS Ray Reconstruction needs tensor cores and an NVIDIA
-driver. There is nothing to port. The same program on an iGPU is either a compute shader marching a software BVH at
-single-digit frames, or it is not path tracing. This item is therefore answered in two halves:
+driver. There is nothing to port. This item is therefore answered in three parts:
 
 | | What it is | Where it runs |
 | --- | --- | --- |
 | **Ground truth** | `tools/pathtrace_preview.cpp` — a CPU path tracer of the Terrain Lab scene | any CPU; the GPU is not involved |
-| **What the engine draws** | cascaded sun shadows, SSAO, terrain layer blending and grass, at frame rate | every iGPU the editor already runs on |
+| **The estimator** | `shaders/gi_trace.frag` + `gi_accum.frag` — one traced bounce, half resolution, accumulated over frames (§4) | every iGPU the editor runs on; no ray-tracing feature, no compute |
+| **The rest of the frame** | cascaded sun shadows, SSAO, terrain layer blending and grass, at frame rate | the same iGPUs |
+
+The estimator is the answer to "run it on all iGPUs, performantly": it is a fragment shader over a heightfield, it
+needs nothing the RHI does not already expose, and §4 measures its image against the tracer's.
 
 The tracer is the reference the real-time renderer is judged against. It is deliberately not an engine feature:
 nothing in it touches the RHI, so it cannot regress a build, and it produces the same image on a laptop with an Intel
@@ -67,7 +70,67 @@ one sample a frame into a running average at a quarter of the viewport, then a b
 0.16 s a frame on four threads at 480×270 and converge over a couple of seconds while the camera is still. That is
 the only honest way to put *this* tracer in front of a player: the frame is not real time, the image is.
 
-## 4. What the real-time renderer does instead
+## 4. The real-time estimator (the pass that runs in the game)
+
+The tracer answers "what is the right image". It does not answer "what can an iGPU draw". The second half of this item
+is `shaders/gi_trace.frag` and `shaders/gi_accum.frag`, driven by `RenderSettings::gi`, and the same algorithm written
+in C++ as `pathtrace_preview realtime` so that it can be validated against the tracer pixel by pixel.
+
+| | Ground truth (`pathtrace_preview`) | Estimator (`pathtrace_preview realtime`, `gi_trace.frag`) |
+| --- | --- | --- |
+| Resolution | full | half, then a depth-guided bilateral upsample |
+| Rays | 64–96 per pixel, jittered, all independent | 4–8 per *half-resolution* pixel per frame |
+| Secondary light | traced again, recursively | the previous frame's raster result, reprojected by screen position |
+| Noise | averaged over samples per frame | accumulated over frames (16, exponential) |
+| Termination | one cosine bounce, 85 % | one cosine bounce, every ray |
+| Marching | adaptive steps + 26 bisection steps | adaptive steps + 8 bisection steps, 8 taps typical |
+| Cost | 4–5 µs/thread/sample/pixel | one march per ray |
+
+**Why it is affordable.** A heightfield has one height per xz, so a ray cannot step *over* a ridge it is heading into:
+the step is bounded by how far the ray can fall before it reaches the ground, and the march lands in a handful of
+taps with no acceleration structure, no BVH, no compute shader and no ray-tracing API. A 12 m ray costs about eight
+texture fetches. At 1280 × 720 with four rays per half-resolution pixel that is 0.92 M rays and 7.4 M texture fetches
+a frame — arithmetic and texture bandwidth an integrated GPU has, unlike BVH traversal.
+
+**Why it is not noise.** Eight rays are noisy, but the sun and the geometry do not move much per frame, and the GI
+signal is low-frequency. The accumulation pass averages sixteen frames of samples with a depth test that throws the
+history away where the surface changed, so what reaches the screen has 64–128 rays of effective sampling at the cost
+of eight. That is the same trade the reference makes with DLSS Ray Reconstruction, done with a blur instead of a
+neural network — less sharp, and it runs anywhere.
+
+**Measured against the tracer.** Same scene, same camera, same curves (`pathtrace_preview realtime out.png . 480 270
+16 8 64` renders the estimate, the 64-spp reference and the difference):
+
+| Rays per half-res pixel | Frames accumulated | RMSE vs 64 spp | Worst pixel |
+| --- | --- | --- | --- |
+| 4 | 8 | 0.038 | 0.33 |
+| 8 | 8 | 0.038 | 0.34 |
+| 8 | 16 | 0.038 | 0.31 |
+
+The error does not move with the ray count because it is not the estimator's noise: at these settings it is the
+difference between the estimator's model (a raster frame plus one bounce) and the tracer's (every ray a path), which
+is a systematic 1.5 % of the range, mostly along silhouette edges where the half-resolution GI meets the full-resolution
+frame. That is the honest description of what a half-resolution, one-bounce, raster-fed estimator can be: *the
+lighting matches the reference closely, the fine detail cannot*.
+
+| | The estimate | The same pixels from the tracer | Difference, ×4 |
+| --- | --- | --- | --- |
+| 960 × 540 | ![estimate](gi-realtime.png) | ![reference](gi-reference.png) | ![difference](gi-diff.png) |
+
+*The bounce light in the basins and the shading on the far ridges match; the residual is trace noise in the reference
+and a one-pixel silhouette line.*
+
+**Cost on the CPU twin**, two threads, 480 × 270: the raster pass (whose direct light comes from shadow rays in the
+twin) is 286 ms one-off, and the estimator is 114 ms a frame at eight rays — 0.31 M rays. On the GPU the same work is a
+fragment shader with no divergence and texture-cached height lookups, and the two halves of the twin are exactly the
+kinds of work an integrated GPU is built for; the pass's own budget is 7.4 M texture fetches at 720p with four rays.
+**No GPU number is quoted here because none was measured on a GPU** — this container has no Vulkan device. What can be
+said without a measurement is the work: three half-resolution passes, 0.92 M rays, 7.4 M fetches, no synchronisation
+and no readback, which is inside what a 15 W integrated part does in a few milliseconds. The editor's self-test runs the
+pass on whatever device it is on (`11v: traced bounce light runs without breaking the frame`), and the setting is in
+the Screen Effects panel next to SSAO.
+
+## 5. What the renderer does around it
 
 On an iGPU the editor draws the same scene with rasterisation, and the differences are the whole story of this item:
 
@@ -75,19 +138,23 @@ On an iGPU the editor draws the same scene with rasterisation, and the differenc
 | --- | --- | --- |
 | Sun visibility | exact ray march, soft where the ridge is | 3-cascade shadow atlas with a PCF kernel |
 | Ambient | sky dome sampled over the hemisphere, plus one bounce | hemispherical ambient in the toon shader and SSAO in `shaders/effects.frag` |
-| Interreflection | one cosine bounce | not simulated; the shadow tint and the SSAO darkening stand in |
+| Interreflection | one cosine bounce | traced at half resolution, accumulated over frames, composited at full resolution (§4) |
 | Grass | albedo only | 262 144 tufts a tile, scattered on the CPU, wind and distance bands in the vertex shader |
 | AA | jittered supersampling | FXAA, SSAA 2×, or TAA |
 
-The honest gap is interreflection and contact occlusion. SSAO covers the second at a fraction of a millisecond and the
-one-bounce colour bleed is what a future screen-space GI pass would add; both are raster-cheap, which is why they are
-the iGPU-suitable parts of the reference's look.
+The honest gap that remains is contact occlusion: SSAO covers it at a fraction of a millisecond, and the estimator's
+rays start 5 cm off the surface, so a crease narrower than that is not seen. Everything else in the reference's list of
+jobs it takes over from rasterisation — ambient occlusion of the sky, one-bounce interreflection, shadowing of the
+ambient term — is now traced rather than guessed, which is what the estimator in §4 is for.
 
-## 5. Reproducing
+## 6. Reproducing
 
 ```sh
 cmake --build build --target pathtrace_preview
+# The ground truth.
 ./build/pathtrace_preview docs/pathtrace-terrain.png . 1600 900 96
+# The estimator, with the reference and the difference written beside it: RMSE in display units.
+./build/pathtrace_preview realtime docs/gi-realtime.png . 960 540 16 8 64
 ```
 
 `pathtrace_preview` is built by the "Build Everything" CI step, so the tool cannot rot even though no test runs it.

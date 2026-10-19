@@ -17,6 +17,7 @@
 // terrain is a single tile, so there is no BVH to build.
 #include <algorithm>
 #include <atomic>
+#include <chrono>
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
@@ -321,6 +322,225 @@ glm::vec3 tracePath(const Scene& s, glm::vec3 ro, glm::vec3 rd, uint32_t& seed) 
     return out;
 }
 
+// ---------------------------------------------------------------------------------------------------------------
+// The real-time estimator
+//
+// This is the algorithm the engine's GI pass runs on the GPU (shaders/gi.frag), written a second time here in C++ so
+// that it can be validated against the tracer: same half resolution, same eight cosine-weighted rays, same
+// reprojected temporal accumulation, same depth-guided upsample. On the GPU those loops are fragment shader work; here
+// they are loops over a vector, which is slow — but a wrong estimator is wrong at any speed, and this one can be
+// compared, pixel by pixel, with the ground truth in the same program.
+//
+// What makes it affordable on an integrated GPU:
+//
+//   * the diffuse integral is evaluated at half resolution, so eight rays per pixel there are two rays per pixel of
+//     the final image;
+//   * rays are short (12 m) and march the heightfield, whose step grows with the height above the ground;
+//   * the hit's radiance comes from the previous frame's raster result instead of being traced again, so a ray costs
+//     one march and one texture fetch rather than another path;
+//   * the result is accumulated over frames, so the noise of eight rays is divided by the accumulation length;
+//   * the upsample is bilateral on depth, so a hill's GI does not bleed into the valley behind it.
+struct RealtimeBuffers {
+    int w = 0, h = 0;
+    std::vector<glm::vec3> radiance;   // full resolution, pre-GI, this frame's raster result
+    std::vector<float> depth;          // eye distance, 0 for sky
+    std::vector<glm::vec3> normal;
+    std::vector<glm::vec3> gi;         // half resolution, accumulated indirect diffuse
+};
+
+// A cheap shade of a point with one shadow ray. The real-time renderer's "raster" half: direct sun plus the sky
+// ambient, exactly what the engine's terrain shader computes.
+glm::vec3 rasterShade(const Scene& s, glm::vec3 p, glm::vec3 n, float detail) {
+    const glm::vec3 albedo = s.albedoAt(p, n, detail);
+    return s.direct(p, n, albedo) + albedo * s.ambient(n);
+}
+
+void renderRealtime(const Scene& scene, const glm::mat4& view, const glm::mat4& proj, const glm::vec3& eye, int W, int H,
+                    int frames, int raysPerFrame, std::vector<glm::vec3>* out, double* msPerFrame) {
+    const int GW = (W + 1) / 2, GH = (H + 1) / 2;
+    double debugSum = 0.0, debugAlbedo = 0.0, debugRays = 0.0, debugN = 0.0;
+    RealtimeBuffers b;
+    b.w = W; b.h = H;
+    b.radiance.assign(size_t(W) * size_t(H), glm::vec3(0.0f));
+    b.depth.assign(size_t(W) * size_t(H), 0.0f);
+    b.normal.assign(size_t(W) * size_t(H), glm::vec3(0.0f, 1.0f, 0.0f));
+    b.gi.assign(size_t(GW) * size_t(GH), glm::vec3(0.0f));
+
+    const glm::mat4 invView = glm::inverse(view);
+    const glm::mat4 invProj = glm::inverse(proj);
+    const glm::mat4 viewProj = proj * view;
+
+    auto primary = [&](int x, int y) {
+        const float jx = (float(x) + 0.5f) / float(W) * 2.0f - 1.0f;
+        const float jy = 1.0f - (float(y) + 0.5f) / float(H) * 2.0f;
+        const glm::vec4 far = invProj * glm::vec4(jx, jy, 1.0f, 1.0f);
+        const glm::vec3 dir = glm::normalize(glm::vec3(invView * glm::vec4(glm::normalize(glm::vec3(far)), 0.0f)));
+        float t = 0.0f;
+        glm::vec3 n(0.0f, 1.0f, 0.0f);
+        if (!scene.intersect(eye, dir, 4000.0f, &t, &n)) return std::make_pair(glm::vec3(0.0f), glm::vec3(0.0f));
+        return std::make_pair(eye + dir * t, n);
+    };
+
+    const int threads = std::max(1u, std::thread::hardware_concurrency());
+    const auto start = std::chrono::steady_clock::now();
+
+    // One raster pass up front: the geometry does not move between the frames of a still camera, and neither does
+    // the direct light. A game would run this every frame; here it is the input to every frame of the estimator,
+    // which is what the estimator would see in a game with a static sun.
+    {
+        std::atomic<int> nextRow{0};
+        std::vector<std::thread> pool;
+        for (int th = 0; th < threads; ++th) {
+            pool.emplace_back([&]() {
+                for (;;) {
+                    const int y = nextRow.fetch_add(1);
+                    if (y >= H) break;
+                    for (int x = 0; x < W; ++x) {
+                        const auto hit = primary(x, y);
+                        const size_t i = size_t(y) * size_t(W) + size_t(x);
+                        const glm::vec3 p = hit.first;
+                        if (glm::length(p) < 1e-6f) {
+                            const glm::vec4 far = invProj * glm::vec4((float(x) + 0.5f) / float(W) * 2.0f - 1.0f,
+                                                                      1.0f - (float(y) + 0.5f) / float(H) * 2.0f, 1.0f, 1.0f);
+                            const glm::vec3 d = glm::normalize(glm::vec3(invView * glm::vec4(glm::normalize(glm::vec3(far)), 0.0f)));
+                            b.radiance[i] = scene.sky(d);
+                            b.depth[i] = 0.0f;
+                            continue;
+                        }
+                        b.depth[i] = glm::length(p - eye);
+                        b.normal[i] = hit.second;
+                        const float detail = std::clamp(1.0f - glm::length(p - eye) / 210.0f, 0.0f, 1.0f);
+                        b.radiance[i] = rasterShade(scene, p, hit.second, detail);
+                    }
+                }
+            });
+        }
+        for (auto& t : pool) t.join();
+    }
+
+    const auto rasterDone = std::chrono::steady_clock::now();
+    const double rasterMs = std::chrono::duration<double, std::milli>(rasterDone - start).count();
+
+    // Temporal accumulation. A still camera means the reprojection is the identity, which is the honest way to
+    // measure the estimator: a moving camera adds reprojection error on top, and this number is the one that says
+    // whether eight rays are enough.
+    for (int frame = 0; frame < frames; ++frame) {
+        std::atomic<int> nextRow{0};
+        std::vector<std::thread> pool;
+        for (int th = 0; th < threads; ++th) {
+            pool.emplace_back([&, th]() {
+                uint32_t seed = 0x9e3779b9u * uint32_t(th + 1) + uint32_t(frame) * 0x85ebca6bu;
+                for (;;) {
+                    const int y = nextRow.fetch_add(1);
+                    if (y >= GH) break;
+                    for (int x = 0; x < GW; ++x) {
+                        const int fx = std::min(W - 1, x * 2), fy = std::min(H - 1, y * 2);
+                        const size_t fi = size_t(fy) * size_t(W) + size_t(fx);
+                        const size_t gi = size_t(y) * size_t(GW) + size_t(x);
+                        if (b.depth[fi] <= 0.0f) { b.gi[gi] = glm::vec3(0.0f); continue; }
+                        // Rebuild the surface point from the depth buffer and the primary ray.
+                        const glm::vec4 far = invProj * glm::vec4((float(fx) + 0.5f) / float(W) * 2.0f - 1.0f,
+                                                                  1.0f - (float(fy) + 0.5f) / float(H) * 2.0f, 1.0f, 1.0f);
+                        const glm::vec3 dir = glm::normalize(glm::vec3(invView * glm::vec4(glm::normalize(glm::vec3(far)), 0.0f)));
+                        const glm::vec3 surf = eye + dir * b.depth[fi];
+                        const glm::vec3 n = b.normal[fi];
+                        glm::vec3 sum(0.0f);
+                        for (int r = 0; r < raysPerFrame; ++r) {
+                            const glm::vec3 d = cosineHemisphere(n, seed);
+                            float th2 = 0.0f;
+                            glm::vec3 n2;
+                            if (scene.intersect(surf + n * 0.05f, d, 12.0f, &th2, &n2)) {
+                                const glm::vec3 hp = surf + n * 0.05f + d * th2;
+                                const glm::vec4 clip = viewProj * glm::vec4(hp, 1.0f);
+                                if (clip.w <= 0.0f) { sum += scene.sky(d); continue; }
+                                const glm::vec2 uv = glm::vec2(clip.x / clip.w, clip.y / clip.w) * 0.5f + 0.5f;
+                                if (uv.x < 0.0f || uv.x >= 1.0f || uv.y < 0.0f || uv.y >= 1.0f) { sum += scene.sky(d); continue; }
+                                const int hx = std::clamp(int(uv.x * float(W)), 0, W - 1);
+                                const int hy = std::clamp(int((1.0f - uv.y) * float(H)), 0, H - 1);
+                                sum += b.radiance[size_t(hy) * size_t(W) + size_t(hx)];
+                            } else {
+                                sum += scene.sky(d);
+                            }
+                        }
+                        // The cosine estimator already carries the 1/pi and the cosine: the integral of L over the
+                        // hemisphere with a cosine pdf is the mean of L. Multiply by the albedo, the diffuse BRDF's
+                        // remaining factor.
+                        const float detail = std::clamp(1.0f - b.depth[fi] / 210.0f, 0.0f, 1.0f);
+                        const glm::vec3 albedo = scene.albedoAt(surf, n, detail);
+                        const glm::vec3 sample = albedo * (sum / float(raysPerFrame));
+                        if (std::getenv("UKIYO_RT_DEBUG")) {
+                            debugRays += 1.0;
+                            debugSum += double(sum.x + sum.y + sum.z) / (3.0 * double(raysPerFrame));
+                            debugAlbedo += double(albedo.x + albedo.y + albedo.z) / 3.0;
+                            debugN += double(glm::length(n));
+                        }
+                        const float alpha = std::max(1.0f / float(frame + 1), 0.05f);
+                        b.gi[gi] = glm::mix(b.gi[gi], sample, alpha);
+                    }
+                }
+            });
+        }
+        for (auto& t : pool) t.join();
+    }
+
+    const auto end = std::chrono::steady_clock::now();
+    if (std::getenv("UKIYO_RT_DEBUG")) {
+        double giSum = 0.0, radSum = 0.0, giMax = 0.0;
+        for (const glm::vec3& g : b.gi) { giSum += (g.x + g.y + g.z) / 3.0; giMax = std::max(giMax, double(glm::length(g))); }
+        for (const glm::vec3& r : b.radiance) radSum += (r.x + r.y + r.z) / 3.0;
+        std::fprintf(stderr, "debug: mean raster %.4f  mean GI %.4f  max GI %.3f  mean ray sum %.4f  mean albedo %.3f  mean |n| %.3f\n",
+                     radSum / double(b.radiance.size()), giSum / double(b.gi.size()), giMax,
+                     debugSum / std::max(1.0, debugRays), debugAlbedo / std::max(1.0, debugRays),
+                     debugN / std::max(1.0, debugRays));
+    }
+    const double ms = std::chrono::duration<double, std::milli>(end - start).count();
+    if (msPerFrame) *msPerFrame = ms / double(std::max(1, frames));
+    if (std::getenv("UKIYO_RT_DEBUG"))
+        std::fprintf(stderr, "debug: raster pass %.1f ms (one-off, static sun), GI %.1f ms/frame\n", rasterMs,
+                     (ms - rasterMs) / double(std::max(1, frames)));
+
+    // Composite: full resolution raster radiance plus the bilateral upsample of the half-resolution GI. The weights
+    // are depth-guided; the same code is gi_composite.frag on the GPU.
+    out->resize(size_t(W) * size_t(H));
+    for (int y = 0; y < H; ++y) {
+        for (int x = 0; x < W; ++x) {
+            const size_t i = size_t(y) * size_t(W) + size_t(x);
+            const glm::vec3 base = b.radiance[i];
+            if (b.depth[i] <= 0.0f) { (*out)[i] = base; continue; }
+            const int gx = std::min(GW - 1, x / 2), gy = std::min(GH - 1, y / 2);
+            float wsum = 0.0f;
+            glm::vec3 acc(0.0f);
+            for (int dy = -1; dy <= 1; ++dy) {
+                for (int dx = -1; dx <= 1; ++dx) {
+                    const int sx = std::clamp(gx + dx, 0, GW - 1), sy = std::clamp(gy + dy, 0, GH - 1);
+                    const int fx = std::min(W - 1, sx * 2), fy = std::min(H - 1, sy * 2);
+                    const float d = b.depth[size_t(fy) * size_t(W) + size_t(fx)];
+                    if (d <= 0.0f) continue;
+                    const float wgt = 1.0f / (1e-3f + std::fabs(d - b.depth[i]) * 2.0f);
+                    acc += b.gi[size_t(sy) * size_t(GW) + size_t(sx)] * wgt;
+                    wsum += wgt;
+                }
+            }
+            glm::vec3 indirect = wsum > 0.0f ? acc / wsum : glm::vec3(0.0f);
+            // The raster already added an *unoccluded* sky ambient to this pixel. The rays computed the same integral
+            // with occlusion and with the ground's bounce, so what is missing is the difference, not the whole sum.
+            // Adding the full sum would count the sky twice, and the image would brighten every time GI was enabled.
+            const float detailC = std::clamp(1.0f - b.depth[i] / 210.0f, 0.0f, 1.0f);
+            const glm::vec4 farC = invProj * glm::vec4((float(x) + 0.5f) / float(W) * 2.0f - 1.0f,
+                                                       1.0f - (float(y) + 0.5f) / float(H) * 2.0f, 1.0f, 1.0f);
+            const glm::vec3 dirC = glm::normalize(glm::vec3(invView * glm::vec4(glm::normalize(glm::vec3(farC)), 0.0f)));
+            const glm::vec3 surfC = eye + dirC * b.depth[i];
+            const glm::vec3 rasterAmbient = scene.albedoAt(surfC, b.normal[i], detailC) * scene.ambient(b.normal[i]);
+            glm::vec3 c = base + (indirect - rasterAmbient);
+            // Aerial perspective. The GPU pass does the same thing per pixel in effects.frag; it is repeated here so
+            // that the comparison with the tracer is measuring the GI estimator and not the fog.
+            const float haze = 1.0f - std::exp(-b.depth[i] * 0.00055f);
+            c = glm::mix(c, scene.sky(dirC), std::clamp(haze, 0.0f, 0.80f));
+            (*out)[i] = c;
+        }
+    }
+}
+
 glm::vec3 aces(glm::vec3 x) {
     const float a = 2.51f, b = 0.03f, c = 2.43f, d = 0.59f, e = 0.14f;
     x = glm::clamp((x * (a * x + b)) / (x * (c * x + d) + e), glm::vec3(0.0f), glm::vec3(1.0f));
@@ -329,12 +549,37 @@ glm::vec3 aces(glm::vec3 x) {
 
 } // namespace
 
+bool writePng(const std::string& path, int W, int H, const std::vector<glm::vec3>& pixels) {
+    std::vector<unsigned char> bytes(size_t(W) * size_t(H) * 3);
+    for (size_t i = 0; i < pixels.size(); ++i) {
+        const glm::vec3 c = glm::clamp(pixels[i], glm::vec3(0.0f), glm::vec3(1.0f));
+        bytes[i * 3 + 0] = uint8_t(c.x * 255.0f + 0.5f);
+        bytes[i * 3 + 1] = uint8_t(c.y * 255.0f + 0.5f);
+        bytes[i * 3 + 2] = uint8_t(c.z * 255.0f + 0.5f);
+    }
+    if (!stbi_write_png(path.c_str(), W, H, 3, bytes.data(), W * 3)) {
+        std::fprintf(stderr, "could not write %s\n", path.c_str());
+        return false;
+    }
+    return true;
+}
+
 int main(int argc, char** argv) {
-    const std::string out = argc > 1 ? argv[1] : "pathtrace.png";
-    const std::string root = argc > 2 ? argv[2] : ".";
-    const int W = argc > 3 ? std::atoi(argv[3]) : 1280;
-    const int H = argc > 4 ? std::atoi(argv[4]) : 720;
-    const int spp = argc > 5 ? std::atoi(argv[5]) : 64;
+    // Two modes. The default is the ground-truth tracer; `realtime` is the half-resolution estimator the GPU pass
+    // runs, so the two can be compared in the same units and on the same scene.
+    bool realtime = false;
+    int arg = 1;
+    if (argc > 1 && std::string(argv[1]) == "realtime") {
+        realtime = true;
+        arg = 2;
+    }
+    const std::string out = argc > arg ? argv[arg] : "pathtrace.png";
+    const std::string root = argc > arg + 1 ? argv[arg + 1] : ".";
+    const int W = argc > arg + 2 ? std::atoi(argv[arg + 2]) : 1280;
+    const int H = argc > arg + 3 ? std::atoi(argv[arg + 3]) : 720;
+    const int spp = argc > arg + 4 ? std::atoi(argv[arg + 4]) : (realtime ? 16 : 64);
+    const int rays = argc > arg + 5 ? std::atoi(argv[arg + 5]) : 8;
+    const int refSpp = argc > arg + 6 ? std::atoi(argv[arg + 6]) : 0;
 
     Scene scene;
     scene.map.cellSize = 1.0f;
@@ -366,6 +611,84 @@ int main(int argc, char** argv) {
     const glm::mat4 view = glm::lookAt(eye, target, glm::vec3(0.0f, 1.0f, 0.0f));
     const glm::mat4 proj = glm::perspective(glm::radians(52.0f), float(W) / float(H), 0.1f, 4000.0f);
     const glm::mat4 invView = glm::inverse(view);
+    const glm::mat4 invProj = glm::inverse(proj);
+
+    if (realtime) {
+        std::vector<glm::vec3> linear;
+        double ms = 0.0;
+        renderRealtime(scene, view, proj, eye, W, H, std::max(1, spp), std::max(1, rays), &linear, &ms);
+        std::vector<glm::vec3> display(linear.size());
+        for (size_t i = 0; i < linear.size(); ++i) display[i] = aces(linear[i] * scene.exposure);
+        if (!writePng(out, W, H, display)) return 1;
+        if (std::getenv("UKIYO_RT_DEBUG")) {
+            // The raster term on its own, for checking the estimator against what the renderer would draw.
+            std::vector<glm::vec3> raster(linear.size());
+            for (size_t i = 0; i < linear.size(); ++i) raster[i] = aces(linear[i] * scene.exposure);
+            writePng("/tmp/rt-raster.png", W, H, raster);
+        }
+        std::printf("wrote %s (%dx%d, realtime: half-res, %d rays/px, %d frames)\n", out.c_str(), W, H, rays,
+                    std::max(1, spp));
+        std::printf("estimator: %.2f ms/frame on %d CPU threads (raster + %d GI rays, %.1f M rays/frame)\n", ms,
+                    std::max(1u, std::thread::hardware_concurrency()), rays,
+                    double(W) * double(H) * 0.25 * double(rays) / 1e6);
+        if (refSpp > 0) {
+            // The same image from the tracer, and the difference between the two, in display units.
+            std::vector<glm::vec3> reference(size_t(W) * size_t(H));
+            std::atomic<int> row{0};
+            std::vector<std::thread> refPool;
+            const int threads2 = std::max(1u, std::thread::hardware_concurrency());
+            for (int th = 0; th < threads2; ++th) {
+                refPool.emplace_back([&, th]() {
+                    uint32_t seed = 0x9e3779b9u * uint32_t(th + 1);
+                    for (;;) {
+                        const int y = row.fetch_add(1);
+                        if (y >= H) break;
+                        for (int x = 0; x < W; ++x) {
+                            glm::vec3 sum(0.0f);
+                            for (int s = 0; s < refSpp; ++s) {
+                                const float jx = (float(x) + frand(seed)) / float(W) * 2.0f - 1.0f;
+                                const float jy = 1.0f - (float(y) + frand(seed)) / float(H) * 2.0f;
+                                const glm::vec4 far = invProj * glm::vec4(jx, jy, 1.0f, 1.0f);
+                                const glm::vec3 dir =
+                                    glm::normalize(glm::vec3(invView * glm::vec4(glm::normalize(glm::vec3(far)), 0.0f)));
+                                sum += glm::min(tracePath(scene, eye, dir, seed), glm::vec3(8.0f));
+                            }
+                            reference[size_t(y) * size_t(W) + size_t(x)] = aces(sum / float(refSpp) * scene.exposure);
+                        }
+                    }
+                });
+            }
+            for (auto& t : refPool) t.join();
+            // A reference file next to the estimate, so the pair can be looked at side by side.
+            std::string refPath = out;
+            const size_t dot = refPath.find_last_of('.');
+            if (dot != std::string::npos) refPath.insert(dot, "-reference");
+            else refPath += "-reference";
+            writePng(refPath, W, H, reference);
+            double sum = 0.0, worst = 0.0;
+            for (size_t i = 0; i < display.size(); ++i) {
+                const glm::vec3 d = display[i] - reference[i];
+                const double e = std::sqrt(double(d.x * d.x + d.y * d.y + d.z * d.z) / 3.0);
+                sum += e * e;
+                worst = std::max(worst, e);
+            }
+            std::printf("error vs %d spp reference: RMSE %.4f, worst %.3f (display units, 0..1)\n", refSpp,
+                        std::sqrt(sum / double(display.size())), worst);
+            // A difference image, amplified: where the estimator is wrong, and by how much.
+            std::vector<glm::vec3> diff(display.size());
+            for (size_t i = 0; i < display.size(); ++i) {
+                const glm::vec3 d = glm::abs(display[i] - reference[i]) * 4.0f;
+                diff[i] = glm::vec3(std::clamp(d.x, 0.0f, 1.0f), std::clamp(d.y, 0.0f, 1.0f), std::clamp(d.z, 0.0f, 1.0f));
+            }
+            std::string diffPath = out;
+            if (dot != std::string::npos) diffPath.insert(dot, "-diff");
+            else diffPath += "-diff";
+            writePng(diffPath, W, H, diff);
+            std::printf("wrote %s\n", diffPath.c_str());
+            std::printf("wrote %s\n", refPath.c_str());
+        }
+        return 0;
+    }
 
     std::vector<glm::vec3> pixels(size_t(W) * size_t(H));
     std::atomic<int> nextRow{0};
@@ -393,17 +716,7 @@ int main(int argc, char** argv) {
     }
     for (auto& t : pool) t.join();
 
-    std::vector<unsigned char> bytes(size_t(W) * size_t(H) * 3);
-    for (size_t i = 0; i < pixels.size(); ++i) {
-        const glm::vec3 c = glm::clamp(pixels[i], glm::vec3(0.0f), glm::vec3(1.0f));
-        bytes[i * 3 + 0] = uint8_t(c.x * 255.0f + 0.5f);
-        bytes[i * 3 + 1] = uint8_t(c.y * 255.0f + 0.5f);
-        bytes[i * 3 + 2] = uint8_t(c.z * 255.0f + 0.5f);
-    }
-    if (!stbi_write_png(out.c_str(), W, H, 3, bytes.data(), W * 3)) {
-        std::fprintf(stderr, "could not write %s\n", out.c_str());
-        return 1;
-    }
+    if (!writePng(out, W, H, pixels)) return 1;
     std::printf("wrote %s (%dx%d, %d spp, %d threads)\n", out.c_str(), W, H, spp, threads);
     return 0;
 }

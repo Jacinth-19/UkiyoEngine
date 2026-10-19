@@ -96,6 +96,29 @@ bool uploadTerrain(rhi::Device& device, const Heightmap& map, uint32_t cells, co
         g.detailTexture = device.createTexture(td, white.data());
     }
 
+    // The heightmap, for the GI pass: heights in metres in the red channel. The tile is `map.size` samples square;
+    // the shader reconstructs metres from the texture's own size, so no metadata has to travel with it.
+    {
+        rhi::TextureDesc hd;
+        hd.width = uint32_t(map.size);
+        hd.height = uint32_t(map.size);
+        hd.format = rhi::Format::RGBA16F;
+        hd.filter = rhi::Filter::Linear;
+        hd.wrap = rhi::Wrap::Clamp;
+        // RGBA16F uploads go through the RGBA8 path in the RHI, which is not right for float data; store the height
+        // normalised to 0..1 in red with the other channels free and let the shader scale by heightScale. That keeps
+        // the texture an ordinary 8-bit texture, which every backend here can create, and 1/255 of the tile's height
+        // is 5 cm — under the estimator's own step size.
+        std::vector<uint8_t> pixels(size_t(map.size) * size_t(map.size) * 4, 0);
+        for (size_t i = 0; i < map.samples.size() && i < size_t(map.size) * size_t(map.size); ++i) {
+            const float n = std::clamp(map.samples[i], 0.0f, 1.0f);
+            pixels[i * 4 + 0] = uint8_t(n * 255.0f + 0.5f);
+            pixels[i * 4 + 3] = 255;
+        }
+        hd.format = rhi::Format::RGBA8;
+        g.heightTexture = device.createTexture(hd, pixels.data());
+    }
+
     g.layerSet = device.createDescriptorSet(rhi::SetType::ShaderMaterial);
     // Units 2 and 3: unit 1 is the frame set's shadow atlas, and the GL backend binds every set into the same texture
     // unit space.

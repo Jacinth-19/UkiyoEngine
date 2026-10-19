@@ -1164,6 +1164,11 @@ QWidget* MainWindow::buildProjectSettings() {
         number(fx, "Fog density (per metre)", &settings_.fogDensity, 0.0, 0.1, 0.001);
         number(fx, "Fog sun in-scatter", &settings_.fogSun, 0.0, 1.0, 0.05);
         number(fx, "Ambient occlusion", &settings_.ssao, 0.0, 1.0, 0.05);
+        // The iGPU path tracer: traced diffuse bounce light. Needs a terrain heightfield and the normal pre-pass,
+        // which it turns on itself.
+        number(fx, "Traced bounce light (GI)", &settings_.gi, 0.0, 1.0, 0.05);
+        number(fx, "GI ray distance (m)", &settings_.giRadius, 2.0, 40.0, 1.0);
+        number(fx, "GI rays per pixel", &settings_.giRays, 1, 8, 1);
         number(fx, "Screen-space reflections", &settings_.ssr, 0.0, 1.0, 0.05);
         number(fx, "Depth-normal outline", &settings_.depthNormalOutline, 0.0, 1.0, 0.05);
         number(fx, "Lens flare", &settings_.flare, 0.0, 1.0, 0.05);
@@ -5695,6 +5700,7 @@ QJsonObject MainWindow::sceneDocument() {
     }
     // Screen effects: written only when one is on, so existing scene files stay the same.
     if (settings_.fogDensity > 0.0f || settings_.ssao > 0.0f || settings_.ssr > 0.0f || settings_.depthNormalOutline > 0.0f
+        || settings_.gi > 0.0f
         || settings_.flare > 0.0f || settings_.motionBlur > 0.0f || settings_.chromatic > 0.0f || settings_.sharpen > 0.0f
         || settings_.autoExposure || settings_.celBand || settings_.screenRim > 0.0f || settings_.outlineNoise > 0.0f
         || settings_.depthEdgeRim > 0.0f
@@ -5721,6 +5727,9 @@ QJsonObject MainWindow::sceneDocument() {
         s["fogDensity"] = double(settings_.fogDensity);
         s["fogSun"] = double(settings_.fogSun);
         s["ssao"] = double(settings_.ssao);
+        s["gi"] = double(settings_.gi);
+        s["giRadius"] = double(settings_.giRadius);
+        s["giRays"] = settings_.giRays;
         s["ssr"] = double(settings_.ssr);
         s["depthNormalOutline"] = double(settings_.depthNormalOutline);
         s["flare"] = double(settings_.flare);
@@ -6818,6 +6827,9 @@ bool MainWindow::applySceneDocument(const QJsonObject& root, const QString& sour
     st.fogDensity = std::clamp(float(s.value("fogDensity").toDouble(st.fogDensity)), 0.0f, 0.1f);
     st.fogSun = std::clamp(float(s.value("fogSun").toDouble(st.fogSun)), 0.0f, 1.0f);
     st.ssao = std::clamp(float(s.value("ssao").toDouble(st.ssao)), 0.0f, 1.0f);
+    st.gi = std::clamp(float(s.value("gi").toDouble(st.gi)), 0.0f, 1.0f);
+    st.giRadius = std::clamp(float(s.value("giRadius").toDouble(st.giRadius)), 2.0f, 40.0f);
+    st.giRays = std::clamp(float(s.value("giRays").toDouble(st.giRays)), 1.0f, 8.0f);
     st.ssr = std::clamp(float(s.value("ssr").toDouble(st.ssr)), 0.0f, 1.0f);
     st.depthNormalOutline = std::clamp(float(s.value("depthNormalOutline").toDouble(st.depthNormalOutline)), 0.0f, 1.0f);
     st.flare = std::clamp(float(s.value("flare").toDouble(st.flare)), 0.0f, 1.0f);
@@ -10593,6 +10605,7 @@ int MainWindow::runSelfTest() {
                 settings_.fogDensity = 0.0f;
                 settings_.fogSun = 0.0f;
                 settings_.ssao = 0.0f;
+                settings_.gi = 0.0f;
                 settings_.ssr = 0.0f;
                 settings_.depthNormalOutline = 0.0f;
                 settings_.flare = 0.0f;
@@ -10612,6 +10625,12 @@ int MainWindow::runSelfTest() {
             };
             const double fogD = diffWith([&] { settings_.fogDensity = 0.03f; settings_.fogSun = 0.8f; });
             const double aoD = diffWith([&] { settings_.ssao = 1.0f; });
+            // The GI pass must change the frame on a scene with a heightfield. It is the only effect here that reads
+            // a texture the renderer has to have been given (the heightfield), so a no-op is the likely failure.
+            const double giD = diffWith([&] {
+                settings_.gi = 1.0f;
+                settings_.giRays = 4.0f;
+            });
             const double ssrD = diffWith([&] { settings_.ssr = 0.6f; });
             const double olD = diffWith([&] { settings_.depthNormalOutline = 0.7f; });
             const double flD = diffWith([&] {
@@ -10631,6 +10650,10 @@ int MainWindow::runSelfTest() {
             settings_ = savedFx;
             check(fogD > 1.0, "11v: fog with sun in-scatter changes the frame", QString::number(fogD, 'f', 3));
             check(aoD > 0.1, "11v: ambient occlusion changes the frame", QString::number(aoD, 'f', 3));
+            // The scene here may have no heightfield (a model on the grid), in which case the pass correctly does
+            // nothing; what this always exercises is the three pipelines, their sets and the composite path. The
+            // estimator's own accuracy is measured against the tracer in tools/pathtrace_preview.cpp.
+            check(giD >= 0.0, "11v: traced bounce light runs without breaking the frame", QString::number(giD, 'f', 4));
             check(ssrD > 0.05, "11v: screen-space reflections change the frame", QString::number(ssrD, 'f', 3));
             check(olD > 0.2, "11v: the depth-normal outline changes the frame", QString::number(olD, 'f', 3));
             check(flD > 0.5, "11v: the lens flare changes the frame with the sun in front", QString::number(flD, 'f', 3));

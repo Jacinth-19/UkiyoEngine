@@ -77,6 +77,13 @@ struct RenderSettings {
     float fogSun = 0.0f;             // sun in-scatter into the fog, 0..1 (needs fogDensity > 0)
     float ssao = 0.0f;               // ambient occlusion strength, 0..1 (normal pre-pass)
     float ssr = 0.0f;                // screen-space reflections, 0..1 (normal pre-pass)
+    // Real-time diffuse GI (the iGPU path tracer): half-resolution traced bounce light, temporally accumulated and
+    // composited at full resolution. 0 = off, 1 = one bounce at full strength. Needs a heightfield (setHeightfield) and
+    // a normal pre-pass (it is turned on automatically when this is above zero, as SSAO is).
+    float gi = 0.0f;                 // indirect diffuse strength, 0..1
+    float giRadius = 12.0f;          // how far a bounce ray marches, metres
+    float giRays = 8.0f;             // rays per half-resolution pixel per frame, 1..8
+    float giHistory = 0.0625f;       // weight of one frame's samples in the accumulation (1/16 is 16 frames)
     float depthNormalOutline = 0.0f; // depth and normal edge lines, 0..1 (normal pre-pass)
     float flare = 0.0f;              // lens flare around the sun, 0..1 (occluded by geometry)
     float motionBlur = 0.0f;         // motion blur shutter, 0..2. Runs BEFORE TAA, so it also smears TAA history.
@@ -120,6 +127,17 @@ struct RenderSettings {
 
 // A terrain chunk to draw (item 18). The buffers belong to the terrain instance. The model moves the chunk from tile
 // space to the world, and the bounds are in tile space.
+// Everything the real-time GI pass needs to know about the scene's heightfield. A heightmap is a height function, so
+// the estimator needs no acceleration structure: it marches the same samples the terrain is built from. Set once per
+// terrain tile; a scene without terrain simply leaves it empty and the pass does not run.
+struct HeightfieldGpu {
+    rhi::Texture* height = nullptr;   // R = height normalised to 0..1, one texel per grid sample
+    uint32_t size = 0;                // samples per side (the texture is size x size)
+    float cellSize = 1.0f;            // metres between samples
+    float heightScale = 1.0f;         // metres for a normalised height of 1
+    glm::vec3 origin{0.0f};           // world position of sample (0, 0)
+};
+
 struct TerrainDraw {
     rhi::Buffer* vertices = nullptr;
     rhi::Buffer* indices = nullptr;
@@ -224,6 +242,7 @@ public:
     // The terrain chunks to draw this frame (item 18). The buffers belong to the terrain instances, so pass the list
     // again every frame.
     void setTerrain(const std::vector<TerrainDraw>& chunks) { terrain_ = chunks; }
+    void setHeightfield(const HeightfieldGpu& field) { heightfield_ = field; }
     void setFoliage(const std::vector<FoliageDraw>& batches) { foliage_ = batches; }
     void setGrass(const std::vector<GrassDraw>& batches) { grass_ = batches; }
     bool hasWater() const { return water_.has_value(); }
@@ -287,6 +306,15 @@ private:
     std::unique_ptr<rhi::Pipeline> pTerrain_;       // terrain chunks (terrain.vert / terrain.frag)
     std::unique_ptr<rhi::Pipeline> pTerrainShadow_;  // the same chunks as shadow casters (terrain_shadow.vert)
     std::vector<TerrainDraw> terrain_;
+    HeightfieldGpu heightfield_;
+    // Real-time GI (the iGPU path tracer): a half-resolution trace, a temporal accumulator and a composite that the
+    // effects pass folds in. The two GI targets and their sets are built with the rest of the resolution-dependent
+    // targets; the pass does nothing when no heightfield is set or gi_ is zero.
+    std::unique_ptr<rhi::Texture> gi_, giHist_[2];
+    std::unique_ptr<rhi::Pipeline> pGiTrace_, pGiAccum_;
+    std::unique_ptr<rhi::DescriptorSet> setGiTrace_, setGiAccum_[2], setGiComposite_;
+    uint32_t giFrame_ = 0;
+    uint32_t giWrite_ = 0;
     std::unique_ptr<rhi::Pipeline> pFoliage_;       // foliage batches (foliage.vert / foliage.frag)
     std::vector<FoliageDraw> foliage_;
     std::unique_ptr<rhi::Pipeline> pGrass_;         // grass batches (grass.vert / grass.frag)

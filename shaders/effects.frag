@@ -9,13 +9,15 @@
 //   p0 = (SSR strength, depth-normal outline strength, motion blur amount, aspect ratio)
 //   p1 = (SSAO radius in metres, screen-space rim strength, outline noise amount, depth-edge rim strength)
 //   p2 = (split direction, unit, split offset px, split line width px); zero direction = no split line
-//   p3 = (NPR side tint, PBR side tint, line colour), each RGBA8 packed into the float's bits
+//   p3 = (NPR side tint, PBR side tint, line colour) packed, and p3.w = traced GI strength (0 = none this frame)
+//   p3.w = traced GI strength
 // With everything at its default the pass copies the frame.
 #include "common.glsl"
 TEX(0, 1) uniform sampler2D uHdr;
 TEX(0, 2) uniform sampler2D uNormal;
 TEX(0, 3) uniform sampler2D uVel;
 TEX(0, 4) uniform sampler2D uDepth;
+TEX(0, 5) uniform sampler2D uGi;       // half-resolution traced GI, read only when p2.x > 0
 layout(location = 0) in vec2 vUV;
 layout(location = 0) out vec4 outColor;
 
@@ -147,6 +149,24 @@ void main() {
         vec3 V = normalize(-P);
         float fres = pow(clamp(1.0 - dot(N, V), 0.0, 1.0), 5.0);
         col += vec3(0.55, 0.8, 1.0) * rim * fres * clamp(pc.p1.w, 0.0, 1.0);
+    }
+    // Traced diffuse GI, composited at full resolution from the half-resolution accumulation. A 3x3 tent weighted by
+    // depth, so the valley does not receive the bounce of the hill in front of it. This is the pass that makes the
+    // renderer's ambient *traced* rather than a hemisphere guess: the same one bounce the CPU reference takes.
+    if (surface && hasN && pc.p3.w > 0.0) {
+        vec3 acc = vec3(0.0);
+        float wsum = 0.0;
+        float myEye = eyeDist(d);
+        for (int y = -1; y <= 1; ++y) {
+            for (int x = -1; x <= 1; ++x) {
+                vec2 uv = vUV + vec2(float(x), float(y)) * px * 2.0;
+                float sd = eyeDist(texture(uDepth, uv).r);
+                float w = (x == 0 && y == 0 ? 2.0 : 1.0) / (1e-3 + abs(sd - myEye) * 2.0);
+                acc += texture(uGi, uv).rgb * w;
+                wsum += w;
+            }
+        }
+        col += (acc / max(wsum, 1e-4)) * pc.p3.w;
     }
     if (surface && pc.model[1].w > 0.0) {
         float fogAmt = 1.0 - exp(-eyeDist(d) * pc.model[1].w);

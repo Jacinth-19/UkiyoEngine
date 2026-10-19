@@ -71,11 +71,14 @@ float packBits(const glm::vec3& rgb) {
     return out;
 }
 
-PushConstants pcWith(const glm::mat4& model, glm::vec4 p0, glm::vec4 p1 = glm::vec4(0.0f)) {
+PushConstants pcWith(const glm::mat4& model, glm::vec4 p0, glm::vec4 p1 = glm::vec4(0.0f),
+                     glm::vec4 p2 = glm::vec4(0.0f), glm::vec4 p3 = glm::vec4(0.0f)) {
     PushConstants pc{};
     pc.model = model;
     pc.p0 = p0;
     pc.p1 = p1;
+    pc.p2 = p2;
+    pc.p3 = p3;
     return pc;
 }
 
@@ -201,6 +204,12 @@ void Renderer::buildPipelines() {
                     rhi::Cull::Back, true, false, rhi::Blend::None, {F::RGBA8}, true);
     pEffects_ = make("fullscreen", "effects", {S::Post}, false, rhi::Cull::None, false, false,
                      rhi::Blend::None, {F::RGBA16F}, false);
+    // Real-time GI: the trace pass also needs the Frame set (camera basis and projection) and the heightmap, which is
+    // bound at Post binding 5. The accumulation and the composite are plain Post passes.
+    pGiTrace_ = make("fullscreen", "gi_trace", {S::Post, S::Frame}, false, rhi::Cull::None, false, false,
+                     rhi::Blend::None, {F::RGBA16F}, false);
+    pGiAccum_ = make("fullscreen", "gi_accum", {S::Post}, false, rhi::Cull::None, false, false,
+                     rhi::Blend::None, {F::RGBA16F}, false);
     pExpo_ = make("fullscreen", "expo_reduce", {S::Post}, false, rhi::Cull::None, false, false,
                   rhi::Blend::None, {F::RGBA8}, false);
     pPresent_ = make("fullscreen", "present", {S::Post}, false, rhi::Cull::None, false, false,
@@ -301,6 +310,11 @@ void Renderer::rebuildTargets(uint32_t scale) {
     refr_ = color(std::max(1u, intW_ / 2), std::max(1u, intH_ / 2), rhi::Format::RGBA16F);
     normal_ = color(intW_, intH_, rhi::Format::RGBA8);
     fxHdr_ = color(intW_, intH_, rhi::Format::RGBA16F);
+    // GI targets at half resolution. The trace reads the previous frame's raster, the depth and the normals, and the
+    // heightmap at binding 5; the accumulator reads the trace and its own history; the composite is folded into the
+    // effects pass, which reads the accumulator at binding 5 on a frame where GI is on.
+    gi_ = color(std::max(1u, intW_ / 2), std::max(1u, intH_ / 2), rhi::Format::RGBA16F);
+    for (auto& h : giHist_) h = color(std::max(1u, intW_ / 2), std::max(1u, intH_ / 2), rhi::Format::RGBA16F);
     for (auto& e : expo_) {   // 1x1 state, starts at 0.5 = exposure multiplier 1
         rhi::TextureDesc d;
         d.width = 1;
@@ -502,6 +516,22 @@ void Renderer::buildPostSets() {
     setEffects_->setTexture(2, normal_.get());
     setEffects_->setTexture(3, velocity_.get());
     setEffects_->setTexture(4, depth_.get());
+    // GI is composited at binding 5. The effects pass binds it every frame it runs; when GI is off the slot still has
+    // to hold a valid image, because a sampled binding cannot be left empty.
+    setEffects_->setTexture(5, blueNoise_.get());
+    setGiTrace_ = dev_.createDescriptorSet(rhi::SetType::Post);
+    setGiTrace_->setTexture(3, fxHdr_.get());   // previous frame's raster; binding 1 clashes with the Frame set on GL
+    setGiTrace_->setTexture(4, depth_.get());
+    setGiTrace_->setTexture(5, normal_.get());
+    for (int i = 0; i < 2; ++i) {
+        setGiAccum_[i] = dev_.createDescriptorSet(rhi::SetType::Post);
+        setGiAccum_[i]->setTexture(1, gi_.get());
+        setGiAccum_[i]->setTexture(2, giHist_[1 - i].get());
+        setGiAccum_[i]->setTexture(4, depth_.get());
+    }
+    giFrame_ = 0;
+    giWrite_ = 0;
+
     setExpoReduce_ = make(fxHdr_.get(), expo_[1].get());   // reads the previous state in tex 2
     setExpoCopy_ = make(expo_[0].get());
 }
@@ -1057,7 +1087,7 @@ void Renderer::render(const OrbitCamera& cam, const std::vector<Model*>& models,
     // 2a'. View-space normals for SSAO, SSR and the depth-normal outline. The same draws as the velocity
     // pass, against the scene depth. Pixels with no opaque surface keep alpha 0.
     const bool needNormals = s.ssao > 0.0f || s.ssr > 0.0f || s.depthNormalOutline > 0.0f || s.screenRim > 0.0f
-                              || s.depthEdgeRim > 0.0f;
+                              || s.depthEdgeRim > 0.0f || s.gi > 0.0f;
     if (needNormals) {
         rhi::PassDesc np;
         np.colors = {normal_.get()};
@@ -1089,6 +1119,51 @@ void Renderer::render(const OrbitCamera& cam, const std::vector<Model*>& models,
         dev_.endPass();
     }
 
+    // 2b2. Real-time GI (the iGPU path tracer, docs/PATHTRACE.md §6). Three passes at half resolution: trace one
+    // bounce per half-res pixel from the raster frame of the *previous* frame, accumulate it, and leave the result in
+    // a texture the effects pass composites at full resolution with a depth-guided bilateral filter. The trace reads
+    // the previous frame's HDR because the frame currently in fxHdr_ is the result of the effects pass, which runs
+    // after this one; the surface being lit is this frame's (depth and normals were written by the geometry passes).
+    const bool giOn = s.gi > 0.0f && heightfield_.height != nullptr && hdr_ && depth_ && normal_;
+    bool giComposite = false;
+    if (giOn) {
+        const uint32_t gw = std::max(1u, intW_ / 2), gh = std::max(1u, intH_ / 2);
+        // The trace's push constants: inverse viewProj in `model`, then the heightfield and ray parameters.
+        glm::mat4 invVP = glm::inverse(f.viewProj);
+        PushConstants tp = pcWith(invVP, glm::vec4(heightfield_.cellSize, heightfield_.heightScale, s.giRadius, 0.05f),
+                                  glm::vec4(L.x, L.y, L.z, std::clamp(s.giRays, 1.0f, 8.0f)),
+                                  glm::vec4(float(giFrame_), 0.0f, 0.0f, 0.0f));
+        // The trace needs the Frame set too, so it is bound by hand rather than through post(), which binds only set 0.
+        {
+            rhi::PassDesc pd;
+            pd.colors = {gi_.get()};
+            pd.clearColor = true;
+            pd.clearValue = glm::vec4(0.0f);
+            dev_.beginPass(pd);
+            dev_.setViewport(0, 0, gw, gh);
+            dev_.bindPipeline(pGiTrace_.get());
+            dev_.bindDescriptorSet(0, setGiTrace_.get());
+            dev_.bindDescriptorSet(1, frameSet_.get());
+            dev_.pushConstants(&tp, sizeof(tp));
+            dev_.drawFullscreen();
+            dev_.endPass();
+        }
+        // Accumulate into the write history, reading the other one. The first frame and every tenth after it take the
+        // trace as is, so a moving camera never lags more than a few frames of light.
+        const float weight = (giFrame_ % 10 == 0) ? 1.0f : std::max(0.03125f, s.giHistory);
+        post(giHist_[giWrite_].get(), true, pGiAccum_.get(), setGiAccum_[giWrite_].get(),
+             pcWith(glm::mat4(1.0f), glm::vec4(weight, 0, 0, 0),
+                    glm::vec4(1.0f / float(intW_), 1.0f / float(intH_), 0, 0)),
+             int(intW_) / 2, int(intH_) / 2);
+        // The effects pass composites it: binding 5 carries the accumulated GI, and p2.x its strength.
+        setEffects_->setTexture(5, giHist_[giWrite_].get());
+        giComposite = true;
+        giWrite_ ^= 1;
+        ++giFrame_;
+    } else {
+        giFrame_ = 0;
+    }
+
     // 2c. Screen-space effects on the HDR frame (shaders/effects.frag): motion blur, SSAO, depth-normal
     // outline, SSR, fog with sun in-scatter, lens flare. Runs before TAA, bloom and tonemap, which read
     // fxHdr_. With everything at its default the pass copies the frame.
@@ -1106,13 +1181,17 @@ void Renderer::render(const OrbitCamera& cam, const std::vector<Model*>& models,
             sunVisible = 1.0f;
         }
         e[3] = glm::vec4(sunUV, s.flare * sunVisible, s.ssao);
+        // p1: SSAO radius (m), rim, outline noise, depth-edge rim. The traced GI strength rides in p3.w, the one slot
+        // the split line leaves free: it is written before the split block below and that block preserves it.
         PushConstants ep = pcWith(e, glm::vec4(s.ssr, s.depthNormalOutline, s.motionBlur, aspect),
-                                  glm::vec4(0.5f, s.screenRim, s.outlineNoise, s.depthEdgeRim));   // p1: SSAO radius (m), rim, outline noise, depth-edge rim
+                                  glm::vec4(0.5f, s.screenRim, s.outlineNoise, s.depthEdgeRim));
         // SplitScreen line: p2 = (dir, offset px, width px); p3 = tints and line colour as packed RGBA8 bits.
+        ep.p3.w = giComposite ? s.gi : 0.0f;
         if (glm::dot(s.splitDir, s.splitDir) > 1e-8f) {
             const glm::vec2 dir = glm::normalize(s.splitDir);
             ep.p2 = glm::vec4(dir, s.splitOffsetPx, s.splitLineWidthPx);
-            ep.p3 = glm::vec4(packBits(s.splitNprTint), packBits(s.splitPbrTint), packBits(s.splitLineColor), 0.0f);
+            const float keepGi = ep.p3.w;
+            ep.p3 = glm::vec4(packBits(s.splitNprTint), packBits(s.splitPbrTint), packBits(s.splitLineColor), keepGi);
         }
         post(fxHdr_.get(), true, pEffects_.get(), setEffects_.get(), ep, intW_, intH_);
     }

@@ -86,6 +86,10 @@ Vulkan backend and an OpenGL backend; `--backend gl` selects the latter.
   shadows, at whatever sample count the machine can afford. No RT cores, no DLSS, no GPU at all. See
   [docs/PATHTRACE.md](docs/PATHTRACE.md).
 * **Shadows** — three cascades into a 3 × 2048² atlas, slope-scaled bias, PCF.
+* **Traced bounce light** — one diffuse bounce traced against the terrain heightfield at half resolution, accumulated
+  over sixteen frames and composited at full resolution. A fragment shader with no ray-tracing or compute feature, so
+  it runs on any integrated GPU; measured against the CPU path tracer at 1.5 % mean error. See
+  [docs/PATHTRACE.md](docs/PATHTRACE.md).
 * **Water, particles, foliage, face SDF, PMX models**, and a shader graph with a node editor that generates
   GLSL and compiles it to SPIR-V at runtime.
 
@@ -197,5 +201,5 @@ Japanese line is the brand's second name, not a translation layer. The font is r
 
 The engine builds and tests on Linux CI, and the editor and hub run on Windows, Linux and macOS. Known gaps are
 listed at the end of each doc — the largest are GPU-driven virtual geometry (no compute or multi-draw in the RHI
-yet), real-time interreflection (the CPU tracer in [docs/PATHTRACE.md](docs/PATHTRACE.md) is the reference), and foot
-locking in motion matching.
+yet), contact occlusion in the traced bounce light (its rays start 5 cm off the surface) and foot locking in motion
+matching.

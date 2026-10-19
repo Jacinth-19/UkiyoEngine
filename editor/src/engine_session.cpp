@@ -5,6 +5,7 @@
 
 #include <algorithm>
 #include <cstdlib>
+#include <limits>
 #include <cstring>
 
 #include <glm/gtc/matrix_transform.hpp>
@@ -970,6 +971,24 @@ QImage EngineSession::render(const OrbitCamera& cam, float time, float dt, const
         }
     }
     renderer_->setTerrain(terrain);
+    // The GI pass needs the heightfield of the terrain under the camera. The first tile that has one is used; a scene
+    // with several tiles gives the estimator the nearest one, which is the only one its twelve-metre rays can reach.
+    {
+        HeightfieldGpu field;
+        float best = std::numeric_limits<float>::max();
+        for (const Instance& in : instances_) {
+            if (!in.terrainGpu || !in.terrainGpu->heightTexture) continue;
+            const float d = glm::length(glm::vec2(in.position[0], in.position[2]) - glm::vec2(cam.eye().x, cam.eye().z));
+            if (d >= best) continue;
+            best = d;
+            field.height = in.terrainGpu->heightTexture.get();
+            field.size = in.terrainGpu->map.size;
+            field.cellSize = in.terrainGpu->map.cellSize;
+            field.heightScale = in.terrainGpu->map.heightScale;
+            field.origin = glm::vec3(in.position[0], in.position[1], in.position[2]);
+        }
+        renderer_->setHeightfield(field);
+    }
     std::vector<FoliageDraw> foliage;
     for (const Instance& in : instances_) {
         if (!in.terrainGpu) continue;

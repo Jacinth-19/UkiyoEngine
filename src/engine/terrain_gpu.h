@@ -97,6 +97,9 @@ struct TerrainGpu {
     std::unique_ptr<rhi::Texture> diffuseAtlas;
     std::unique_ptr<rhi::Texture> normalAtlas;
     std::unique_ptr<rhi::Texture> detailTexture;   // white when the tile has no detail overlay
+    // The heightmap as a texture, for the real-time GI pass: R32F metres, one texel per grid sample. Kept RGBA16F
+    // rather than a float format so the RHI's one texture path can create it; the height is in red, in metres.
+    std::unique_ptr<rhi::Texture> heightTexture;
     std::unique_ptr<rhi::DescriptorSet> layerSet;
     // Foliage (step 3). Filled by uploadFoliage, empty when the tile has none.
     std::vector<FoliageMeshGpu> foliageMeshes;   // one per type
