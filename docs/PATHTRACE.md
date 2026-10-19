@@ -122,28 +122,78 @@ These numbers are reproducible to the last digit: the twin seeds every pixel's r
 rather than the thread, so a rerun writes a byte-identical PNG. (It did not, until that was fixed — the RMSE moved by
 a thousandth between runs, which is larger than any of the differences being compared here.)
 
-The error barely moves with the ray count because it is not the estimator's noise: at these settings it is the
-difference between the estimator's model (a raster frame plus one bounce) and the tracer's (every ray a path), which
-is a systematic 1.3–1.5 % of the range, concentrated along silhouette edges where the half-resolution GI meets the
-full-resolution frame and in the tracer's own sample noise. That is the honest description of what a half-resolution,
-one-bounce, raster-fed estimator can be: *the lighting matches the reference closely, the fine detail cannot*.
+### What that error is made of
+
+Quoting one RMSE against a 64-sample reference hides which of the two images is wrong, so the twin can also render a
+converged ground truth (`UKIYO_RT_TRUTH_SPP=256`) and report both errors against it:
+
+| 320 × 180, 8 frames, 8 rays | RMSE against 256-spp truth |
+| --- | --- |
+| The estimator | 0.03873 |
+| A 64-spp reference (what the table above compares against) | 0.00726 |
+
+The reference's own sampling is five times smaller than the number being quoted, so **the 0.037–0.039 is the
+estimator's error, not the reference's noise**. Two more measurements say what kind of error it is:
+
+| Change | RMSE against 256-spp truth |
+| --- | --- |
+| 4 rays → 8 rays | 0.03802 → 0.03801 |
+| 8 frames → 64 frames | 0.03873 → 0.03870 |
+| Absolute → relative depth weight in the upsample | 0.03873 → 0.03872 |
+
+Eight times the samples change the error by 0.08 %. It is not Monte Carlo variance; it is **model and reconstruction
+error**, and it is stable, which is why it can be reasoned about at all.
+
+The pass's own contribution, isolated by rendering the raster with and without the bounce and differencing both
+against the truth:
+
+| | Mean, display units |
+| --- | --- |
+| Light the bounce adds | +0.01297 |
+| Light actually missing (truth − raster) | +0.01568 |
+| RMS of the missing light | 0.05339 |
+| RMS of (added − missing) | 0.03875 |
+| **Share of the missing light's variance the pass explains** | **47.3 %** |
+
+So the magnitude is right — the pass adds about four fifths of the light that is missing — and it removes 47 % of the
+error that was there. What it does not do is get the remaining half. Two sources account for it, and both are
+consequences of the design rather than bugs in it:
+
+* **The bounce is computed at half resolution and applied at full resolution.** The traced integral is evaluated for
+  the surface under one corner of each 2 × 2 block, then multiplied by the full-resolution albedo and normal. On
+  ground whose detail normals change every pixel, those two disagree pixel by pixel — which is exactly the fine
+  speckle in the difference image, and exactly why more rays do not reduce it.
+* **The secondary radiance is the raster's.** When a ray lands on a slope, the value it returns is that slope's
+  shaded colour, whose ambient is the raster's analytic hemisphere rather than a traced one. In a hollow that
+  under-lights the bounce by the raster's own ambient error.
+
+The first would be fixed by tracing at full resolution, which costs four times the rays and is the one thing an iGPU
+cannot afford; the second by tracing the bounce of the bounce, which was implemented and measured — `UKIYO_RT_BOUNCES=2`
+leaves the error at 0.03872, because it corrects the second bounce's *transport* and not the ambient model that feeds
+it. Both are written down rather than papered over.
+
+The error barely moves with the ray count, and the section below says why: it is the cost of computing a bounce at
+half resolution and applying it at full resolution, not the cost of sampling it. That is the honest description of
+what a half-resolution, raster-fed estimator can be — *the light is in the right place and the right amount, and its
+per-pixel detail is not*.
 
 | | The estimate | The same pixels from the tracer | Difference, ×4 |
 | --- | --- | --- | --- |
 | 960 × 540 | ![estimate](gi-realtime.png) | ![reference](gi-reference.png) | ![difference](gi-diff.png) |
 
-*The bounce light in the basins and the shading on the far ridges match; what is left in the difference image is the
-tracer's own sample noise (the blue grain — 64 spp is not a converged reference) and a one-pixel line along every
-silhouette, where the half-resolution estimate meets the full-resolution depth buffer.*
+*The bounce in the basins and the shading on the far ridges match. What is left in the difference image is the fine
+speckle described above — the half-resolution bounce read through full-resolution albedo and normals — and a
+one-pixel line along every silhouette, where the half-resolution estimate meets the full-resolution depth buffer. It
+is not the reference's sampling: §"What that error is made of" measures that at 0.0073 against a converged truth.*
 
 **What a second bounce would add, and why it is not in the pass.** The tracer's rays bounce again; the estimator's do
 not, so light that leaves a surface, lands on another and leaves that one is missing. That term was implemented in the
-twin (`UKIYO_RT_BOUNCES=2`) and measured against the same 32-spp reference at 480 × 270: it moves the image by 0.26 of
-a 255th on average (worst pixel 26), leaves RMSE at 0.0380, and makes the worst pixel slightly worse because one extra
-sample per ray brings its own variance. On open grassland the missing transport is under the noise floor, and the
-remaining error is the half-resolution silhouette; on a city street the trade could come out the other way, which is
-why the switch is still there. Shipping it by default would spend a second march per ray — doubling the pass's cost —
-on a term this scene cannot see.
+twin (`UKIYO_RT_BOUNCES=2`) and measured against the converged truth: 0.03873 with one bounce, 0.03872 with two. It
+moves the image by 0.26 of a 255th on average, and it does not touch the error, because the error is the ambient model
+that feeds the second bounce rather than the transport it adds. On open grassland the missing transport is far below
+the reconstruction error; on a city street the trade could come out the other way, which is why the switch stays.
+Shipping it by default would spend a second march per ray — doubling the pass's cost — on a term this scene cannot
+see.
 
 **Where the albedo and the normals come from.** A bounce is `albedo × incoming radiance`, and a full-resolution
 albedo is not something a half-resolution pass has: the trace takes the terrain's own layer blend, averaged to the

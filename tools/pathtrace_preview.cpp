@@ -365,7 +365,8 @@ glm::vec3 rasterShade(const Scene& s, glm::vec3 p, glm::vec3 n, float detail) {
 }
 
 void renderRealtime(const Scene& scene, const glm::mat4& view, const glm::mat4& proj, const glm::vec3& eye, int W, int H,
-                    int frames, int raysPerFrame, std::vector<glm::vec3>* out, double* msPerFrame) {
+                    int frames, int raysPerFrame, std::vector<glm::vec3>* out, double* msPerFrame,
+                    std::vector<glm::vec3>* outRaster = nullptr) {
     const int GW = (W + 1) / 2, GH = (H + 1) / 2;
     double debugSum = 0.0, debugAlbedo = 0.0, debugRays = 0.0, debugN = 0.0;
     RealtimeBuffers b;
@@ -547,6 +548,9 @@ void renderRealtime(const Scene& scene, const glm::mat4& view, const glm::mat4& 
 
     // Composite: full resolution raster radiance plus the bilateral upsample of the half-resolution GI. The weights
     // are depth-guided; the same code is gi_composite.frag on the GPU.
+    // The raster term on its own, before the bounce is added: the caller uses it to separate the pass's contribution
+    // from the raster's own shading, which is the only way to tell which of the two a difference image is showing.
+    if (outRaster) *outRaster = b.radiance;
     out->resize(size_t(W) * size_t(H));
     for (int y = 0; y < H; ++y) {
         for (int x = 0; x < W; ++x) {
@@ -662,16 +666,18 @@ int main(int argc, char** argv) {
     const glm::mat4 invProj = glm::inverse(proj);
 
     if (realtime) {
-        std::vector<glm::vec3> linear;
+        std::vector<glm::vec3> linear, rasterLinear;
         double ms = 0.0;
-        renderRealtime(scene, view, proj, eye, W, H, std::max(1, spp), std::max(1, rays), &linear, &ms);
+        renderRealtime(scene, view, proj, eye, W, H, std::max(1, spp), std::max(1, rays), &linear, &ms,
+                       &rasterLinear);
         std::vector<glm::vec3> display(linear.size());
         for (size_t i = 0; i < linear.size(); ++i) display[i] = aces(linear[i] * scene.exposure);
         if (!writePng(out, W, H, display)) return 1;
         if (std::getenv("UKIYO_RT_DEBUG")) {
-            // The raster term on its own, for checking the estimator against what the renderer would draw.
-            std::vector<glm::vec3> raster(linear.size());
-            for (size_t i = 0; i < linear.size(); ++i) raster[i] = aces(linear[i] * scene.exposure);
+            // The raster term on its own, for checking the estimator against what the renderer would draw. (This used
+            // to write the composite by mistake, which made the pass look like it changed nothing.)
+            std::vector<glm::vec3> raster(rasterLinear.size());
+            for (size_t i = 0; i < rasterLinear.size(); ++i) raster[i] = aces(rasterLinear[i] * scene.exposure);
             writePng("/tmp/rt-raster.png", W, H, raster);
         }
         std::printf("wrote %s (%dx%d, realtime: half-res, %d rays/px, %d frames)\n", out.c_str(), W, H, rays,
@@ -708,6 +714,53 @@ int main(int argc, char** argv) {
                 });
             }
             for (auto& t : refPool) t.join();
+            // The estimator against a reference that is itself nearly converged. Writing it as `-truth` lets a reader
+            // tell how much of the error above is the estimator's and how much is the reference's own sampling.
+            if (const char* truthSpp = std::getenv("UKIYO_RT_TRUTH_SPP")) {
+                const int tspp = std::max(refSpp, std::atoi(truthSpp));
+                std::vector<glm::vec3> truth(size_t(W) * size_t(H));
+                std::atomic<int> trow{0};
+                std::vector<std::thread> tpool;
+                for (int th = 0; th < threads2; ++th) {
+                    tpool.emplace_back([&, th]() {
+                        (void)th;
+                        for (;;) {
+                            const int y = trow.fetch_add(1);
+                            if (y >= H) break;
+                            for (int x = 0; x < W; ++x) {
+                                uint32_t seed = hash2(uint32_t(x), uint32_t(y)) ^ 0x5bf03635u;
+                                glm::vec3 sum(0.0f);
+                                for (int s = 0; s < tspp; ++s) {
+                                    const float jx = (float(x) + frand(seed)) / float(W) * 2.0f - 1.0f;
+                                    const float jy = 1.0f - (float(y) + frand(seed)) / float(H) * 2.0f;
+                                    const glm::vec4 far = invProj * glm::vec4(jx, jy, 1.0f, 1.0f);
+                                    const glm::vec3 dir = glm::normalize(
+                                        glm::vec3(invView * glm::vec4(glm::normalize(glm::vec3(far)), 0.0f)));
+                                    sum += glm::min(tracePath(scene, eye, dir, seed), glm::vec3(8.0f));
+                                }
+                                truth[size_t(y) * size_t(W) + size_t(x)] = aces(sum / float(tspp) * scene.exposure);
+                            }
+                        }
+                    });
+                }
+                for (auto& t : tpool) t.join();
+                std::string truthPath = out;
+                const size_t tdot = truthPath.find_last_of('.');
+                if (tdot != std::string::npos) truthPath.insert(tdot, "-truth");
+                else truthPath += "-truth";
+                writePng(truthPath, W, H, truth);
+                auto rmseOf = [&](const std::vector<glm::vec3>& a) {
+                    double acc = 0.0;
+                    for (size_t i = 0; i < a.size(); ++i) {
+                        const glm::vec3 d = a[i] - truth[i];
+                        acc += double(d.x * d.x + d.y * d.y + d.z * d.z) / 3.0;
+                    }
+                    return std::sqrt(acc / double(a.size()));
+                };
+                std::printf("against %d spp truth: estimator RMSE %.5f, %d spp reference RMSE %.5f\n", tspp,
+                            rmseOf(display), refSpp, rmseOf(reference));
+                std::printf("wrote %s\n", truthPath.c_str());
+            }
             // A reference file next to the estimate, so the pair can be looked at side by side.
             std::string refPath = out;
             const size_t dot = refPath.find_last_of('.');
