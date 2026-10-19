@@ -9,6 +9,7 @@ QStackedWidget#hubPages, QWidget#hubPage { background: #171a20; }
 QWidget#hubRail { background: #101216; border-right: 1px solid #0a0b0e; }
 QLabel#hubWordmark { color: #f2f6fb; background: transparent; font-size: 27px; font-weight: 900; }
 QLabel#hubWordmarkSub { color: #6f8ba6; background: transparent; font-size: 9px; font-weight: bold; }
+QLabel#hubWordmarkJp { color: #7d8a99; background: transparent; font-size: 10px; padding-top: 2px; }
 QLabel#hubRailCaption { color: #566274; background: transparent; font-size: 9px; font-weight: bold; }
 QLabel#hubRailPath { color: #6d7987; background: transparent; font-size: 10px; }
 QPushButton#hubNav {

@@ -22,8 +22,9 @@ int main(int argc, char* argv[]) {
     QApplication app(argc, argv);
     app.setApplicationName("Ukiyo World Editor");
 
-    // Material Symbols icon font, shipped with the editor.
+    // Material Symbols icon font and the bilingual UI typeface, both shipped with the editor.
     editor::loadIconFont(QStringLiteral(UKIYO_ROOT) + "/editor/res/fonts/MaterialSymbolsOutlined.ttf");
+    editor::loadBrandFont(QStringLiteral(UKIYO_ROOT) + "/editor/res/fonts");
 
     // Dark theme, shipped with the editor.
     QFile qss(QStringLiteral(UKIYO_ROOT) + "/editor/res/dark.qss");

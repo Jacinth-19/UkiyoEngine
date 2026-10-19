@@ -2,6 +2,7 @@
 
 #include <QFont>
 #include <QFontDatabase>
+#include <QGuiApplication>
 #include <QPainter>
 #include <QPixmap>
 #include <QStringList>
@@ -21,6 +22,24 @@ bool loadIconFont(const QString& ttfPath) {
     if (families.isEmpty()) return false;
     gIconFamily = families.first();
     return true;
+}
+
+QString loadBrandFont(const QString& fontsDir) {
+    // Four static weights rather than the variable font: Qt picks the right face directly and the rasteriser does
+    // not have to synthesise a weight for 浮世.
+    QString family;
+    for (const char* weight : {"Regular", "Medium", "SemiBold", "Bold"}) {
+        const int id = QFontDatabase::addApplicationFont(fontsDir + QStringLiteral("/IBMPlexSansJP-") +
+                                                         QString::fromLatin1(weight) + QStringLiteral(".ttf"));
+        if (id < 0) continue;
+        const QStringList families = QFontDatabase::applicationFontFamilies(id);
+        if (!families.isEmpty() && family.isEmpty()) family = families.first();
+    }
+    if (family.isEmpty()) return family;
+    QFont font(family);
+    font.setStyleStrategy(QFont::PreferAntialias);
+    QGuiApplication::setFont(font);
+    return family;
 }
 
 QIcon materialIcon(const char* name, const QColor& color, int px) {

@@ -28,8 +28,13 @@ jobs:
         run: ./build/project_test
       - name: Run Virtual Geometry Test
         run: ./build/vgeom_test
+      - name: Run Motion Matching Test
+        run: ./build/motion_test
       - name: Run Hub Self-Test
         run: QT_QPA_PLATFORM=offscreen ./build/ukiyo_hub --selftest
+      # The launcher's pages, grabbed offscreen: downloadable as the screenshots artifact and used by the docs.
+      - name: Capture hub screenshots
+        run: QT_QPA_PLATFORM=offscreen ./build/ukiyo_hub --screenshots renders
       # The self-test draws the sample terrain to renders/terrain_*.png. Keep them, so a graphics change can be
       # looked at without a local GL context.
       - name: Upload terrain renders
@@ -37,5 +42,7 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: terrain-renders
-          path: renders/terrain_*.png
+          path: |
+            renders/terrain_*.png
+            renders/hub_*.png
           if-no-files-found: warn

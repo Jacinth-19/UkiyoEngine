@@ -69,6 +69,7 @@ private:
     void paintProgress(QPainter& painter, qreal s);
 
     QPixmap art_;
+    QPixmap brand_;   // editor/res/brand/ukiyo-splash.png, the stacked mark
     QString heading_;
     QString eyebrow_ = QStringLiteral("LOADING");
     QString caption_;

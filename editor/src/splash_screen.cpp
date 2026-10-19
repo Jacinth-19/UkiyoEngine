@@ -59,6 +59,10 @@ qreal opticalCentre(qreal width, qreal spacing) { return (width - spacing) * 0.5
 
 } // namespace
 
+#ifndef UKIYO_ROOT
+#define UKIYO_ROOT "."
+#endif
+
 SplashScreen::SplashScreen(const QString& artPath, const QString& heading, QWidget* parent)
     : QWidget(parent), heading_(heading) {
     setObjectName(QStringLiteral("ukiyoSplash"));
@@ -73,6 +77,8 @@ SplashScreen::SplashScreen(const QString& artPath, const QString& heading, QWidg
     setFixedSize(960, 540);
 
     if (!artPath.isEmpty()) art_.load(artPath);
+    // The designed mark, if the checkout ships it. Without it the text mark below still stands in.
+    brand_.load(QStringLiteral(UKIYO_ROOT) + QStringLiteral("/editor/res/brand/ukiyo-splash.png"));
 
     markEnd_ = kMarkHoldMs / 1000.0;
     clock_.start();
@@ -209,6 +215,22 @@ void SplashScreen::paintEvent(QPaintEvent*) {
 void SplashScreen::paintMark(QPainter& painter, qreal s) {
     painter.fillRect(rect(), kNight);
 
+    if (!brand_.isNull()) {
+        // The mark settles in: a hair of scale and a short fade, over the flat indigo. The artwork crossfades over it.
+        const qreal alpha = skipped_ ? 1.0 : std::clamp(age_ / 0.34, 0.0, 1.0);
+        const qreal settle = 0.986 + 0.014 * alpha;
+        const qreal targetW = 380.0 * s * settle;
+        const qreal targetH = targetW * qreal(brand_.height()) / qreal(brand_.width());
+        QRectF box(0.0, 0.0, targetW, targetH);
+        box.moveCenter(QPointF(width() * 0.5, height() * 0.5 - 2.0 * s));
+        painter.save();
+        painter.setOpacity(alpha);
+        painter.setRenderHint(QPainter::SmoothPixmapTransform, true);
+        painter.drawPixmap(box, brand_, QRectF(brand_.rect()));
+        painter.restore();
+        return;
+    }
+
     const qreal w = width();
     const qreal h = height();
     const qreal spacing = 13.0 * s;
@@ -265,6 +287,12 @@ void SplashScreen::paintArtwork(QPainter& painter, qreal s) {
     painter.setFont(sized(font(), 7.0 * s, QFont::DemiBold, subSpacing));
     painter.setPen(QColor(kDim.red(), kDim.green(), kDim.blue(), 230));
     painter.drawText(QPointF(kMargin * s + 1.0 * s, 70.0 * s), QStringLiteral("ENGINE"));
+
+    // The engine's other name, in the Japanese face that ships with it. Small, and after the Latin, so the
+    // interface still reads as English by default.
+    painter.setFont(sized(font(), 8.0 * s, QFont::Medium, 1.2 * s));
+    painter.setPen(QColor(kDim.red(), kDim.green(), kDim.blue(), 200));
+    painter.drawText(QPointF(kMargin * s + 1.0 * s, 88.0 * s), QStringLiteral("浮世エンジン"));
 
     // Version, top right.
     const QString version = QStringLiteral("v0.1");

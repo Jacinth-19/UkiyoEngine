@@ -107,6 +107,7 @@ add_library(ukiyo_core STATIC
   src/engine/foliage.cpp
   src/engine/grass.cpp
   src/engine/vgeom.cpp
+  src/engine/motion_match.cpp
   src/engine/terrain_edit.cpp
   third_party/meshoptimizer/simplifier.cpp
   third_party/meshoptimizer/allocator.cpp
@@ -173,6 +174,13 @@ target_include_directories(vgeom_preview PRIVATE ${CMAKE_SOURCE_DIR}/src ${CMAKE
                            ${CMAKE_SOURCE_DIR}/third_party/meshoptimizer)
 target_link_libraries(vgeom_preview PRIVATE glm::glm)
 target_compile_options(vgeom_preview PRIVATE -Wall -Wextra -Wno-missing-field-initializers)
+
+# Motion matching (docs/MOTION.md). The database, the BVH reader and the player are CPU code; the model retarget is
+# compiled here too, so the test links the engine's model header without needing the renderer.
+add_executable(motion_test tests/motion_test.cpp src/engine/motion_match.cpp)
+target_include_directories(motion_test PRIVATE ${CMAKE_SOURCE_DIR}/src ${CMAKE_SOURCE_DIR}/third_party)
+target_link_libraries(motion_test PRIVATE glm::glm)
+target_compile_options(motion_test PRIVATE -Wall -Wextra -Wno-missing-field-initializers)
 
 add_executable(vgeom_test tests/vgeom_test.cpp src/engine/vgeom.cpp third_party/meshoptimizer/simplifier.cpp
                third_party/meshoptimizer/allocator.cpp)

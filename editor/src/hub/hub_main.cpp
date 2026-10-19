@@ -19,6 +19,7 @@ int main(int argc, char* argv[]) {
 
     const QString engine = editor::hub::engineRoot();
     editor::loadIconFont(engine + QStringLiteral("/editor/res/fonts/MaterialSymbolsOutlined.ttf"));
+    editor::loadBrandFont(engine + QStringLiteral("/editor/res/fonts"));
 
     QString theme;
     for (const char* file : {"/editor/res/dark.qss", "/editor/res/hub.qss"}) {
@@ -30,6 +31,11 @@ int main(int argc, char* argv[]) {
     for (int i = 1; i < argc; ++i) {
         if (QString::fromLocal8Bit(argv[i]) == QLatin1String("--selftest")) {
             return editor::hub::runHubSelfTest();
+        }
+        if (QString::fromLocal8Bit(argv[i]) == QLatin1String("--screenshots") && i + 1 < argc) {
+            editor::hub::HubWindow window;
+            window.capturePages(QString::fromLocal8Bit(argv[i + 1]));
+            return 0;
         }
     }
 

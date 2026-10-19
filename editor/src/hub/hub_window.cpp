@@ -138,6 +138,24 @@ QWidget* HubWindow::buildRail() {
     column->setContentsMargins(22, 26, 18, 20);
     column->setSpacing(6);
 
+    // The mark and the wordmark read as one lockup: the ensō sits on the rail's text baseline, the name beside it.
+    auto* brand = new QWidget;
+    auto* brandRow = new QHBoxLayout(brand);
+    brandRow->setContentsMargins(0, 0, 0, 0);
+    brandRow->setSpacing(10);
+    auto* mark = new QLabel;
+    QPixmap markPixmap(engineRoot() + QStringLiteral("/editor/res/brand/ukiyo-mark-64.png"));
+    if (!markPixmap.isNull()) {
+        mark->setPixmap(markPixmap.scaled(30, 30, Qt::KeepAspectRatio, Qt::SmoothTransformation));
+    }
+    mark->setFixedSize(30, 30);
+    mark->setAttribute(Qt::WA_TranslucentBackground, true);
+    brandRow->addWidget(mark, 0, Qt::AlignVCenter);
+
+    auto* titles = new QVBoxLayout;
+    titles->setContentsMargins(0, 0, 0, 0);
+    titles->setSpacing(0);
+
     auto* wordmark = new QLabel(QStringLiteral("UKIYO"));
     wordmark->setObjectName(QStringLiteral("hubWordmark"));
     QFont markFont = wordmark->font();
@@ -145,7 +163,7 @@ QWidget* HubWindow::buildRail() {
     markFont.setWeight(QFont::Black);
     markFont.setLetterSpacing(QFont::AbsoluteSpacing, 6.0);
     wordmark->setFont(markFont);
-    column->addWidget(wordmark);
+    titles->addWidget(wordmark);
 
     auto* sub = new QLabel(QStringLiteral("PROJECT HUB"));
     sub->setObjectName(QStringLiteral("hubWordmarkSub"));
@@ -154,7 +172,19 @@ QWidget* HubWindow::buildRail() {
     subFont.setWeight(QFont::DemiBold);
     subFont.setLetterSpacing(QFont::AbsoluteSpacing, 3.0);
     sub->setFont(subFont);
-    column->addWidget(sub);
+    titles->addWidget(sub);
+    brandRow->addLayout(titles);
+    column->addWidget(brand);
+
+    // The name in Japanese, under the lockup: the engine is English-first, but the face carries both.
+    auto* jp = new QLabel(QStringLiteral("浮世エンジン"));
+    jp->setObjectName(QStringLiteral("hubWordmarkJp"));
+    QFont jpFont = jp->font();
+    jpFont.setPixelSize(10);
+    jpFont.setWeight(QFont::Medium);
+    jpFont.setLetterSpacing(QFont::AbsoluteSpacing, 2.0);
+    jp->setFont(jpFont);
+    column->addWidget(jp);
 
     auto* rule = new QFrame;
     rule->setFixedSize(30, 2);
@@ -448,6 +478,23 @@ QWidget* HubWindow::buildEmptyState() {
     connect(create, &QPushButton::clicked, this, [this] { newProject(); });
     layout->addWidget(create, 0, Qt::AlignLeft);
     return frame;
+}
+
+void HubWindow::capturePages(const QString& dir) {
+    QDir().mkpath(dir);
+    resize(1280, 800);
+    show();
+    static const char* names[] = {"projects", "templates", "about"};
+    for (int i = 0; i < pages_->count(); ++i) {
+        selectPage(i);
+        // Two turns of the event loop: the page's lazy rows and the first paint both land before the grab.
+        QCoreApplication::processEvents();
+        QCoreApplication::processEvents();
+        const QString path = dir + QStringLiteral("/hub_") + QString::fromLatin1(i < 3 ? names[i] : "page") +
+                             QStringLiteral(".png");
+        if (!grab().save(path)) std::fprintf(stderr, "could not write %s\n", qUtf8Printable(path));
+        else std::printf("wrote %s\n", qUtf8Printable(path));
+    }
 }
 
 void HubWindow::selectPage(int index) {

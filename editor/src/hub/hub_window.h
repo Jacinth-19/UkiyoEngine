@@ -32,6 +32,10 @@ public:
     // Opens a project in the editor, showing the splash while it checks the folder.
     void openProject(const QString& root);
 
+    // Renders every page to `<dir>/hub_<page>.png`. Used by `ukiyo_hub --screenshots` on CI, where the offscreen
+    // platform plugin can grab the widgets without a display, and by anyone who wants the launcher in the docs.
+    void capturePages(const QString& dir);
+
 private:
     QWidget* buildRail();
     QWidget* buildProjectsPage();
