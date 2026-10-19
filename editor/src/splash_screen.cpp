@@ -169,6 +169,8 @@ void SplashScreen::paintEvent(QPaintEvent*) {
     painter.setRenderHint(QPainter::TextAntialiasing, true);
     painter.setRenderHint(QPainter::SmoothPixmapTransform, true);
 
+    // The widget keeps its 16:9 shape (see showEvent), so scaling from the width also
+    // scales the height, and the type block lands where it was designed to.
     const qreal s = width() / kDesignWidth;
     const QRectF frame(rect());
     QPainterPath rounded;
