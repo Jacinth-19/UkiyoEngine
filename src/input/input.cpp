@@ -47,6 +47,61 @@ bool deviceKindFromPath(const std::string& path, DeviceKind* out) {
     return false;
 }
 
+bool controlNameFromPortableKey(const std::string& portable, std::string* out) {
+    if (portable.empty()) return false;
+    std::string name = portable;
+    if (name.size() == 1 && name[0] >= 'A' && name[0] <= 'Z') name[0] = char(name[0] - 'A' + 'a');
+    // Letters and digits are their own names; the punctuation keys are named after what they print, as Unity does.
+    if (name.size() == 1) {
+        const char c = name[0];
+        if ((c >= 'a' && c <= 'z') || (c >= '0' && c <= '9')) {
+            if (out) *out = name;
+            return true;
+        }
+        const char* punct = c == '`'   ? "backquote"
+                            : c == '\''  ? "quote"
+                            : c == ';'   ? "semicolon"
+                            : c == ','   ? "comma"
+                            : c == '.'   ? "period"
+                            : c == '/'   ? "slash"
+                            : c == '\\'  ? "backslash"
+                            : c == '['   ? "leftBracket"
+                            : c == ']'   ? "rightBracket"
+                            : c == '-'   ? "minus"
+                            : c == '='   ? "equals"
+                                         : nullptr;
+        if (punct) {
+            if (out) *out = punct;
+            return true;
+        }
+    }
+    static const std::pair<const char*, const char*> kTable[] = {
+        {"Space", "space"}, {"Return", "enter"}, {"Enter", "enter"}, {"Escape", "escape"}, {"Tab", "tab"},
+        {"Backspace", "backspace"}, {"Delete", "delete"}, {"Insert", "insert"}, {"Home", "home"}, {"End", "end"},
+        {"PageUp", "pageUp"}, {"PageDown", "pageDown"}, {"Left", "leftArrow"}, {"Right", "rightArrow"},
+        {"Up", "upArrow"}, {"Down", "downArrow"}, {"Shift", "leftShift"}, {"Ctrl", "leftCtrl"}, {"Alt", "leftAlt"},
+        {"Meta", "leftMeta"}, {"CapsLock", "capsLock"}, {"NumLock", "numLock"}, {"Print", "printScreen"},
+        {"Pause", "pause"}, {"ScrollLock", "scrollLock"}, {"Backquote", "backquote"}, {"Quote", "quote"},
+        {"Semicolon", "semicolon"}, {"Comma", "comma"}, {"Period", "period"}, {"Slash", "slash"},
+        {"Backslash", "backslash"}, {"BracketLeft", "leftBracket"}, {"BracketRight", "rightBracket"},
+        {"Minus", "minus"}, {"Equal", "equals"}, {"Plus", "numpadPlus"},
+    };
+    for (const auto& entry : kTable) {
+        if (portable == entry.first) {
+            if (out) *out = entry.second;
+            return true;
+        }
+    }
+    if (name.size() >= 2 && (name[0] == 'F' || name[0] == 'f')) {
+        const int n = std::atoi(name.c_str() + 1);
+        if (n >= 1 && n <= 12) {
+            if (out) *out = "f" + std::to_string(n);
+            return true;
+        }
+    }
+    return false;
+}
+
 // ---------------------------------------------------------------- control names
 
 const std::vector<std::string>& keyboardControls() {
@@ -152,8 +207,11 @@ glm::vec2 Processor::apply(glm::vec2 v) const {
         return it == params.end() ? fallback : it->second;
     };
     if (name == "normalizeVector2") {
+        // Unity's NormalizeVector2 returns value.normalized, which scales *up* a short vector as well as down a long
+        // one: an almost-centered stick reads full tilt. That is surprising, but it is what an asset built in Unity
+        // expects, so it is preserved (docs/INPUT.md).
         const float len = glm::length(v);
-        return len > 1.0f ? v / len : v;
+        return len > 1e-8f ? v / len : v;
     }
     if (name == "scaleVector2") return v * glm::vec2(get("x", 1.0f), get("y", 1.0f));
     if (name == "clampVector2") {
@@ -369,6 +427,12 @@ ActionMap* State::map(const std::string& name) {
 Action* State::action(const std::string& mapName, const std::string& actionName) {
     ActionMap* m = map(mapName);
     return m ? m->find(actionName) : nullptr;
+}
+
+const Action* State::action(const std::string& mapName, const std::string& actionName) const {
+    for (const ActionMap& m : maps_)
+        if (m.name == mapName) return m.find(actionName);
+    return nullptr;
 }
 
 namespace {
@@ -660,8 +724,23 @@ void State::evaluateBinding(Action& a, Binding& b, float dt) {
             any = true;
         }
         if (!any) return;
-        b.outVector = sum;
-        b.outValue = glm::length(sum);
+        // A 1DAxis composite is one signed number (positive minus negative); a 2D composite's scalar reading is its
+        // length. Without this, an action bound to E/Q would read the same value for forward and back.
+        const bool oneD = b.path == "1DAxis" || b.path == "1DVector";
+        if (oneD) {
+            float value = b.path == "1DAxis" ? sum.y : sum.x;
+            for (const Processor& p : b.processorList)
+                if (!p.isVector()) value = p.apply(value);
+            b.outValue = value;
+            b.outVector = b.path == "1DAxis" ? glm::vec2(0.0f, value) : glm::vec2(value, 0.0f);
+        } else {
+            // The composite's own processors run on the summed vector, after each part's processors have run on its
+            // control. This is where "normalizeVector2" belongs on a WASD binding.
+            glm::vec2 value = sum;
+            for (const Processor& p : b.processorList) value = p.apply(value);
+            b.outVector = value;
+            b.outValue = glm::length(value);
+        }
     } else if (b.control) {
         b.outValue = b.control->asFloat();
         b.outVector = b.control->asVector2();
@@ -686,7 +765,12 @@ void State::evaluateBinding(Action& a, Binding& b, float dt) {
     const float held = b.holdTime;
     if (b.down) b.holdTime += dt;
     else b.holdTime = 0.0f;
-    if (!b.down) b.interactionDone = false;   // a new press starts a new interaction
+    // A new press starts a new interaction. Resetting on the press (not the release) lets the release branch below
+    // still see that a tap already failed while it was held.
+    if (b.down && !b.prevDown) {
+        b.interactionDone = false;
+        b.interactionFailed = false;
+    }
 
     if (b.interactionList.empty()) {
         if (a.type == ActionType::Button) {
@@ -712,11 +796,18 @@ void State::evaluateBinding(Action& a, Binding& b, float dt) {
                     b.performedThisFrame = true;
                     b.interactionDone = true;
                 }
-                if (!b.down && b.prevDown && !b.interactionDone) b.canceledThisFrame = true;
+                // Releasing ends the hold whether or not it reached its threshold: performed in the first case,
+                // canceled without performing in the second. Unity reports Canceled after a completed hold too.
+                if (!b.down && b.prevDown) b.canceledThisFrame = true;
                 break;
             case Interaction::Kind::Tap:
                 if (b.down && !b.prevDown) b.startedThisFrame = true;
-                if (!b.down && b.prevDown) {
+                // Unity cancels a tap the moment it has been held longer than its duration, not on release.
+                if (b.down && b.holdTime > it.duration && !b.interactionFailed) {
+                    b.canceledThisFrame = true;
+                    b.interactionFailed = true;
+                }
+                if (!b.down && b.prevDown && !b.interactionFailed) {
                     if (held <= it.duration) b.performedThisFrame = true;
                     else b.canceledThisFrame = true;
                 }
@@ -731,7 +822,11 @@ void State::evaluateBinding(Action& a, Binding& b, float dt) {
             case Interaction::Kind::MultiTap: {
                 if (b.down && !b.prevDown) b.startedThisFrame = true;
                 b.lastTapTime += dt;
-                if (b.lastTapTime > it.duration) b.tapCount = 0;   // the window closed
+                if (b.lastTapTime > it.duration && b.tapCount > 0) {
+                    // The window closed before enough taps: Unity cancels the sequence.
+                    b.tapCount = 0;
+                    b.canceledThisFrame = true;
+                }
                 if (!b.down && b.prevDown) {
                     if (held <= it.duration) {
                         ++b.tapCount;

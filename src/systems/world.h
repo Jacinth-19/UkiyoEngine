@@ -13,6 +13,7 @@
 #include <glm/gtc/quaternion.hpp>
 
 #include "engine/project_settings.h"
+#include "input/input.h"
 #include "systems/anim_state.h"
 #include "systems/audio.h"
 #include "systems/navigation.h"
@@ -83,11 +84,16 @@ public:
     void setTimeScale(float scale) { timeScale_ = scale < 0.0f ? 0.0f : scale; }
     float timeScale() const { return timeScale_; }
 
-    // Input. Actions map to a key (portable key text, e.g. "Space"). Scripts ask with actionDown().
-    void setInputActions(const std::vector<engine::InputAction>& actions) { actions_ = actions; }
-    // The editor reports key presses and releases for the game view.
+    // Input. The project's actions (a name and a portable key, e.g. "Jump" and "Space") are compiled into a real
+    // action map in the engine's input system, so a script asking actionDown() gets the same phases, bindings and
+    // rebinding a keyboard or gamepad would. The map is named "Gameplay" and is enabled while the world exists.
+    void setInputActions(const std::vector<engine::InputAction>& actions);
+    // The editor reports key presses and releases for the game view, in Qt's portable key text.
     void setKeyHeld(const std::string& key, bool down);
     bool actionDown(const std::string& action) const;
+    // The live input state, for a game that wants more than actionDown(): values, vectors, phases and rebinding.
+    ukiyo::input::State& input() { return input_; }
+    const ukiyo::input::State& input() const { return input_; }
 
     PhysicsWorld physics;
     NavMesh nav;
@@ -139,7 +145,7 @@ private:
     int nextHold_ = 1;
     std::vector<std::string> preloads_;
     std::vector<engine::InputAction> actions_;
-    std::vector<std::string> heldKeys_;
+    ukiyo::input::State input_;
     std::map<std::string, Entity> entities_;   // std::map keeps the update order deterministic
     std::map<std::string, AudioEngine::SoundId> sounds_;
     double time_ = 0.0;

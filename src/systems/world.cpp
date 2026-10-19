@@ -13,6 +13,8 @@ extern "C" {
 }
 
 namespace ukiyo {
+
+namespace uinput = input;
 namespace {
 
 World* worldOf(lua_State* L) { return static_cast<World*>(lua_touserdata(L, lua_upvalueindex(1))); }
@@ -431,6 +433,10 @@ void installMath(lua_State* L) {
 } // namespace
 
 World::World(bool audioNoDevice) : audio(audioNoDevice) {
+    // The devices exist before any action map, so a project with no actions yet still accepts key events (the editor
+    // forwards every key it sees) and a gamepad can be hot-plugged into the same state later.
+    input_.addDevice(uinput::DeviceKind::Keyboard, 0);
+    input_.addDevice(uinput::DeviceKind::Mouse, 0);
     script.registerFunction("log", l_log, this);
     script.registerFunction("time", l_time, this);
     script.registerFunction("actionDown", l_actionDown, this);
@@ -569,18 +575,42 @@ void World::updateListener() {
     audio.setListener(l->position, forward);
 }
 
+void World::setInputActions(const std::vector<engine::InputAction>& actions) {
+    actions_ = actions;
+    input_.cancelRebind();   // its target is one of the actions about to be replaced
+    input_.maps().clear();
+    input_.controlSchemes.clear();
+    uinput::ActionMap& map = input_.addMap("Gameplay");
+    for (const engine::InputAction& a : actions_) {
+        if (a.name.empty()) continue;
+        uinput::Action& action = map.add(a.name, uinput::ActionType::Button);
+        // A key the engine has no control name for keeps its action but can never fire; setKeyHeld() cannot produce
+        // it either, so the two stay consistent instead of one silently working and the other not.
+        std::string control;
+        if (!uinput::controlNameFromPortableKey(a.key, &control)) continue;
+        uinput::Binding binding;
+        binding.path = "<Keyboard>/" + control;
+        binding.action = a.name;
+        action.bindings.push_back(std::move(binding));
+    }
+    map.enabled = true;
+    input_.resolveBindings();
+}
+
 void World::setKeyHeld(const std::string& key, bool down) {
-    auto it = std::find(heldKeys_.begin(), heldKeys_.end(), key);
-    if (down && it == heldKeys_.end()) heldKeys_.push_back(key);
-    if (!down && it != heldKeys_.end()) heldKeys_.erase(it);
+    std::string control;
+    if (!uinput::controlNameFromPortableKey(key, &control)) return;
+    uinput::Device* keyboard = input_.firstDevice(uinput::DeviceKind::Keyboard);
+    if (!keyboard) keyboard = &input_.addDevice(uinput::DeviceKind::Keyboard, 0);
+    keyboard->setButton(control, down);
+    // Key events arrive between ticks, and a script (or the editor's self-test) can ask actionDown() before the next
+    // tick. Evaluating now with dt 0 makes the press visible immediately; the next tick's update re-latches it.
+    input_.update(0.0f);
 }
 
 bool World::actionDown(const std::string& action) const {
-    for (const engine::InputAction& a : actions_) {
-        if (a.name != action) continue;
-        return std::find(heldKeys_.begin(), heldKeys_.end(), a.key) != heldKeys_.end();
-    }
-    return false;
+    const uinput::Action* a = input_.action("Gameplay", action);
+    return a && a->pressed();
 }
 
 float pingPongWeight(float phase, bool ease) {
@@ -649,6 +679,8 @@ void World::dispatchContacts() {
 }
 
 void World::tick(float dt) {
+    // Input runs on unscaled time: pausing the game (timeScale 0) must still let a script read a menu key.
+    input_.update(dt);
     dt *= timeScale_;
     script.callUpdate(dt);
     physics.step(dt);

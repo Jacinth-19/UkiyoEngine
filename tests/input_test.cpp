@@ -175,6 +175,40 @@ void testValueAndComposite() {
     f.tick();
     checkNear2(move.readVector2(), glm::vec2(0.0f), 1e-4f, "released: back to (0,0)");
 
+    // A 1D axis (E/Q) is one signed number, not a length: back must read negative.
+    Action& elev = map.add("Elevate", ActionType::Value);
+    elev.expectedControlType = "Axis";
+    elev.bindings.push_back(Binding{"EQ", "", "1DAxis", "Elevate", "", "", "", true, false, -1});
+    elev.bindings.push_back(Binding{"positive", "", "<Keyboard>/e", "Elevate", "", "", "", false, true, 0});
+    elev.bindings.push_back(Binding{"negative", "", "<Keyboard>/q", "Elevate", "", "", "", false, true, 0});
+    // Processors on the composite itself run after the parts are summed. normalizeVector2 is the usual one: it keeps
+    // a diagonal from moving at 1.41x speed. (Unity's version also scales short vectors up; see docs/INPUT.md.)
+    Action& normMove = map.add("MoveNormalized", ActionType::Value);
+    normMove.bindings.push_back(Binding{"WASD", "", "2DVector", "MoveNormalized", "", "normalizeVector2", "", true,
+                                        false, -1});
+    normMove.bindings.push_back(Binding{"up", "", "<Keyboard>/w", "MoveNormalized", "", "", "", false, true, 0});
+    normMove.bindings.push_back(Binding{"down", "", "<Keyboard>/s", "MoveNormalized", "", "", "", false, true, 0});
+    normMove.bindings.push_back(Binding{"left", "", "<Keyboard>/a", "MoveNormalized", "", "", "", false, true, 0});
+    normMove.bindings.push_back(Binding{"right", "", "<Keyboard>/d", "MoveNormalized", "", "", "", false, true, 0});
+    f.state.resolveBindings();
+    f.keyboard->setButton("w", true);
+    f.keyboard->setButton("d", true);
+    f.tick();
+    checkNear(glm::length(normMove.readVector2()), 1.0f, 1e-4f, "normalizeVector2 on a composite makes W+D unit length");
+    checkNear2(normMove.readVector2(), glm::vec2(0.7071f), 1e-3f, "and keeps the diagonal's direction");
+    f.keyboard->setButton("w", false);
+    f.keyboard->setButton("d", false);
+
+    f.state.resolveBindings();
+    f.keyboard->setButton("e", true);
+    f.tick();
+    checkNear(elev.readFloat(), 1.0f, 1e-4f, "1D axis: E reads +1");
+    f.keyboard->setButton("e", false);
+    f.keyboard->setButton("q", true);
+    f.tick();
+    checkNear(elev.readFloat(), -1.0f, 1e-4f, "1D axis: Q reads -1");
+    f.keyboard->setButton("q", false);
+
     // The same composite on a gamepad stick, which is one Vector2 control rather than four buttons.
     Action& look = map.add("Look", ActionType::Value);
     look.expectedControlType = "Vector2";
@@ -252,6 +286,7 @@ void testInteractions() {
         f.keyboard->setButton("e", true);
         f.tick(0.05f);
         f.tick(0.30f);   // held past the window
+        checkTrue(a.canceled(), "tap: cancels the moment the duration is exceeded, while still held");
         f.keyboard->setButton("e", false);
         f.tick(0.05f);
         checkTrue(!a.triggered(), "tap: a long press does not perform");
@@ -273,6 +308,16 @@ void testInteractions() {
         checkTrue(a.triggered(), "hold: performs when 0.3 s elapses");
         f.tick(0.1f);
         checkTrue(!a.triggered(), "hold: performs only once");
+        f.keyboard->setButton("f", false);
+        f.tick(0.05f);
+        checkTrue(a.canceled(), "hold: releasing after it performed cancels it");
+
+        // Releasing before the threshold cancels instead of performing.
+        f.keyboard->setButton("f", true);
+        f.tick(0.1f);
+        f.keyboard->setButton("f", false);
+        f.tick(0.05f);
+        checkTrue(a.canceled() && !a.triggered(), "hold: a short press cancels, it does not perform");
     }
     // Slow tap: the mirror of tap.
     {
@@ -311,6 +356,14 @@ void testInteractions() {
         f.keyboard->setButton("q", false);
         f.tick(0.05f);
         checkTrue(a.triggered(), "multi tap: the second tap performs");
+
+        // One tap, then wait past the window: the sequence is cancelled rather than left hanging.
+        f.keyboard->setButton("q", true);
+        f.tick(0.05f);
+        f.keyboard->setButton("q", false);
+        f.tick(0.05f);
+        f.tick(0.5f);   // the 0.4 s window closes
+        checkTrue(a.canceled() && !a.triggered(), "multi tap: the window closing cancels a lone tap");
     }
 }
 
@@ -620,9 +673,67 @@ void testParserEdges() {
     auto none = parseProcessors("", nullptr);
     checkTrue(none.empty(), "an empty processor list is empty, not a stub");
 
+    // Qt's portable key text to Unity control names. The editor stores "Space"; the asset says "<Keyboard>/space".
+    std::string control;
+    checkTrue(controlNameFromPortableKey("Space", &control) && control == "space", "portable Space -> space");
+    checkTrue(controlNameFromPortableKey("W", &control) && control == "w", "portable W -> w");
+    checkTrue(controlNameFromPortableKey("Left", &control) && control == "leftArrow", "portable Left -> leftArrow");
+    checkTrue(controlNameFromPortableKey("F7", &control) && control == "f7", "portable F7 -> f7");
+    checkTrue(controlNameFromPortableKey(";", &control) && control == "semicolon", "portable ; -> semicolon");
+    checkTrue(!controlNameFromPortableKey("Hyper", &control), "an unknown key name is refused, not guessed");
+
     checkEq(makeGuid("same"), makeGuid("same"), "makeGuid is stable for the same seed");
     checkTrue(makeGuid("a") != makeGuid("b"), "makeGuid differs for different seeds");
     checkTrue(makeGuid("a").size() == 32, "a GUID is 32 hex characters, as Unity writes them");
+}
+
+// ---------------------------------------------------------------- 12. the shipped viewer asset
+
+// The viewer (src/app/main.cpp) looks these up by name. If one is renamed in the asset or dropped from it, the viewer
+// loses that key and this test says so, which is the only way a data file gets checked in CI.
+void testViewerAsset() {
+    std::printf("\n12. the viewer's .inputactions asset\n");
+    const std::string path = std::string(UKIYO_ROOT) + "/assets/input/viewer.inputactions";
+    State s;
+    Device& keyboard = s.addDevice(DeviceKind::Keyboard, 0);
+    Device& mouse = s.addDevice(DeviceKind::Mouse, 0);
+    s.setPoller([](State&) {});
+    AssetLoadResult r = loadAssetFile(s, path);
+    if (!r.ok) {
+        checkTrue(false, "the viewer asset loads: " + r.error);
+        return;
+    }
+    checkTrue(r.warnings.empty(), "the viewer asset has nothing the engine has to skip");
+    ActionMap* viewer = s.map("Viewer");
+    checkTrue(viewer != nullptr, "the Viewer map is there");
+    if (!viewer) return;
+
+    const char* names[] = {"Move", "Elevate", "Look", "Orbit", "Pan", "Zoom", "Quit", "AutoOrbit",
+                           "ResetCamera", "Screenshot", "Hit", "ToggleGrid", "ToggleBloom", "ToggleOutlines",
+                           "ToggleShadows", "ToggleSky", "Aa1", "Aa2", "Aa3", "Aa4"};
+    int missing = 0;
+    for (const char* n : names)
+        if (!viewer->find(n)) {
+            ++missing;
+            std::printf("      missing action: %s\n", n);
+        }
+    checkTrue(missing == 0, "every action the viewer looks up exists");
+
+    // And it plays: WASD through the composite, E/Q through the axis, the mouse through its controls.
+    s.enableMap("Viewer");
+    keyboard.setButton("w", true);
+    keyboard.setButton("d", true);
+    s.update(1.0f / 60.0f);
+    checkNear2(viewer->find("Move")->readVector2(), glm::vec2(1.0f, 1.0f), 1e-4f, "the viewer's Move composite reads W+D");
+    keyboard.setButton("w", false);
+    keyboard.setButton("d", false);
+    keyboard.setButton("e", true);
+    s.update(1.0f / 60.0f);
+    checkNear(viewer->find("Elevate")->readFloat(), 1.0f, 1e-4f, "the viewer's Elevate axis reads E");
+    keyboard.setButton("e", false);
+    mouse.setVector2("scroll", glm::vec2(0.0f, 2.0f));
+    s.update(1.0f / 60.0f);
+    checkNear(viewer->find("Zoom")->readVector2().y, 2.0f, 1e-4f, "the viewer's Zoom reads the wheel");
 }
 
 } // namespace
@@ -640,6 +751,7 @@ int main() {
     testMissingDevices();
     testPassThroughAndCallbacks();
     testParserEdges();
+    testViewerAsset();
     std::printf("\n%d checks, %d failure(s)\n", gChecks, gFailures);
     return gFailures == 0 ? 0 : 1;
 }

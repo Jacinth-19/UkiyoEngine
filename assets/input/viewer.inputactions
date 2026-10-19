@@ -1,0 +1,508 @@
+{
+  "name": "Ukiyo Viewer",
+  "maps": [
+    {
+      "name": "Viewer",
+      "id": "e824e6ef6d1549ac837658db69c42497",
+      "actions": [
+        {
+          "name": "Move",
+          "type": "Value",
+          "id": "2c7a724848a94392b9eb68523f39bd6a",
+          "expectedControlType": "Vector2",
+          "processors": "",
+          "interactions": "",
+          "initialStateCheck": true
+        },
+        {
+          "name": "Elevate",
+          "type": "Value",
+          "id": "ee2caba9ef1a4f12b4175ab29b3d1e73",
+          "expectedControlType": "Axis",
+          "processors": "",
+          "interactions": "",
+          "initialStateCheck": true
+        },
+        {
+          "name": "Look",
+          "type": "Value",
+          "id": "50ceb6f96fd342fd93218c3e74456509",
+          "expectedControlType": "Vector2",
+          "processors": "",
+          "interactions": "",
+          "initialStateCheck": true
+        },
+        {
+          "name": "Orbit",
+          "type": "Button",
+          "id": "c664fa8daf5a43728fea68a43986a218",
+          "expectedControlType": "Button",
+          "processors": "",
+          "interactions": "",
+          "initialStateCheck": false
+        },
+        {
+          "name": "Pan",
+          "type": "Button",
+          "id": "c6d813a1df1a49a89606dc45e7ba5eb7",
+          "expectedControlType": "Button",
+          "processors": "",
+          "interactions": "",
+          "initialStateCheck": false
+        },
+        {
+          "name": "Zoom",
+          "type": "Value",
+          "id": "1a467bbca5a54845acfac4bc920a31e0",
+          "expectedControlType": "Vector2",
+          "processors": "",
+          "interactions": "",
+          "initialStateCheck": true
+        },
+        {
+          "name": "Quit",
+          "type": "Button",
+          "id": "bb178f27f33b46dd8ecee8ee7276bc2d",
+          "expectedControlType": "Button",
+          "processors": "",
+          "interactions": "",
+          "initialStateCheck": false
+        },
+        {
+          "name": "AutoOrbit",
+          "type": "Button",
+          "id": "48f57f00379847639f4ec40bae9dc952",
+          "expectedControlType": "Button",
+          "processors": "",
+          "interactions": "",
+          "initialStateCheck": false
+        },
+        {
+          "name": "ResetCamera",
+          "type": "Button",
+          "id": "29170780d4f74290a2ed621728ca2e63",
+          "expectedControlType": "Button",
+          "processors": "",
+          "interactions": "",
+          "initialStateCheck": false
+        },
+        {
+          "name": "Screenshot",
+          "type": "Button",
+          "id": "2151b638f18d493ebf7d8774e4961780",
+          "expectedControlType": "Button",
+          "processors": "",
+          "interactions": "",
+          "initialStateCheck": false
+        },
+        {
+          "name": "Hit",
+          "type": "Button",
+          "id": "b5f5d3740d534d58977c550604fb315e",
+          "expectedControlType": "Button",
+          "processors": "",
+          "interactions": "",
+          "initialStateCheck": false
+        },
+        {
+          "name": "ToggleGrid",
+          "type": "Button",
+          "id": "cfec369e2d564f2fb073621cd3ed8c9f",
+          "expectedControlType": "Button",
+          "processors": "",
+          "interactions": "",
+          "initialStateCheck": false
+        },
+        {
+          "name": "ToggleBloom",
+          "type": "Button",
+          "id": "aa32f70820b4477d96ffa87cfca62f7a",
+          "expectedControlType": "Button",
+          "processors": "",
+          "interactions": "",
+          "initialStateCheck": false
+        },
+        {
+          "name": "ToggleOutlines",
+          "type": "Button",
+          "id": "ba2d6fe0b96447c48cc6f1c78ceb4790",
+          "expectedControlType": "Button",
+          "processors": "",
+          "interactions": "",
+          "initialStateCheck": false
+        },
+        {
+          "name": "ToggleShadows",
+          "type": "Button",
+          "id": "76027abd3d124d97b75141a6c7fc1017",
+          "expectedControlType": "Button",
+          "processors": "",
+          "interactions": "",
+          "initialStateCheck": false
+        },
+        {
+          "name": "ToggleSky",
+          "type": "Button",
+          "id": "5d7a4485075a4f89915e4fe09dc99d71",
+          "expectedControlType": "Button",
+          "processors": "",
+          "interactions": "",
+          "initialStateCheck": false
+        },
+        {
+          "name": "Aa1",
+          "type": "Button",
+          "id": "674f33a527b94958b8549a92e163c857",
+          "expectedControlType": "Button",
+          "processors": "",
+          "interactions": "",
+          "initialStateCheck": false
+        },
+        {
+          "name": "Aa2",
+          "type": "Button",
+          "id": "537254f030d9429d9acfbfe22d104741",
+          "expectedControlType": "Button",
+          "processors": "",
+          "interactions": "",
+          "initialStateCheck": false
+        },
+        {
+          "name": "Aa3",
+          "type": "Button",
+          "id": "c1fb7da8f4f04da387c53a08dbe9a1db",
+          "expectedControlType": "Button",
+          "processors": "",
+          "interactions": "",
+          "initialStateCheck": false
+        },
+        {
+          "name": "Aa4",
+          "type": "Button",
+          "id": "923e7b25ad1e4be2b26fc44651052c1f",
+          "expectedControlType": "Button",
+          "processors": "",
+          "interactions": "",
+          "initialStateCheck": false
+        }
+      ],
+      "bindings": [
+        {
+          "name": "WASD",
+          "id": "a286f207321649759a2820f78729ff19",
+          "path": "2DVector",
+          "action": "Move",
+          "groups": "",
+          "processors": "",
+          "interactions": "",
+          "isComposite": true,
+          "isPartOfComposite": false
+        },
+        {
+          "name": "up",
+          "id": "cd409f9721404c8781ecc2f34765a33b",
+          "path": "<Keyboard>/w",
+          "action": "Move",
+          "groups": "",
+          "processors": "",
+          "interactions": "",
+          "isComposite": false,
+          "isPartOfComposite": true
+        },
+        {
+          "name": "down",
+          "id": "95042b8beb4f40f2ab2d9cba2f47e1e0",
+          "path": "<Keyboard>/s",
+          "action": "Move",
+          "groups": "",
+          "processors": "",
+          "interactions": "",
+          "isComposite": false,
+          "isPartOfComposite": true
+        },
+        {
+          "name": "left",
+          "id": "4e0e8adac95c40438cf67ae079d956fd",
+          "path": "<Keyboard>/a",
+          "action": "Move",
+          "groups": "",
+          "processors": "",
+          "interactions": "",
+          "isComposite": false,
+          "isPartOfComposite": true
+        },
+        {
+          "name": "right",
+          "id": "fad5f5624b394aa0b98500937ef01bca",
+          "path": "<Keyboard>/d",
+          "action": "Move",
+          "groups": "",
+          "processors": "",
+          "interactions": "",
+          "isComposite": false,
+          "isPartOfComposite": true
+        },
+        {
+          "name": "EQ",
+          "id": "77f91352c3cf4af2b44b9c970ce36e74",
+          "path": "1DAxis",
+          "action": "Elevate",
+          "groups": "",
+          "processors": "",
+          "interactions": "",
+          "isComposite": true,
+          "isPartOfComposite": false
+        },
+        {
+          "name": "positive",
+          "id": "2f2599fd9c7a4d7dbe9140aca76e4138",
+          "path": "<Keyboard>/e",
+          "action": "Elevate",
+          "groups": "",
+          "processors": "",
+          "interactions": "",
+          "isComposite": false,
+          "isPartOfComposite": true
+        },
+        {
+          "name": "negative",
+          "id": "358bd65053314fcfb4103029c9b83714",
+          "path": "<Keyboard>/q",
+          "action": "Elevate",
+          "groups": "",
+          "processors": "",
+          "interactions": "",
+          "isComposite": false,
+          "isPartOfComposite": true
+        },
+        {
+          "name": "",
+          "id": "3ab86d0283604cd9ad53a3b57a35ab0c",
+          "path": "<Mouse>/delta",
+          "action": "Look",
+          "groups": "",
+          "processors": "",
+          "interactions": "",
+          "isComposite": false,
+          "isPartOfComposite": false
+        },
+        {
+          "name": "",
+          "id": "43d11d91f2d2432498a748a52f4bb276",
+          "path": "<Mouse>/leftButton",
+          "action": "Orbit",
+          "groups": "",
+          "processors": "",
+          "interactions": "",
+          "isComposite": false,
+          "isPartOfComposite": false
+        },
+        {
+          "name": "",
+          "id": "cbc316f4c6c94115afcdad07c3b7925e",
+          "path": "<Mouse>/rightButton",
+          "action": "Pan",
+          "groups": "",
+          "processors": "",
+          "interactions": "",
+          "isComposite": false,
+          "isPartOfComposite": false
+        },
+        {
+          "name": "",
+          "id": "7ae7e6f8b5414d17b0f127136413e0f0",
+          "path": "<Mouse>/middleButton",
+          "action": "Pan",
+          "groups": "",
+          "processors": "",
+          "interactions": "",
+          "isComposite": false,
+          "isPartOfComposite": false
+        },
+        {
+          "name": "",
+          "id": "175952262ed14941bfded6ff6c3794f8",
+          "path": "<Mouse>/scroll",
+          "action": "Zoom",
+          "groups": "",
+          "processors": "",
+          "interactions": "",
+          "isComposite": false,
+          "isPartOfComposite": false
+        },
+        {
+          "name": "",
+          "id": "27176c5b71794cf59ccb6c739e6cbe3d",
+          "path": "<Keyboard>/escape",
+          "action": "Quit",
+          "groups": "",
+          "processors": "",
+          "interactions": "",
+          "isComposite": false,
+          "isPartOfComposite": false
+        },
+        {
+          "name": "",
+          "id": "cd9815b68ccb4a0fb8b607723f46c533",
+          "path": "<Keyboard>/space",
+          "action": "AutoOrbit",
+          "groups": "",
+          "processors": "",
+          "interactions": "",
+          "isComposite": false,
+          "isPartOfComposite": false
+        },
+        {
+          "name": "",
+          "id": "f623aefde04045708d5b22e833275732",
+          "path": "<Keyboard>/r",
+          "action": "ResetCamera",
+          "groups": "",
+          "processors": "",
+          "interactions": "",
+          "isComposite": false,
+          "isPartOfComposite": false
+        },
+        {
+          "name": "",
+          "id": "6f43cf601af74c30a3b75a8d9eb369e0",
+          "path": "<Keyboard>/p",
+          "action": "Screenshot",
+          "groups": "",
+          "processors": "",
+          "interactions": "",
+          "isComposite": false,
+          "isPartOfComposite": false
+        },
+        {
+          "name": "",
+          "id": "0d361672c45c48a1be5c628a5001e7b4",
+          "path": "<Keyboard>/h",
+          "action": "Hit",
+          "groups": "",
+          "processors": "",
+          "interactions": "",
+          "isComposite": false,
+          "isPartOfComposite": false
+        },
+        {
+          "name": "",
+          "id": "dad302d2684c4790b0e93588cd159d55",
+          "path": "<Keyboard>/g",
+          "action": "ToggleGrid",
+          "groups": "",
+          "processors": "",
+          "interactions": "",
+          "isComposite": false,
+          "isPartOfComposite": false
+        },
+        {
+          "name": "",
+          "id": "b1e04a7ab0934f599656e6f7e83f1689",
+          "path": "<Keyboard>/b",
+          "action": "ToggleBloom",
+          "groups": "",
+          "processors": "",
+          "interactions": "",
+          "isComposite": false,
+          "isPartOfComposite": false
+        },
+        {
+          "name": "",
+          "id": "14f5252430274765bfe25a0cbfc44655",
+          "path": "<Keyboard>/o",
+          "action": "ToggleOutlines",
+          "groups": "",
+          "processors": "",
+          "interactions": "",
+          "isComposite": false,
+          "isPartOfComposite": false
+        },
+        {
+          "name": "",
+          "id": "0507f130cae34a02b52ba22a31fff37e",
+          "path": "<Keyboard>/s",
+          "action": "ToggleShadows",
+          "groups": "",
+          "processors": "",
+          "interactions": "",
+          "isComposite": false,
+          "isPartOfComposite": false
+        },
+        {
+          "name": "",
+          "id": "eb772336bd454306bd8e0e0e9be64415",
+          "path": "<Keyboard>/k",
+          "action": "ToggleSky",
+          "groups": "",
+          "processors": "",
+          "interactions": "",
+          "isComposite": false,
+          "isPartOfComposite": false
+        },
+        {
+          "name": "",
+          "id": "f301288ba79a4a5fa0355da43e75251d",
+          "path": "<Keyboard>/1",
+          "action": "Aa1",
+          "groups": "",
+          "processors": "",
+          "interactions": "",
+          "isComposite": false,
+          "isPartOfComposite": false
+        },
+        {
+          "name": "",
+          "id": "1d73d5c0de594d9bbb4743079f7f2e79",
+          "path": "<Keyboard>/2",
+          "action": "Aa2",
+          "groups": "",
+          "processors": "",
+          "interactions": "",
+          "isComposite": false,
+          "isPartOfComposite": false
+        },
+        {
+          "name": "",
+          "id": "96b2aeba168d4b6892478305d70c45f8",
+          "path": "<Keyboard>/3",
+          "action": "Aa3",
+          "groups": "",
+          "processors": "",
+          "interactions": "",
+          "isComposite": false,
+          "isPartOfComposite": false
+        },
+        {
+          "name": "",
+          "id": "17be5f5154c64ff898ff6cf4dcf981ab",
+          "path": "<Keyboard>/4",
+          "action": "Aa4",
+          "groups": "",
+          "processors": "",
+          "interactions": "",
+          "isComposite": false,
+          "isPartOfComposite": false
+        }
+      ]
+    }
+  ],
+  "controlSchemes": [
+    {
+      "name": "Keyboard&Mouse",
+      "bindingGroup": "Keyboard&Mouse",
+      "devices": [
+        {
+          "devicePath": "<Keyboard>",
+          "isOptional": false,
+          "isOR": false
+        },
+        {
+          "devicePath": "<Mouse>",
+          "isOptional": false,
+          "isOR": false
+        }
+      ]
+    }
+  ]
+}

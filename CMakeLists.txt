@@ -291,7 +291,7 @@ add_executable(ukiyo src/app/main.cpp)
 target_link_libraries(ukiyo PRIVATE ukiyo_core ukiyo_input_glfw)
 # glfw3.h includes GL/gl.h unless told not to. The viewer never makes a GL call itself (the RHI does), so it asks GLFW
 # for the no-GL header and the build does not need GL development headers on the machine.
-target_compile_definitions(ukiyo PRIVATE GLFW_INCLUDE_NONE)
+target_compile_definitions(ukiyo PRIVATE GLFW_INCLUDE_NONE UKIYO_ROOT="${CMAKE_SOURCE_DIR}")
 target_compile_options(ukiyo PRIVATE -Wall -Wextra -Wno-missing-field-initializers)
 
 # ---- Tests -----------------------------------------------------------------

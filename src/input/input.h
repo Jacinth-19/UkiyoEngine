@@ -67,6 +67,11 @@ const char* deviceName(DeviceKind k);   // "Keyboard", "Mouse", "Gamepad"
 // The device kind a binding path starts with (`<Gamepad>/…`), or false when the path has no angle-bracket device.
 bool deviceKindFromPath(const std::string& path, DeviceKind* out);
 
+// Translates a key named the way Qt writes it ("Space", "W", "Left", "F1") to a Unity keyboard control name
+// ("space", "w", "leftArrow", "f1"). The editor's project settings store portable key text; the runtime and the
+// .inputactions format speak Unity control names, so this is the one place the two spellings meet.
+bool controlNameFromPortableKey(const std::string& portable, std::string* out);
+
 // One physical (or virtual) device. Devices are created by State::addDevice and are stable for its lifetime.
 class Device {
 public:
@@ -147,7 +152,8 @@ struct Binding {
     bool canceledThisFrame = false;
     bool down = false;                         // past the action's press point this frame
     bool prevDown = false;
-    bool interactionDone = false;              // Hold has reached its threshold; cleared on release
+    bool interactionDone = false;              // Hold has reached its threshold; cleared on the next press
+    bool interactionFailed = false;            // a Tap ran past its duration; cleared on the next press
     float prevMag = 0.0f;                      // for the analogue "changed" test
     bool hasValue = false;                     // false when the binding's device is absent
     float outValue = 0.0f;                     // this binding's contribution after processors
@@ -248,6 +254,7 @@ public:
     std::deque<ActionMap>& maps() { return maps_; }
     const std::deque<ActionMap>& maps() const { return maps_; }
     Action* action(const std::string& mapName, const std::string& actionName);
+    const Action* action(const std::string& mapName, const std::string& actionName) const;
 
     // Enables a map and resolves its bindings against the connected devices.
     void enableMap(const std::string& name);
