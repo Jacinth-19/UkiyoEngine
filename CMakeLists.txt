@@ -189,6 +189,15 @@ target_include_directories(motion_test PRIVATE ${CMAKE_SOURCE_DIR}/src ${CMAKE_S
 target_link_libraries(motion_test PRIVATE glm::glm)
 target_compile_options(motion_test PRIVATE -Wall -Wextra -Wno-missing-field-initializers)
 
+# The real-time GI estimator's algorithm on the CPU (docs/PATHTRACE.md §4). The pass is GLSL and CI has no GPU, so the
+# march, the hemisphere model and the accumulation weight are mirrored here and checked against analytic answers: the
+# intersection of a ray with a plane, the identity that makes the composite a delta instead of a double-counted sky,
+# and the occlusion sign inside a shaft.
+add_executable(gi_test tests/gi_test.cpp)
+target_include_directories(gi_test PRIVATE ${CMAKE_SOURCE_DIR}/src ${CMAKE_SOURCE_DIR}/third_party)
+target_link_libraries(gi_test PRIVATE glm::glm)
+target_compile_options(gi_test PRIVATE -Wall -Wextra -Wno-missing-field-initializers)
+
 # The motion demo (docs/MOTION.md): drives the controller through a scripted route with synthetic clips and writes
 # the figure, so the runtime half of motion matching is exercised on every build.
 add_executable(motion_demo tools/motion_demo.cpp src/engine/motion_match.cpp)

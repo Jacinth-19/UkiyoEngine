@@ -33,6 +33,9 @@ jobs:
         run: ./build/vgeom_test
       - name: Run Motion Matching Test
         run: ./build/motion_test
+      # The estimator's maths, mirrored on the CPU: the shader cannot run here, but its algebra can be checked.
+      - name: Run Real-Time GI Test
+        run: ./build/gi_test
       # Bindings are the one class of shader bug a compiler cannot see and CI has no GPU to catch. This resolves the
       # includes and fails on two samplers at one (set, binding), or two bindings on one GL texture unit.
       - name: Audit shader descriptor bindings
