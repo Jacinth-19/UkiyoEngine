@@ -13,7 +13,14 @@ float shadowFactor(vec3 worldPos, vec3 N) {
     if (cascade < 0) return 1.0;
 
     float ndl = clamp(dot(N, L), 0.0, 1.0);
-    vec3 p = worldPos + N * frame.shadowParams.z * (1.0 - ndl);
+    // Receiver offset. A normal offset alone is not enough for a height field lit at a grazing angle: the depth error
+    // across one shadow texel grows as 1 / N.L, so a hillside shadows itself in stripes. Push the sample along the
+    // light by a few texels' worth of world space, which is the standard slope-scaled receiver bias. The cascade's
+    // world size per texel is recovered from the shadow matrix: clip x spans [-1, 1] over 2 * radius metres.
+    uint cascadeSize = uint(0.5 / max(frame.shadowParams.y, 1e-9));   // kShadowAtlas / 2, from 1 / atlas size
+    float texelWorld = 2.0 / (max(length(frame.shadowMatrix[cascade][0].xyz), 1e-9) * float(cascadeSize));
+    vec3 p = worldPos + N * frame.shadowParams.z * (1.0 - ndl) +
+             L * (texelWorld * 2.0 / max(ndl, 0.25) + texelWorld * 0.5);
     vec4 lp = frame.shadowMatrix[cascade] * vec4(p, 1.0);
     vec3 sc = lp.xyz / lp.w;                      // xy in [-1,1], z in [0,1]
     vec2 uv = sc.xy * 0.5 + 0.5;

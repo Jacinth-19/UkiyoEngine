@@ -153,6 +153,15 @@ target_include_directories(pmx_glb_test PRIVATE ${CMAKE_SOURCE_DIR}/src)
 target_compile_options(pmx_glb_test PRIVATE -Wall -Wextra -Wpedantic)
 add_executable(ukiyo_pak tools/ukiyo_pak.cpp)
 target_link_libraries(ukiyo_pak PRIVATE ukiyo_core)
+
+# Offline terrain preview (docs/TERRAIN.md): renders the Terrain Lab tile without a GPU. It links only the pure CPU
+# terrain, layer and grass code, so the build needs no Vulkan, GL or GLFW for it, and CI compiles it on every push.
+# STB is implemented in the tool itself, which is why it does not link ukiyo_core.
+add_executable(terrain_preview tools/terrain_preview.cpp src/engine/terrain.cpp src/engine/terrain_layers.cpp
+               src/engine/grass.cpp)
+target_include_directories(terrain_preview PRIVATE ${CMAKE_SOURCE_DIR}/src ${CMAKE_SOURCE_DIR}/third_party)
+target_link_libraries(terrain_preview PRIVATE glm::glm)
+target_compile_options(terrain_preview PRIVATE -Wall -Wextra -Wno-missing-field-initializers)
 add_executable(particles_gpu_test tests/particles_gpu_test.cpp)
 add_executable(water_render tests/water_render.cpp)
 target_link_libraries(water_render PRIVATE ukiyo_core)

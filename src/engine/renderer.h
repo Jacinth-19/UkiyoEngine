@@ -270,6 +270,7 @@ private:
     std::unique_ptr<rhi::Pipeline> pWater_;         // water surface (water.vert / water.frag)
     std::unique_ptr<rhi::Pipeline> pUnderwater_;    // underwater fog (underwater.frag)
     std::unique_ptr<rhi::Pipeline> pTerrain_;       // terrain chunks (terrain.vert / terrain.frag)
+    std::unique_ptr<rhi::Pipeline> pTerrainShadow_;  // the same chunks as shadow casters (terrain_shadow.vert)
     std::vector<TerrainDraw> terrain_;
     std::unique_ptr<rhi::Pipeline> pFoliage_;       // foliage batches (foliage.vert / foliage.frag)
     std::vector<FoliageDraw> foliage_;

@@ -110,7 +110,9 @@ ojson sceneSettings(bool grid) {
     return s;
 }
 
-ojson layerJson(const ukiyo::TerrainLayer& layer) {
+// A layer, with its image files written relative to the project (the scene reader resolves them from there). The
+// texture paths may be absolute, as they are once a scene has been read; `root` is what they are made relative to.
+ojson layerJson(const ukiyo::TerrainLayer& layer, const fs::path& root) {
     ojson o;
     o["name"] = layer.name;
     o["colour"] = vec3Json(layer.colour);
@@ -122,6 +124,20 @@ ojson layerJson(const ukiyo::TerrainLayer& layer) {
     o["slopeMax"] = tidy(layer.slopeMax);
     o["slopeFade"] = tidy(layer.slopeFade);
     o["tile"] = tidy(layer.tileMetres);
+    auto map = [&](const char* key, const std::string& path) {
+        if (path.empty()) return;
+        std::error_code ec;
+        fs::path p(path);
+        if (p.is_absolute()) {
+            const fs::path r = fs::relative(p, root, ec);
+            if (!ec) p = r;
+        }
+        o[key] = p.generic_string();
+    };
+    map("diffuseMap", layer.diffuseFile);
+    map("normalMap", layer.normalFile);
+    map("aoMap", layer.aoFile);
+    map("roughnessMap", layer.roughnessFile);
     return o;
 }
 
@@ -149,18 +165,20 @@ ojson foliageJson(const std::string& name, ukiyo::FoliageShape shape, float dens
 ojson grassJson() {
     ukiyo::GrassSettings g;
     g.enabled = true;
-    g.density = 0.9f;
-    g.height = 0.45f;
-    g.width = 0.052f;
-    g.blades = 4;
+    g.density = 4.0f;
+    g.height = 0.44f;
+    g.width = 0.018f;
+    g.blades = 8;
     g.segments = 4;
     g.scaleMin = 0.8f;
     g.scaleMax = 1.4f;
     g.bandNear = 26.0f;
     g.bandMid = 55.0f;
     g.cullDistance = 110.0f;
-    g.includeLayers = 1u << 0;
-    g.includeThreshold = 0.30f;
+    // The moss and the heather both carry grass; the mud and the rock do not. Layer 3 is the heather layer that
+    // terrainJson appends, so the meadow covers the valley floor and the slopes above it.
+    g.includeLayers = (1u << 0) | (1u << 3);
+    g.includeThreshold = 0.25f;
     g.windStrength = 0.24f;
     g.windFrequency = 0.42f;
     g.windScale = 0.10f;
@@ -202,13 +220,80 @@ ojson grassJson() {
     return o;
 }
 
-ojson terrainJson(const std::string& heightmapRelative) {
+// The engine's vendored ground textures (tools/import_reference_terrain.py, MIT, see editor/res/terrain/NOTICE.md).
+// A template links them from the engine folder like the character asset: the files stay in one place, and the scene
+// records a path relative to the project.
+bool layerMaps(const std::string& engineRoot, const char* stem, const fs::path& root, ukiyo::TerrainLayer* layer) {
+    if (engineRoot.empty() || !layer) return false;
+    const fs::path dir = fs::path(engineRoot) / "editor" / "res" / "terrain";
+    const fs::path albedo = dir / (std::string(stem) + "_albedo.png");
+    const fs::path normal = dir / (std::string(stem) + "_normal.png");
+    const fs::path ao = dir / (std::string(stem) + "_ao.png");
+    if (!fs::exists(albedo) || !fs::exists(normal)) return false;
+    std::error_code ec;
+    auto relative = [&](const fs::path& p) {
+        const fs::path r = fs::relative(p, root, ec);
+        return (ec ? p : r).generic_string();
+    };
+    layer->diffuseFile = relative(albedo);
+    layer->normalFile = relative(normal);
+    if (fs::exists(ao)) layer->aoFile = relative(ao);
+    return true;
+}
+
+ojson terrainJson(const std::string& heightmapRelative, const std::string& engineRoot, const fs::path& root) {
     ukiyo::TerrainSettings terrain;
     terrain.heightmap = heightmapRelative;
     terrain.size = 257;
     terrain.cellSize = 1.0f;
     terrain.heightScale = 14.0f;
     terrain.layers = ukiyo::defaultTerrainLayers();
+    // The reference project's three grounds, plus the pale cap the default layers end on. The colours become a neutral
+    // tint once a texture carries the albedo, so the field is the authored moss, heather and mud rather than a wash of
+    // one colour.
+    {
+        ukiyo::TerrainLayer heather;
+        heather.name = "heather";
+        heather.colour = glm::vec3(1.0f, 1.0f, 1.0f);
+        heather.roughness = 0.85f;
+        heather.heightMin = 0.38f;
+        heather.heightMax = 0.82f;
+        heather.heightFade = 0.12f;
+        heather.slopeMax = 40.0f;
+        heather.slopeFade = 8.0f;
+        heather.tileMetres = 5.5f;
+        terrain.layers.push_back(heather);
+    }
+    struct Paint { const char* stem; float tile; glm::vec3 tint; };
+    const Paint paints[3] = {
+        {"grass_moss", 4.0f, glm::vec3(1.0f, 1.0f, 1.0f)},
+        {"muddy", 3.5f, glm::vec3(1.0f, 1.0f, 1.0f)},
+        {"heather", 5.5f, glm::vec3(1.0f, 1.0f, 1.0f)},
+    };
+    // Layer 0 is grass, 1 is rock, 2 is pale rock, 3 is heather.
+    const int painted[4] = {0, 1, -1, 2};
+    for (int k = 0; k < 4; ++k) {
+        if (painted[k] < 0) continue;
+        const Paint& p = paints[painted[k]];
+        if (!layerMaps(engineRoot, p.stem, root, &terrain.layers[k])) continue;
+        terrain.layers[k].colour = p.tint;
+        terrain.layers[k].tileMetres = p.tile;
+    }
+    // Bare rock only near the summits, and warm grey rather than white: the sample tile's tops are exposed, not snow.
+    terrain.layers[2].heightMin = 0.86f;
+    terrain.layers[2].heightFade = 0.05f;
+    terrain.layers[2].colour = glm::vec3(0.46f, 0.44f, 0.40f);
+    terrain.detail.metres = 1.7f;
+    terrain.detail.strength = 0.5f;
+    terrain.detail.macro = 0.28f;
+    if (!engineRoot.empty()) {
+        const fs::path detail = fs::path(engineRoot) / "editor" / "res" / "terrain" / "plant_detail.png";
+        if (fs::exists(detail)) {
+            std::error_code ec;
+            const fs::path r = fs::relative(detail, root, ec);
+            terrain.detail.file = (ec ? detail : r).generic_string();
+        }
+    }
 
     ojson o;
     o["heightmap"] = heightmapRelative;
@@ -216,8 +301,24 @@ ojson terrainJson(const std::string& heightmapRelative) {
     o["cellSize"] = double(terrain.cellSize);
     o["heightScale"] = double(terrain.heightScale);
     ojson layers = ojson::array();
-    for (const ukiyo::TerrainLayer& layer : terrain.layers) layers.push_back(layerJson(layer));
+    for (const ukiyo::TerrainLayer& layer : terrain.layers) layers.push_back(layerJson(layer, root));
     o["layers"] = layers;
+    if (!terrain.detail.file.empty() || terrain.detail.strength > 0.0f) {
+        ojson d;
+        if (!terrain.detail.file.empty()) {
+            std::error_code ec;
+            fs::path p(terrain.detail.file);
+            if (p.is_absolute()) {
+                const fs::path r = fs::relative(p, root, ec);
+                if (!ec) p = r;
+            }
+            d["map"] = p.generic_string();
+        }
+        d["metres"] = tidy(terrain.detail.metres);
+        d["strength"] = tidy(terrain.detail.strength);
+        d["macro"] = tidy(terrain.detail.macro);
+        o["detail"] = d;
+    }
     ojson foliage = ojson::array();
     foliage.push_back(foliageJson("grass", ukiyo::FoliageShape::Tuft, 0.42f, 0.05f, 0.62f, 34.0f, 0.7f,
                                   1.25f, 7, glm::vec3(0.28f, 0.46f, 0.20f)));
@@ -337,7 +438,7 @@ ojson sceneFor(const std::string& templateId, const std::string& engineRoot, con
         model["position"] = numbers({0.0, 0.0, 0.0});
         model["yawDeg"] = 0.0;
         model["name"] = "Terrain";
-        model["terrain"] = terrainJson("assets/Terrain/hills.u16");
+        model["terrain"] = terrainJson("assets/Terrain/hills.u16", engineRoot, root);
         scene["models"] = ojson::array({model});
         scene["active"] = 0;
         scene["settings"] = sceneSettings(false);

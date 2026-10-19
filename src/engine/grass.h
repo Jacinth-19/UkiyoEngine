@@ -25,10 +25,13 @@ namespace ukiyo {
 // block, inside the 16 KB minimum uniform block size.
 constexpr uint32_t kGrassBatch = 256;
 
-// One tile keeps at most this many blades. A tile at 1 m cells is 1024 by 1024 m, so a density of 0.25 per square
-// metre asks for 262 144 candidates: past the budget the scatter thins by a fixed stride, the same subset every
-// build, so the result stays deterministic. 384 batches is about 18 MB of instance rows.
-constexpr uint32_t kGrassMaxInstances = 98304;
+// One tile keeps at most this many tufts. A 256 m tile at the template's 4 tufts per square metre asks for exactly
+// this many, so the meadow a new project opens with fits without the fallback stride. Past the budget the scatter thins
+// by a fixed stride, the same subset every build, so the result stays deterministic. 1024 batches is 12 MB of instance
+// rows. Eight blades of four quads is 64 triangles a tuft, so a whole tile held at once would be 16.8 M triangles; the
+// distance bands are what keep a real view near 3 M, and a project can lower `density`, `blades` or `cullDistance` to
+// trade it back.
+constexpr uint32_t kGrassMaxInstances = 262144;
 
 // The knobs themselves are GrassSettings, in terrain.h with the rest of a tile's settings: a TerrainSettings holds one
 // by value. This header is only the work over it.

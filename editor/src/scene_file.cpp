@@ -103,9 +103,11 @@ std::optional<ukiyo::TerrainSettings> readTerrain(const QJsonValue& v, const QSt
             const QString dif = lo.value(QLatin1String("diffuseMap")).toString();
             const QString nrm = lo.value(QLatin1String("normalMap")).toString();
             const QString rgh = lo.value(QLatin1String("roughnessMap")).toString();
+            const QString ao = lo.value(QLatin1String("aoMap")).toString();
             if (!dif.isEmpty()) L.diffuseFile = QDir::cleanPath(QDir(projectRoot).absoluteFilePath(dif)).toStdString();
             if (!nrm.isEmpty()) L.normalFile = QDir::cleanPath(QDir(projectRoot).absoluteFilePath(nrm)).toStdString();
             if (!rgh.isEmpty()) L.roughnessFile = QDir::cleanPath(QDir(projectRoot).absoluteFilePath(rgh)).toStdString();
+            if (!ao.isEmpty()) L.aoFile = QDir::cleanPath(QDir(projectRoot).absoluteFilePath(ao)).toStdString();
             t.layers.push_back(L);
         }
     }
@@ -143,15 +145,15 @@ std::optional<ukiyo::TerrainSettings> readTerrain(const QJsonValue& v, const QSt
         const QJsonObject go = gv.toObject();
         ukiyo::GrassSettings& G = t.grass;
         G.enabled = go.value(QLatin1String("enabled")).toBool(true);
-        G.density = std::clamp(float(go.value(QLatin1String("density")).toDouble(0.9)), 0.0f, 8.0f);
+        G.density = std::clamp(float(go.value(QLatin1String("density")).toDouble(4.0)), 0.0f, 8.0f);
         const QString gmap = go.value(QLatin1String("densityMap")).toString();
         if (!gmap.isEmpty()) G.densityMap = QDir::cleanPath(QDir(projectRoot).absoluteFilePath(gmap)).toStdString();
         G.heightMin = std::clamp(float(go.value(QLatin1String("heightMin")).toDouble(0.0)), 0.0f, 1.0f);
         G.heightMax = std::clamp(float(go.value(QLatin1String("heightMax")).toDouble(1.0)), 0.0f, 1.0f);
         G.slopeMax = std::clamp(float(go.value(QLatin1String("slopeMax")).toDouble(35.0)), 0.0f, 90.0f);
-        G.height = std::clamp(float(go.value(QLatin1String("height")).toDouble(0.45)), 0.02f, 5.0f);
-        G.width = std::clamp(float(go.value(QLatin1String("width")).toDouble(0.055)), 0.001f, 1.0f);
-        G.blades = uint32_t(std::clamp(go.value(QLatin1String("blades")).toInt(4), 1, 8));
+        G.height = std::clamp(float(go.value(QLatin1String("height")).toDouble(0.44)), 0.02f, 5.0f);
+        G.width = std::clamp(float(go.value(QLatin1String("width")).toDouble(0.018)), 0.001f, 1.0f);
+        G.blades = uint32_t(std::clamp(go.value(QLatin1String("blades")).toInt(8), 1, 8));
         G.segments = uint32_t(std::clamp(go.value(QLatin1String("segments")).toInt(4), 1, 12));
         G.scaleMin = std::clamp(float(go.value(QLatin1String("scaleMin")).toDouble(0.75)), 0.01f, 20.0f);
         G.scaleMax = std::clamp(float(go.value(QLatin1String("scaleMax")).toDouble(1.35)), 0.01f, 20.0f);
@@ -193,6 +195,16 @@ std::optional<ukiyo::TerrainSettings> readTerrain(const QJsonValue& v, const QSt
         G.translucency = std::clamp(float(go.value(QLatin1String("translucency")).toDouble(0.5)), 0.0f, 1.0f);
         G.tipDarkening = std::clamp(float(go.value(QLatin1String("tipDarkening")).toDouble(0.35)), 0.0f, 1.0f);
     }
+    // Detail overlay. Missing keys leave the defaults, which is a modest overlay with no file.
+    const QJsonValue dv = o.value(QLatin1String("detail"));
+    if (dv.isObject()) {
+        const QJsonObject dobj = dv.toObject();
+        const QString df = dobj.value(QLatin1String("map")).toString();
+        if (!df.isEmpty()) t.detail.file = QDir::cleanPath(QDir(projectRoot).absoluteFilePath(df)).toStdString();
+        t.detail.metres = std::clamp(float(dobj.value(QLatin1String("metres")).toDouble(1.7)), 0.05f, 100.0f);
+        t.detail.strength = std::clamp(float(dobj.value(QLatin1String("strength")).toDouble(0.55)), 0.0f, 1.0f);
+        t.detail.macro = std::clamp(float(dobj.value(QLatin1String("macro")).toDouble(0.30)), 0.0f, 1.0f);
+    }
     // Layer masks (item 18, step 4): up to two RGBA images, relative to the project.
     for (const QJsonValue& mv : o.value(QLatin1String("masks")).toArray()) {
         if (t.maskFiles.size() >= 2) break;
@@ -224,6 +236,7 @@ QJsonObject terrainToJson(const ukiyo::TerrainSettings& t, const QString& projec
         if (!L.diffuseFile.empty()) lo[QStringLiteral("diffuseMap")] = QDir(projectRoot).relativeFilePath(QString::fromStdString(L.diffuseFile));
         if (!L.normalFile.empty()) lo[QStringLiteral("normalMap")] = QDir(projectRoot).relativeFilePath(QString::fromStdString(L.normalFile));
         if (!L.roughnessFile.empty()) lo[QStringLiteral("roughnessMap")] = QDir(projectRoot).relativeFilePath(QString::fromStdString(L.roughnessFile));
+        if (!L.aoFile.empty()) lo[QStringLiteral("aoMap")] = QDir(projectRoot).relativeFilePath(QString::fromStdString(L.aoFile));
         layers.append(lo);
     }
     o[QStringLiteral("layers")] = layers;
@@ -289,6 +302,14 @@ QJsonObject terrainToJson(const ukiyo::TerrainSettings& t, const QString& projec
         go[QStringLiteral("translucency")] = double(G.translucency);
         go[QStringLiteral("tipDarkening")] = double(G.tipDarkening);
         o[QStringLiteral("grass")] = go;
+    }
+    if (!t.detail.file.empty() || t.detail.strength > 0.0f) {
+        QJsonObject d;
+        if (!t.detail.file.empty()) d[QStringLiteral("map")] = QDir(projectRoot).relativeFilePath(QString::fromStdString(t.detail.file));
+        d[QStringLiteral("metres")] = double(t.detail.metres);
+        d[QStringLiteral("strength")] = double(t.detail.strength);
+        d[QStringLiteral("macro")] = double(t.detail.macro);
+        o[QStringLiteral("detail")] = d;
     }
     if (!t.maskFiles.empty()) {
         QJsonArray masks;

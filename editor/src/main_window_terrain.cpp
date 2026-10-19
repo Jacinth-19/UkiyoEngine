@@ -371,7 +371,7 @@ void MainWindow::addTerrainInspector(QVBoxLayout* layout, int index, const ukiyo
             editGrass(field, [set, v](ukiyo::GrassSettings& g) { set(g, v); });
         });
     };
-    grassNumber(QStringLiteral("Density"), QStringLiteral("density"), 0.0, 4.0, 0.05, 2, ts.grass.density,
+    grassNumber(QStringLiteral("Density"), QStringLiteral("density"), 0.0, 8.0, 0.05, 2, ts.grass.density,
                 QStringLiteral(" /m2"), [](ukiyo::GrassSettings& g, double v) { g.density = static_cast<float>(v); });
     grassNumber(QStringLiteral("Blade height"), QStringLiteral("height"), 0.05, 3.0, 0.01, 2, ts.grass.height,
                 QStringLiteral(" m"), [](ukiyo::GrassSettings& g, double v) { g.height = static_cast<float>(v); });

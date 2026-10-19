@@ -9,7 +9,8 @@
 namespace ukiyo {
 
 bool uploadTerrain(rhi::Device& device, const Heightmap& map, uint32_t cells, const std::vector<TerrainLayer>& layers,
-                   const std::vector<uint8_t>& paint, TerrainGpu* out, std::string* error) {
+                   const std::vector<uint8_t>& paint, const TerrainDetail& detail, TerrainGpu* out,
+                   std::string* error) {
     if (!out) return false;
     const uint32_t n = chunksPerSide(map, cells);
     if (n == 0) {
@@ -64,6 +65,8 @@ bool uploadTerrain(rhi::Device& device, const Heightmap& map, uint32_t cells, co
         block.tile[k] = glm::vec4(std::max(0.5f, layers[k].tileMetres), 0.0f, 0.0f, 0.0f);
     }
     for (size_t k = layers.size(); k < kTerrainMaxLayers; ++k) block.tile[k] = glm::vec4(8.0f, 0, 0, 0);
+    block.detail = glm::vec4(std::max(0.1f, detail.metres), std::clamp(detail.strength, 0.0f, 1.0f),
+                             std::clamp(detail.macro, 0.0f, 1.0f), 0.0f);
     g.layerBuffer = device.createBuffer(rhi::BufferUsage::Uniform, sizeof(TerrainLayerBlock));
     g.layerBuffer->upload(&block, sizeof(block));
 
@@ -77,9 +80,28 @@ bool uploadTerrain(rhi::Device& device, const Heightmap& map, uint32_t cells, co
     g.diffuseAtlas = device.createTexture(td, atlases.diffuse.data());
     g.normalAtlas = device.createTexture(td, atlases.normal.data());
 
+    // The detail overlay. A 1 x 1 white texture is a no-op, so a tile without an overlay still binds something at
+    // binding 2 and the shader's uniform branch collapses.
+    std::vector<uint8_t> white{255, 255, 255, 255};
+    uint32_t dw = 1, dh = 1;
+    if (!detail.file.empty()) {
+        std::vector<uint8_t> pixels;
+        if (!loadRgba8(detail.file, &dw, &dh, &pixels, error)) return false;
+        td.width = dw;
+        td.height = dh;
+        g.detailTexture = device.createTexture(td, pixels.data());
+    } else {
+        td.width = 1;
+        td.height = 1;
+        g.detailTexture = device.createTexture(td, white.data());
+    }
+
     g.layerSet = device.createDescriptorSet(rhi::SetType::ShaderMaterial);
+    // Units 2 and 3: unit 1 is the frame set's shadow atlas, and the GL backend binds every set into the same texture
+    // unit space.
     g.layerSet->setTexture(0, g.diffuseAtlas.get());
-    g.layerSet->setTexture(1, g.normalAtlas.get());
+    g.layerSet->setTexture(2, g.normalAtlas.get());
+    g.layerSet->setTexture(3, g.detailTexture.get());
     g.layerSet->setBuffer(15, g.layerBuffer.get());
 
     *out = std::move(g);

@@ -11,9 +11,10 @@ was changed, and what was dropped.
 
 ![The scatter on the sample terrain](grass-scatter-preview.png)
 
-*The real scatter on `tests/data/terrain_hills_257.u16` at the new-project settings, rasterised offline (painter's
-algorithm, the shader's band hash and toon ramp applied on the CPU). It is a look at the geometry and the density, not
-an engine frame — the engine's own frame is `renders/terrain_grass.png`, written by the hub self-test.*
+*The real scatter on `tests/data/terrain_hills_257.u16` at the new-project settings (4 tufts/m², eight blades of
+0.44 m), with the vendored ground textures, rasterised offline by `tools/terrain_preview.cpp`. It is a look at the
+geometry and the density, not an engine frame — the engine's own frame is `renders/terrain_grass.png`, written by the
+hub self-test. [TERRAIN.md](TERRAIN.md) documents the ground, the preview tool and what it does not model.*
 
 ## What the reference does
 
@@ -71,9 +72,9 @@ so `dot(row[r], vec4(localPos, 1))` is the world position and the same rows are 
 batch of 256 blades is 12 KB, plus two `vec4`s for the root and tip colours — inside the 16 KB minimum uniform block
 size, and the same batching idiom as `FoliageBatchGpu`.
 
-Because a uniform block is per-descriptor-set, a tile is capped at `kGrassMaxInstances` (98 304 blades, about 18 MB of
-rows). Past the cap the scatter keeps every n-th candidate — a fixed draw, so the result is still deterministic — and
-this is reported in the terrain inspector. A true indirect pipeline would not need that cap.
+Because a uniform block is per-descriptor-set, a tile is capped at `kGrassMaxInstances` (262 144 tufts, 3 rows each,
+about 12 MB of rows). Past the cap the scatter keeps every n-th candidate — a fixed draw, so the result is still
+deterministic — and this is reported in the terrain inspector. A true indirect pipeline would not need that cap.
 
 ## Knobs
 
@@ -89,10 +90,14 @@ terrain entry and read/written by `editor/src/scene_file.cpp` (`"grass"` object;
 | Wind | `windDir`, `windStrength`, `windFrequency`, `windScale`, `flutter` |
 | Colour | `baseColour`, `tipColour`, `translucency`, `tipDarkening` |
 
-A new project's template turns grass on for layer 0 of the sample terrain
-(`src/engine/project_template.cpp`, `grassJson`). The editor exposes the useful half of the table under
-**Terrain → Grass**; the layer masks and the two colours are edited in the scene file for now, the same way terrain
-layer bands are.
+A new project's template turns grass on for the sample terrain's moss and heather layers
+(`src/engine/project_template.cpp`, `grassJson`), at 4 tufts/m², eight blades of 0.44 m, in a tuft whose roots sit on
+a disc of 0.55 × the blade height. The editor exposes the useful half of the table under **Terrain → Grass**; the
+layer masks and the two colours are edited in the scene file for now, the same way terrain layer bands are.
+
+The blades are lit by the same cascaded shadows as everything else (`shadow_sample.glsl`, with the slope-scaled
+receiver bias described in [TERRAIN.md](TERRAIN.md)), so grass under a ridge is genuinely in shade. Grass does not
+cast into the atlas yet; that is the one shadow-side gap left, and it is a second instanced draw and no colour output.
 
 ## Tests
 
@@ -100,6 +105,8 @@ layer bands are.
   exclude masks (including a paint map written the way the brush writes one), height and slope limits, scale and yaw
   ranges, the band curve and its monotonicity, the near/far subset property, chunk grouping, the instance cap, the
   tuft mesh, and that the packed rows place a blade's root and tip where they should.
+* `tools/terrain_preview.cpp` — links this file and the terrain code and draws a still without a device. It is built by
+  CI, so the scatter, the mesh and the settings are exercised together on every push.
 * `ukiyo_hub --selftest` — three more checks that need a device: blades scattered on the sample tile change the frame,
   the scene document carries the grass settings, and turning grass off gives the frame back. The render is saved to
   `renders/terrain_grass.png`, which CI uploads as the `terrain-renders` artifact.

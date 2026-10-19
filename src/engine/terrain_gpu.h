@@ -24,10 +24,12 @@ struct TerrainChunkGpu {
 
 // The layer data the terrain shader reads, in the ShaderMaterial set (step 2). The uniform buffer is at binding 15:
 // per layer, `layer` holds rgb tint (the diffuse atlas is multiplied by it), and `tile` holds the metres per repeat in
-// x. The textures are at bindings 0 (diffuse atlas, roughness in alpha) and 1 (normal atlas).
+// x. The textures are at bindings 0 (diffuse atlas, roughness in alpha), 2 (normal atlas, occlusion in alpha) and
+// 3 (detail overlay); binding 1 is the shadow atlas in the frame set, and the GL backend has one texture unit space. `detail` is x: metres per detail repeat, y: detail strength, z: macro variation.
 struct TerrainLayerBlock {
     glm::vec4 layer[kTerrainMaxLayers];
     glm::vec4 tile[kTerrainMaxLayers];
+    glm::vec4 detail{1.7f, 0.0f, 0.0f, 0.0f};
 };
 
 // One foliage type's mesh (step 3). Shared by all of the type's batches.
@@ -94,6 +96,7 @@ struct TerrainGpu {
     std::unique_ptr<rhi::Buffer> layerBuffer;
     std::unique_ptr<rhi::Texture> diffuseAtlas;
     std::unique_ptr<rhi::Texture> normalAtlas;
+    std::unique_ptr<rhi::Texture> detailTexture;   // white when the tile has no detail overlay
     std::unique_ptr<rhi::DescriptorSet> layerSet;
     // Foliage (step 3). Filled by uploadFoliage, empty when the tile has none.
     std::vector<FoliageMeshGpu> foliageMeshes;   // one per type
@@ -106,7 +109,8 @@ struct TerrainGpu {
 // layerWeightMap. Returns false with *error set when the grid does not divide into chunks of `cells`, the layers are
 // empty, or a layer's image file cannot be read.
 bool uploadTerrain(rhi::Device& device, const Heightmap& map, uint32_t cells, const std::vector<TerrainLayer>& layers,
-                   const std::vector<uint8_t>& paint, TerrainGpu* out, std::string* error = nullptr);
+                   const std::vector<uint8_t>& paint, const TerrainDetail& detail, TerrainGpu* out,
+                   std::string* error = nullptr);
 
 // Scatters the foliage of `types` over the tile in `gpu` (from uploadTerrain) and uploads it in batches. `densities[t]`
 // is the density field of type t, or empty for uniform. Returns false with *error set when there are more than

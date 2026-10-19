@@ -164,6 +164,20 @@ bool buildTerrainAtlases(const std::vector<TerrainLayer>& layers, TerrainAtlases
                 }
             }
         }
+        // Occlusion lives in the normal atlas alpha, so the terrain shader darkens ambient light in the crevices of the
+        // ground without a third texture. White is unoccluded.
+        if (L && !L->aoFile.empty()) {
+            uint32_t w = 0, h = 0;
+            if (!loadRgba8(L->aoFile, &w, &h, &img, error)) return false;
+            resampleToCell(img, w, h, cell);
+            for (uint32_t y = 0; y < n; ++y) {
+                for (uint32_t x = 0; x < n; ++x) {
+                    const size_t src = (size_t(y) * n + x) * 4;
+                    const size_t dst = (size_t(y0 + y) * a.width + (x0 + x)) * 4;
+                    a.normal[dst + 3] = cell[src];
+                }
+            }
+        }
     }
     *out = std::move(a);
     return true;

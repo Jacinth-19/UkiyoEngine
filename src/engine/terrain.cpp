@@ -8,14 +8,6 @@
 
 namespace ukiyo {
 
-namespace {
-
-float clampIndex(int v, uint32_t size) {
-    return float(std::clamp(v, 0, int(size) - 1));
-}
-
-}  // namespace
-
 float Heightmap::heightAt(int x, int z) const {
     const int cx = std::clamp(x, 0, int(size) - 1);
     const int cz = std::clamp(z, 0, int(size) - 1);

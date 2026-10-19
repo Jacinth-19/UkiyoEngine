@@ -1063,14 +1063,15 @@ static void testTerrainAtlases() {
     TerrainAtlases plain;
     std::string err;
     const bool okPlain = buildTerrainAtlases(defaultTerrainLayers(), &plain, &err);
-    check(okPlain && plain.width == 1024 && plain.height == 512 && plain.diffuse.size() == size_t(1024) * 512 * 4,
-          "terrain atlas: the atlases are 4 by 2 cells of 256 texels", err);
+    check(okPlain && plain.width == 2048 && plain.height == 1024 && plain.diffuse.size() == size_t(2048) * 1024 * 4,
+          "terrain atlas: the atlases are 4 by 2 cells of 512 texels", err);
     auto d0 = texel(plain, plain.diffuse, 0, 0, 10, 10);
     check(okPlain && d0[0] == 255 && d0[1] == 255 && d0[2] == 255 && std::abs(int(d0[3]) - 230) <= 1,
           "terrain atlas: a layer with no diffuse map is white, with its roughness in alpha (grass 0.9)",
           std::to_string(int(d0[3])));
     auto n0 = texel(plain, plain.normal, 0, 0, 10, 10);
     check(okPlain && n0[0] == 128 && n0[1] == 128 && n0[2] == 255, "terrain atlas: no normal map is a flat normal");
+    check(okPlain && n0[3] == 255, "terrain atlas: no occlusion map means full ambient light");
     auto d7 = texel(plain, plain.diffuse, 3, 1, 5, 5);   // cell 7 is unused by the defaults
     check(okPlain && std::abs(int(d7[3]) - 204) <= 1 && d7[0] == 255, "terrain atlas: an unused cell is white with roughness 0.8");
 
@@ -1078,6 +1079,7 @@ static void testTerrainAtlases() {
     std::vector<TerrainLayer> textured = defaultTerrainLayers();
     textured[0].diffuseFile = std::string(UKIYO_ROOT) + "/tests/data/terrain_checker_64.png";
     textured[0].roughnessFile = std::string(UKIYO_ROOT) + "/tests/data/terrain_grey_64.png";
+    textured[0].aoFile = std::string(UKIYO_ROOT) + "/tests/data/terrain_grey_64.png";
     TerrainAtlases withFiles;
     err.clear();
     const bool okFiles = buildTerrainAtlases(textured, &withFiles, &err);
@@ -1097,6 +1099,11 @@ static void testTerrainAtlases() {
         check(roughOk, "terrain atlas: the roughness file's red channel becomes the alpha");
         auto d1 = texel(withFiles, withFiles.diffuse, 1, 0, 5, 5);   // layer 1 keeps its own white diffuse
         check(d1[0] == 255 && std::abs(int(d1[3]) - 178) <= 1, "terrain atlas: other layers keep their own maps");
+        auto ao0 = texel(withFiles, withFiles.normal, 0, 0, 5, 5);
+        check(std::abs(int(ao0[3]) - 128) <= 2, "terrain atlas: the occlusion file's red channel becomes the normal alpha",
+              std::to_string(int(ao0[3])));
+        auto ao1 = texel(withFiles, withFiles.normal, 1, 0, 5, 5);
+        check(ao1[3] == 255, "terrain atlas: a layer without occlusion stays unoccluded");
     }
 
     // A named file that does not exist is an error, not a silent white.

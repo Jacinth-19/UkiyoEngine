@@ -32,16 +32,20 @@ void layerWeightsAtSample(const Heightmap& map, const std::vector<TerrainLayer>&
 
 // Layer textures are packed into two atlases. Each layer owns one cell: layer k is at column k % kTerrainAtlasCols and
 // row k / kTerrainAtlasCols. A cell is kTerrainAtlasCell texels square, and the atlas is always full size, so unused
-// cells hold white diffuse and flat normals.
+// cells hold white diffuse, flat normals and no occlusion.
+//
+// 512 is the production size: a layer tiles every few metres, and at 256 texels a cell the ground under the camera
+// shows individual texels as flat patches. The vendored reference textures are 512 square, so this is also the size at
+// which they arrive with no resample at all.
 constexpr uint32_t kTerrainAtlasCols = 4;
 constexpr uint32_t kTerrainAtlasRows = 2;
-constexpr uint32_t kTerrainAtlasCell = 256;
+constexpr uint32_t kTerrainAtlasCell = 512;
 
 struct TerrainAtlases {
-    uint32_t width = kTerrainAtlasCols * kTerrainAtlasCell;    // 1024
-    uint32_t height = kTerrainAtlasRows * kTerrainAtlasCell;   // 512
+    uint32_t width = kTerrainAtlasCols * kTerrainAtlasCell;    // 2048
+    uint32_t height = kTerrainAtlasRows * kTerrainAtlasCell;   // 1024
     std::vector<uint8_t> diffuse;   // RGBA8: rgb albedo, a roughness
-    std::vector<uint8_t> normal;    // RGBA8: rgb tangent-space normal (128, 128, 255 is flat)
+    std::vector<uint8_t> normal;    // RGBA8: rgb tangent-space normal (128, 128, 255 is flat), a occlusion
 };
 
 // Decodes an image file to RGBA8. Returns false with *error set when the file cannot be read.
@@ -49,7 +53,8 @@ bool loadRgba8(const std::string& path, uint32_t* width, uint32_t* height, std::
 
 // Packs the textures of the first kTerrainMaxLayers layers into the atlases. A missing file for a layer is not an error:
 // that map is the default. A file that is named but cannot be read is an error. The roughness is the alpha of the
-// diffuse atlas: from the red channel of the roughness file, or the layer's constant.
+// diffuse atlas: from the red channel of the roughness file, or the layer's constant. The occlusion is the alpha of the
+// normal atlas: from the red channel of the occlusion file, or white (no occlusion).
 bool buildTerrainAtlases(const std::vector<TerrainLayer>& layers, TerrainAtlases* out, std::string* error);
 
 } // namespace ukiyo

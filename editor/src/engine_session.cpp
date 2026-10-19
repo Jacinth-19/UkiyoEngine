@@ -409,7 +409,8 @@ bool EngineSession::buildTerrainGpu(const ukiyo::TerrainSettings& ts, const Terr
                                     std::unique_ptr<ukiyo::TerrainGpu>* out, QString* error) {
     auto gpu = std::make_unique<ukiyo::TerrainGpu>();
     std::string uploadErr;
-    if (!ukiyo::uploadTerrain(*device_, st.map, ukiyo::kTerrainChunkCells, ts.layers, st.layerPaint, gpu.get(), &uploadErr)) {
+    if (!ukiyo::uploadTerrain(*device_, st.map, ukiyo::kTerrainChunkCells, ts.layers, st.layerPaint, ts.detail, gpu.get(),
+                              &uploadErr)) {
         if (error) *error = QString::fromStdString(uploadErr);
         return false;
     }

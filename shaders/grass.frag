@@ -6,6 +6,7 @@
 // stipple fades the field into the ground instead of drawing a circle around the camera.
 #include "common.glsl"
 #include "frame.glsl"
+#include "shadow_sample.glsl"
 
 UBO(1, 15) GrassRows {
     vec4 row[3 * 256];
@@ -39,6 +40,9 @@ void main() {
     float ndl = max(dot(n, L), 0.0);
     // The terrain's ramp, a little wider: a blade's normal is mostly up, and a hard edge on every blade reads as noise.
     float ramp = smoothstep(0.08, 0.52, ndl);
+    // Hills, trees and the character cut the sun, so a field under a ridge is lit by the sky alone.
+    float shadow = shadowFactor(vWorld, n);
+    float sun = ramp * shadow;
     vec3 hemi = mix(frame.groundColor.rgb, frame.skyColor.rgb, 0.5 + 0.5 * n.y);
 
     float h = clamp(vHeight, 0.0, 1.0);
@@ -51,7 +55,7 @@ void main() {
     float back = pow(max(dot(-V, L), 0.0), 2.0);
     float through = grassBlock.tip.w * back * h * h;
 
-    vec3 colour = albedo * (hemi + frame.sunColor.rgb * ramp) +
-                  grassBlock.tip.rgb * frame.sunColor.rgb * through * 0.4;
+    vec3 colour = albedo * (hemi + frame.sunColor.rgb * sun) +
+                  grassBlock.tip.rgb * frame.sunColor.rgb * through * 0.4 * shadow;
     outColor = vec4(colour, 1.0);
 }

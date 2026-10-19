@@ -51,14 +51,19 @@ GrassMesh buildGrassMesh(const GrassSettings& s) {
     const float halfWidth = std::max(0.001f, s.width) * 0.5f;
     // A tuft is not a star of blades from one point: the roots sit on a small disc, so at a metre or two the tuft reads
     // as a clump of grass instead of a spike. The radius follows the blade height, so a tuft keeps its proportions.
-    const float tuftRadius = height * 0.22f;
+    const float tuftRadius = height * 0.55f;
     // The blades fan out on the golden angle, so a tuft never looks like a symmetric star.
     const float kGolden = 2.39996323f;
     for (uint32_t b = 0; b < blades; ++b) {
         const float phi = float(b) * kGolden + 0.35f;
         const float outX = std::cos(phi), outZ = std::sin(phi);
-        // A third of the blades lean outward more than the rest, which is what gives a tuft its silhouette.
-        const float lean = 0.55f + 0.45f * float((b * 7) % 5) / 4.0f;
+        // Two hashes per blade, from the tuft seed: how far it leans out, and how tall it grows. A tuft of one height
+        // with every blade fanned the same looks planted; a real clump has short blades in the middle of tall ones.
+        const float h1 = std::fabs(std::sin(float(b) * 12.9898f + float(s.seed) * 78.233f) * 43758.5453f);
+        const float h2 = std::fabs(std::sin(float(b) * 39.3467f + float(s.seed) * 11.135f) * 24634.6345f);
+        const float r1 = h1 - std::floor(h1), r2 = h2 - std::floor(h2);
+        const float lean = 0.65f + 0.85f * r2;
+        const float bladeHeight = height * (0.66f + 0.34f * r1);
         const float root = tuftRadius * std::sqrt(float((b * 3) % 4) / 3.0f);
         const uint32_t first = uint32_t(m.positions.size());
         // Mostly-up normal with a third of the blade's facing, so the field shades as a soft mass instead of as flat
@@ -70,7 +75,7 @@ GrassMesh buildGrassMesh(const GrassSettings& s) {
             const float w = halfWidth * (1.0f - 0.92f * t * t);   // tapers to a near point
             // The blade leans outward as it rises: a cantilever, so the base never moves.
             const float reach = root + tuftRadius * lean * t * t;
-            const glm::vec3 mid(outX * reach, height * t, outZ * reach);
+            const glm::vec3 mid(outX * reach, bladeHeight * t, outZ * reach);
             const glm::vec3 side(-outZ * w, 0.0f, outX * w);
             m.positions.push_back(mid - side);
             m.normals.push_back(normal);

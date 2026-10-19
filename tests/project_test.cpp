@@ -320,7 +320,16 @@ static void testTerrainProject() {
           "terrain: grass and pines are scattered");
     check(terrain.contains("grass") && terrain["grass"].value("enabled", false) &&
               terrain["grass"].value("density", 0.0) > 0.0 && terrain["grass"].contains("includeLayers"),
-          "terrain: the new project grows grass on its first layer");
+          "terrain: the new project grows grass");
+    check(terrain["grass"]["includeLayers"].size() == 2,
+          "terrain: the meadow covers the moss and the heather, not just the valley floor");
+    // The vendored ground textures and the detail overlay are linked from the engine folder, relative to the project.
+    check(terrain["layers"][0].contains("diffuseMap") && terrain["layers"][0].contains("normalMap") &&
+              terrain["layers"][0].contains("aoMap"),
+          "terrain: layer 0 links the albedo, normal and occlusion of the vendored ground textures");
+    check(terrain.contains("detail") && terrain["detail"].contains("map") &&
+              terrain["detail"].value("metres", 0.0) > 0.0,
+          "terrain: the detail overlay is linked too");
 
     bool sculpted = false;
     for (const std::string& message : messages) {

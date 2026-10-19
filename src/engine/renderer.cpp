@@ -214,6 +214,8 @@ void Renderer::buildPipelines() {
                      rhi::Blend::None, {F::RGBA16F}, true);
     pGrass_ = make("grass", "grass", {S::Frame, S::ShaderMaterial}, true, rhi::Cull::None, true, true,
                    rhi::Blend::None, {F::RGBA16F}, true);
+    pTerrainShadow_ = make("terrain_shadow", "shadow_empty", {S::Frame}, true, rhi::Cull::None, true, true,
+                           rhi::Blend::None, {}, true);
     pUnderwater_ = make("fullscreen", "underwater", {S::Post}, false, rhi::Cull::None, false, false,
                         rhi::Blend::Alpha, {F::RGBA16F}, false);
 }
@@ -703,6 +705,20 @@ void Renderer::render(const OrbitCamera& cam, const std::vector<Model*>& models,
                 dev_.setViewport((c % 2) * kCascadeSize, (c / 2) * kCascadeSize, kCascadeSize, kCascadeSize);
                 for (const Rec& r : opaque)   // blended materials do not cast shadows
                     bindAndDraw(r, pShadow_.get(), shadowFrameSet_.get(), glm::vec4(0.0f, float(c), 0.0f, 0.0f));
+                // Terrain casts too (item 19): without it a hillside has no shadow of its own, and grass on the dark
+                // side of a ridge stays lit. Chunks outside this cascade's light frustum are skipped.
+                if (!terrain_.empty()) {
+                    dev_.bindPipeline(pTerrainShadow_.get());
+                    dev_.bindDescriptorSet(0, shadowFrameSet_.get());
+                    for (const TerrainDraw& t : terrain_) {
+                        if (boxOutsideFrustum(f.shadowMatrix[c], t.model, t.boundsMin, t.boundsMax, kCullMargin)) continue;
+                        PushConstants pc = pcWith(t.model, glm::vec4(float(c), 0.0f, 0.0f, 0.0f));
+                        dev_.bindVertexBuffer(t.vertices);
+                        dev_.bindIndexBuffer(t.indices);
+                        dev_.pushConstants(&pc, sizeof(pc));
+                        dev_.drawIndexed(t.indexCount);
+                    }
+                }
             }
         }
         dev_.endPass();

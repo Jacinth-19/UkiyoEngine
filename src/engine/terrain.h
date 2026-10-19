@@ -26,10 +26,11 @@ struct TerrainLayer {
     float slopeFade = 5.0f;                    // soft edge width of the slope band, degrees
     float tileMetres = 8.0f;                   // metres of ground per texture repeat
     // Image files, absolute once the scene is read. Empty means the layer has no such map: the diffuse is white, the
-    // normal is flat, and the roughness is the constant above.
+    // normal is flat, the occlusion is full, and the roughness is the constant above.
     std::string diffuseFile;
     std::string normalFile;
     std::string roughnessFile;                 // the red channel is the roughness
+    std::string aoFile;                        // the red channel is ambient occlusion; packed in the normal atlas
 };
 
 // The layers a new tile starts with: grass on the low gentle ground, rock on steep slopes, and pale rock at the top.
@@ -59,7 +60,7 @@ struct GrassSettings {
     bool enabled = false;
     // Candidates per square metre. The scatter puts one jittered candidate in every cell of a square grid whose side
     // is 1 / sqrt(density) metres, so this is the ceiling before the detail map and the layer masks thin it.
-    float density = 0.9f;
+    float density = 4.0f;
     // Image whose red channel scales the density. Empty means the detail map is full everywhere. Resampled to the
     // heightmap's sample grid, like a foliage density map.
     std::string densityMap;
@@ -69,9 +70,9 @@ struct GrassSettings {
     float slopeMax = 35.0f;
 
     // Blade size. The mesh is built at these metres and then scaled per instance.
-    float height = 0.45f;          // metres to the tip of the tallest blade
-    float width = 0.055f;          // metres across the base of one blade
-    uint32_t blades = 4;           // blades per tuft
+    float height = 0.44f;          // metres to the tip of the tallest blade
+    float width = 0.018f;          // metres across the base of one blade
+    uint32_t blades = 8;           // blades per tuft
     uint32_t segments = 4;         // quads along each blade; more segments bend more smoothly
     float scaleMin = 0.75f, scaleMax = 1.35f;
     uint32_t seed = 3;
@@ -103,10 +104,20 @@ struct GrassSettings {
     float flutter = 0.05f;         // metres of fast per-blade sway
 
     // Albedo at the root and at the tip, linear. The tip is also what the sun shines through.
-    glm::vec3 baseColour{0.055f, 0.115f, 0.030f};
-    glm::vec3 tipColour{0.34f, 0.52f, 0.15f};
+    glm::vec3 baseColour{0.095f, 0.165f, 0.052f};
+    glm::vec3 tipColour{0.46f, 0.60f, 0.235f};
     float translucency = 0.5f;     // 0 to 1: how much sun comes through a lit tip
     float tipDarkening = 0.35f;    // fake AO: 0 leaves the root at full colour, 1 darkens it to black
+};
+
+// A detail overlay for a whole tile: one small texture tiled in world space over the blended layers, plus the
+// large-scale colour variation that breaks up the repeat of a single layer. Production terrains lean on this when a
+// layer's texture tiles every few metres; without it a field is visibly a grid under the camera.
+struct TerrainDetail {
+    std::string file;        // image; empty means no detail overlay (the shader binds white)
+    float metres = 1.7f;     // size of one repeat of `file`, in metres
+    float strength = 0.55f;  // 0 to 1: how much the overlay modulates the albedo near the camera
+    float macro = 0.30f;     // 0 to 1: how strongly the large-scale variation tints the albedo
 };
 
 // What a terrain instance stores in the scene file (item 18). The instance's position is the tile origin.
@@ -120,6 +131,7 @@ struct TerrainSettings {
     // Layer mask images (item 18, step 4), absolute once the scene is read. Each is RGBA: its four channels are layers
     // 0 to 3 (or 4 to 7 for the second file). Empty means no layer masks were saved.
     std::vector<std::string> maskFiles;
+    TerrainDetail detail;
     // Grass (item 19). Off unless a scene or the editor turns it on.
     GrassSettings grass;
 };
