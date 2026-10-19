@@ -70,6 +70,16 @@ ukiyo_editor --selftest           run the editor's built-in checks and exit
 
 Without `--project` the editor uses the engine checkout, as it did before projects existed.
 
+## Design preview
+
+`docs/index.html` is a static mockup of the hub, the new-project dialog, and the splash. It uses the
+same layout, palette and the real progress lines (pulled from `project_template.cpp`), so the
+launcher can be reviewed without a Qt build. It is not part of the application.
+
+```
+python3 -m http.server 8000 --directory docs
+```
+
 ## Checks
 
 ```
