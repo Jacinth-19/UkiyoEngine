@@ -411,6 +411,7 @@ QWidget* HubWindow::buildAboutPage() {
     const char* features[][2] = {
         {"Anime pipeline", "Toon shading, outlines, face SDF and a node-based shader graph."},
         {"World building", "Terrain with layers and foliage, water with Gerstner waves, prefabs."},
+        {"Lighting", "Cascaded sun shadows, SSAO and traced bounce light at half resolution."},
         {"Game systems", "Jolt physics, Recast navigation, Lua scripts, particles and audio."},
         {"Networking", "UDP client and server sessions with reliable, ordered messages."},
     };
