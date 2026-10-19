@@ -125,7 +125,7 @@ Every push builds everything and runs:
 ./build/network_test
 ./build/project_test
 ./build/vgeom_test        # 29 checks
-./build/motion_test       # 25 checks
+./build/motion_test       # 31 checks
 ./build/motion_demo renders/motion-demo.png
 QT_QPA_PLATFORM=offscreen ./build/ukiyo_hub --selftest
 ```

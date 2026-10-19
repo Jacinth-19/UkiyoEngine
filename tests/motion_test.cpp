@@ -199,6 +199,41 @@ int main() {
         check(std::fabs(controller.yaw() - 1.5708f) < 0.05f, "the controller turns the body to the requested facing");
     }
 
+    // ---- Inertialization ------------------------------------------------------------------------------------
+    {
+        const glm::vec3 p(0.4f, -0.1f, 0.25f);
+        const glm::vec3 v(1.3f, 0.2f, -0.7f);
+        check(glm::length(inertialize(p, v, 0.0f) - p) < 1e-5f, "the offset starts at the outgoing difference");
+        const float eps = 1e-3f;
+        const glm::vec3 vStart = (inertialize(p, v, eps) - inertialize(p, v, 0.0f)) / eps;
+        check(glm::length(vStart - v) < 0.02f, "the offset starts with the outgoing velocity");
+        check(glm::length(inertialize(p, v, 1.0f)) < 1e-5f, "the offset is gone at the end of the blend");
+        const glm::vec3 vEnd = (inertialize(p, v, 1.0f) - inertialize(p, v, 1.0f - eps)) / eps;
+        check(glm::length(vEnd) < 0.02f, "the offset ends at rest, so the blend has no pop");
+
+        // And through the player: a jump must not stop the character for a frame, which is what a crossfade did.
+        MotionPlayer player2;
+        player2.setDatabase(&database);
+        player2.start(database.entryAt(0, 0));
+        player2.setTarget(glm::vec3(0.0f, 0.0f, 1.4f), 0.0f);
+        std::vector<glm::vec3> a, b;
+        glm::vec3 ra(0.0f), rb(0.0f);
+        glm::quat qa(1.0f, 0.0f, 0.0f, 0.0f), qb(1.0f, 0.0f, 0.0f, 0.0f);
+        for (int i = 0; i < 120; ++i) {
+            player2.update(1.0f / 30.0f);
+            if (player2.matchCount() > 0 && i > 60) break;
+        }
+        // Sample either side of the seam by 1/30 s and compare the speed to the clip's own.
+        player2.sample(&a, &ra, &qa);
+        player2.update(1.0f / 30.0f);
+        player2.sample(&b, &rb, &qb);
+        check(a.size() == b.size() && !a.empty(), "the inertialized pose keeps its joint count");
+        if (a.size() == b.size() && !a.empty()) {
+            const float speed = glm::length(b[0] - a[0]) * 30.0f;
+            check(speed > 1.0f, "the pose keeps moving through a match instead of stopping dead");
+        }
+    }
+
     std::printf("MOTION: %d checks, %d failures\n", gChecks, gFailures);
     return gFailures == 0 ? 0 : 1;
 }

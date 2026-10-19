@@ -509,13 +509,42 @@ void MotionPlayer::update(float dt) {
     const float stay = currentEntry >= 0 ? database_->continuationCost(query, currentEntry, matchInterval_) : kInf;
     if (winnerCost + database_->settings().switchMargin >= stay && blend_ >= 1.0f) return;
 
-    // Sample the outgoing pose before the jump, so the blend starts from what is on screen.
+    // Sample the outgoing pose and its velocity before the jump, so the blend starts from what is on screen and at
+    // the speed it was moving.
     std::vector<glm::vec3> outPositions;
     glm::vec3 outRoot(0.0f);
     glm::quat outRot(1.0f, 0.0f, 0.0f, 0.0f);
     sample(&outPositions, &outRoot, &outRot);
-    blendFrom_ = outPositions;
-    blendRoot_ = outRoot;
+    const MotionClip& fromClip = database_->clip(index_);
+    const int c0 = std::clamp(int(std::floor(frame_)), 0, fromClip.frameCount() - 1);
+    const int c1 = std::min(c0 + 1, fromClip.frameCount() - 1);
+    std::vector<glm::vec3> outVel(outPositions.size(), glm::vec3(0.0f));
+    for (size_t j = 0; j < outVel.size() && j < fromClip.frames[size_t(c0)].world.size(); ++j)
+        outVel[j] = (fromClip.frames[size_t(c1)].world[j] - fromClip.frames[size_t(c0)].world[j]) * fromClip.fps;
+    const glm::vec3 outRootVel =
+        (fromClip.frames[size_t(c1)].rootPos - fromClip.frames[size_t(c0)].rootPos) * fromClip.fps;
+    outRoot = glm::mix(fromClip.frames[size_t(c0)].rootPos, fromClip.frames[size_t(c1)].rootPos,
+                       std::clamp(frame_ - float(c0), 0.0f, 1.0f));
+
+    // The incoming pose and its own velocity. What the inertialization has to cancel is the difference between the
+    // two, in position and in velocity, both measured at the instant of the jump.
+    const MotionClip& toClip = database_->clip(database_->entry(winner).clip);
+    const MotionFrame& inFrame = toClip.frames[size_t(database_->entry(winner).frame)];
+    const int toFrame = database_->entry(winner).frame;
+    const int toNext = std::min(toFrame + 1, toClip.frameCount() - 1);
+    std::vector<glm::vec3> toVel(inFrame.world.size(), glm::vec3(0.0f));
+    for (size_t j = 0; j < toVel.size(); ++j)
+        toVel[j] = (toClip.frames[size_t(toNext)].world[j] - inFrame.world[j]) * toClip.fps;
+
+    blendFrom_.resize(outPositions.size());
+    blendVel_.resize(outPositions.size());
+    for (size_t j = 0; j < outPositions.size(); ++j) {
+        const glm::vec3 toPos = j < inFrame.world.size() ? inFrame.world[j] : outPositions[j];
+        blendFrom_[j] = outPositions[j] - toPos;
+        blendVel_[j] = (j < outVel.size() ? outVel[j] : glm::vec3(0.0f)) - (j < toVel.size() ? toVel[j] : glm::vec3(0.0f));
+    }
+    blendRoot_ = outRoot - inFrame.rootPos;
+    blendRootVel_ = outRootVel - (toClip.frames[size_t(toNext)].rootPos - inFrame.rootPos) * toClip.fps;
     blendRot_ = outRot;
 
     index_ = winner;
@@ -540,10 +569,15 @@ void MotionPlayer::sample(std::vector<glm::vec3>* positions, glm::vec3* rootPos,
     const glm::vec3 p = glm::mix(a.rootPos, b.rootPos, t);
     const glm::quat r = glm::slerp(a.rootRot, b.rootRot, t);
     if (blend_ < 1.0f && blendFrom_.size() == positions->size()) {
-        const float w = blend_ * blend_ * (3.0f - 2.0f * blend_);
-        for (size_t j = 0; j < positions->size(); ++j) (*positions)[j] = glm::mix(blendFrom_[j], (*positions)[j], w);
-        if (rootPos) *rootPos = glm::mix(blendRoot_, p, w);
-        if (rootRot) *rootRot = glm::slerp(blendRot_, r, w);
+        // Inertialization: subtract the decaying offset instead of crossing to the new pose. The offset starts at the
+        // old pose's position *and* velocity, so the seam does not stop the character dead the way a crossfade does.
+        const float s = blend_;
+        for (size_t j = 0; j < positions->size(); ++j) {
+            const glm::vec3 v = j < blendVel_.size() ? blendVel_[j] * blendTime_ : glm::vec3(0.0f);
+            (*positions)[j] += inertialize(blendFrom_[j], v, s);
+        }
+        if (rootPos) *rootPos = p + inertialize(blendRoot_, blendRootVel_ * blendTime_, s);
+        if (rootRot) *rootRot = glm::slerp(blendRot_, r, s);
         return;
     }
     if (rootPos) *rootPos = p;
@@ -552,6 +586,12 @@ void MotionPlayer::sample(std::vector<glm::vec3>* positions, glm::vec3* rootPos,
 
 // ---------------------------------------------------------------------------------------------------------------
 // Retarget
+
+glm::vec3 inertialize(glm::vec3 p, glm::vec3 v, float s) {
+    s = std::clamp(s, 0.0f, 1.0f);
+    const float s3 = s * s * s, s4 = s3 * s, s5 = s4 * s;
+    return p + v * s - (p * 10.0f + v * 6.0f) * s3 + (p * 15.0f + v * 8.0f) * s4 - (p * 6.0f + v * 3.0f) * s5;
+}
 
 void MotionController::setDatabase(const MotionDatabase* database) {
     database_ = database;

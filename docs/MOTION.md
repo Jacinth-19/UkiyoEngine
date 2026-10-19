@@ -82,8 +82,22 @@ frame always looks like a perfect local fit for a straight walk; comparing with 
 That mistake is exactly what the first version of the playback did, and the test that walks for three seconds now
 catches it.
 
-On a jump, the player snapshots the pose it was showing, switches to the new clip and frame, and crossfades the joint
-positions over 0.18 s with a smoothstep. The root rotation is slerped with the same weight.
+On a jump, the player snapshots the pose it was showing **and its velocity**, switches to the new clip and frame, and
+*inertializes*: instead of crossing to the new pose, it subtracts a decaying offset from it. The offset's curve is the
+quintic that starts at the old pose's position and velocity and ends at zero position and velocity:
+
+```
+x(s) = p + v·s − (10p + 6v)s³ + (15p + 8v)s⁴ − (6p + 3v)s⁵
+```
+
+`p` and `v` are the position and velocity differences between the outgoing and incoming poses at the instant of the
+jump, and `v` is scaled by the blend time because the polynomial's variable is normalised progress, not seconds. The
+blend runs for 0.20 s; root rotation is slerped with the same weight.
+
+The difference from a crossfade is entirely at `s = 0`. A smoothstep also arrives at rest, but it *starts* at rest, so
+a crossfade stops the character dead for a frame at every match — invisible in a still, obvious in motion. The quintic
+matches `x'(0)` as well, so the seam is C1. `tests/motion_test.cpp` checks both ends of the curve directly, plus the
+property that matters in play: the pose is still moving one frame after a match.
 
 ## 5. The controller
 
@@ -126,7 +140,7 @@ not solved for, only directions.
 `tests/motion_test.cpp` runs without a device and is built as `motion_test`; CI runs it on every push.
 
 ```sh
-./build/motion_test     # 25 checks, exit code 0
+./build/motion_test     # 31 checks, exit code 0
 ./build/motion_demo renders/motion-demo.png
 ```
 
@@ -139,13 +153,10 @@ character rather than in clip space, stops when the stick is released, and turns
 
 ## 8. Limits
 
-* **No inertialization.** Jumps crossfade positions over 0.18 s; a production matcher would blend the *velocities*
-  and decay them with a spring, which removes the softness at the seam.
 * **No foot locking.** The database keeps the capture's feet; there is no IK pass that plants them on slopes.
 * **No tags or events.** LAFAN1 has footsteps and jumps marked in its own tooling; this reader ignores annotations.
 * **The search is static.** Clips added at runtime need a rebuild (8.7 ms for 12 000 frames, so that is cheap).
 * **Directional retarget only** (§6).
 * **No editor page yet.** The API is in `src/engine/motion_match.h`; the animation panel still plays clip libraries.
 
-Those are the honest gaps, and they are the order the system would grow: foot locking first, then inertialization,
-then annotations.
+Those are the honest gaps, and they are the order the system would grow: foot locking first, then annotations.

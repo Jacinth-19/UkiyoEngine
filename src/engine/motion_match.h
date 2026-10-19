@@ -143,8 +143,20 @@ private:
     MotionSettings settings_{};
 };
 
+// The decay curve at the heart of an inertialized blend: the offset that has to be subtracted from a new clip so the
+// pose leaves the old one at the old one's own velocity. `p` is the position offset at the jump, `v` the velocity
+// offset, `s` the blend's progress in 0..1.
+//
+// It is the quintic that satisfies x(0)=p, x'(0)=v, x''(0)=0, x(1)=0, x'(1)=0, x''(1)=0, in closed form:
+//
+//     x(s) = p + v s - (10p + 6v) s^3 + (15p + 8v) s^4 - (6p + 3v) s^5
+//
+// A smoothstep crossfade also ends at zero velocity, but it *starts* at zero velocity, so the character stops dead
+// for a frame at every jump. Matching x'(0) is what removes that stop; that is the whole of inertialization.
+glm::vec3 inertialize(glm::vec3 p, glm::vec3 v, float s);
+
 // Plays the database back. update() advances at the clip's own frame rate, re-queries every `matchInterval`
-// seconds, and crossfades the joint positions over `blendTime` when the match jumps. The result is a pose in the
+// seconds, and inertializes the joint positions over `blendTime` when the match jumps. The result is a pose in the
 // same space as the clip: world joint positions and a yaw-only root rotation.
 class MotionPlayer {
 public:
@@ -176,13 +188,16 @@ private:
     float facing_ = 0.0f;
     float sinceMatch_ = 0.0f;
     float blend_ = 1.0f;           // 0 at a jump, 1 once the blend is done
-    float blendTime_ = 0.18f;
+    float blendTime_ = 0.20f;
     float matchInterval_ = 0.16f;
     float cost_ = 0.0f;
     int matches_ = 0;
-    // The pose we blended from, sampled at the moment of the jump.
+    // At a jump: the outgoing pose and its velocity, and the incoming pose's velocity. Their difference is the
+    // velocity the inertialization has to start from.
     std::vector<glm::vec3> blendFrom_;
+    std::vector<glm::vec3> blendVel_;
     glm::vec3 blendRoot_{0.0f};
+    glm::vec3 blendRootVel_{0.0f};
     glm::quat blendRot_{1.0f, 0.0f, 0.0f, 0.0f};
 };
 
