@@ -6836,7 +6836,9 @@ bool MainWindow::applySceneDocument(const QJsonObject& root, const QString& sour
     st.fogDensity = std::clamp(float(s.value("fogDensity").toDouble(st.fogDensity)), 0.0f, 0.1f);
     st.fogSun = std::clamp(float(s.value("fogSun").toDouble(st.fogSun)), 0.0f, 1.0f);
     st.ssao = std::clamp(float(s.value("ssao").toDouble(st.ssao)), 0.0f, 1.0f);
-    st.multiBounceAO = s.value("multiBounceAO", st.multiBounceAO).toBool();
+    // QJsonObject::value has no "default" overload: a scene written before this key existed keeps the setting's
+    // own default.
+    if (s.contains("multiBounceAO")) st.multiBounceAO = s.value("multiBounceAO").toBool();
     st.gi = std::clamp(float(s.value("gi").toDouble(st.gi)), 0.0f, 1.0f);
     st.giRadius = std::clamp(float(s.value("giRadius").toDouble(st.giRadius)), 2.0f, 40.0f);
     st.giRays = std::clamp(float(s.value("giRays").toDouble(st.giRays)), 1.0f, 8.0f);
