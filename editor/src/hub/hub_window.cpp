@@ -152,7 +152,10 @@ QWidget* HubWindow::buildRail() {
     mark->setObjectName(QStringLiteral("hubBrandMark"));
     mark->setAttribute(Qt::WA_TranslucentBackground, true);
     mark->setStyleSheet(QStringLiteral("background: transparent;"));
-    QPixmap markPixmap(engineRoot() + QStringLiteral("/editor/res/brand/ukiyo-seal-64.png"));
+    // The 32 px seal is the block of pigment without the glyph: at the 26 px the rail draws, 浮 inside the stamp is
+    // mud. The larger seals still carry the character, for sizes where it can be read.
+    QPixmap markPixmap(engineRoot() + QStringLiteral("/editor/res/brand/ukiyo-seal-32.png"));
+    if (markPixmap.isNull()) markPixmap.load(engineRoot() + QStringLiteral("/editor/res/brand/ukiyo-seal-64.png"));
     if (markPixmap.isNull()) markPixmap.load(engineRoot() + QStringLiteral("/editor/res/brand/ukiyo-mark-64.png"));
     if (!markPixmap.isNull()) {
         const int px = 26;
