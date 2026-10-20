@@ -305,7 +305,9 @@ void SplashScreen::paintArtwork(QPainter& painter, qreal s) {
     painter.drawText(QPointF(wordX, wordY), QStringLiteral("UKIYO"));
 
     // The mark sits on the wordmark's cap line, at the left of it: the seal is the only red here, as in the PNG.
-    const QPixmap mark = QPixmap(QStringLiteral(UKIYO_ROOT) + QStringLiteral("/editor/res/brand/ukiyo-mark.png"))
+    // Loaded at 256 and drawn at 128: the seal's glyph is only ~5 % of the mark's width, so it needs the source pixels
+    // to survive the downscale.
+    const QPixmap mark = QPixmap(QStringLiteral(UKIYO_ROOT) + QStringLiteral("/editor/res/brand/ukiyo-mark-256.png"))
                              .scaled(int(128.0 * s), int(128.0 * s), Qt::KeepAspectRatio, Qt::SmoothTransformation);
     if (!mark.isNull())
         painter.drawPixmap(QPointF(kMargin * s, wordY - 92.0 * s), mark);
@@ -326,13 +328,14 @@ void SplashScreen::paintArtwork(QPainter& painter, qreal s) {
     painter.setPen(QColor(kMuted.red(), kMuted.green(), kMuted.blue(), 210));
     painter.drawText(QPointF(wordX + 2.0 * s, wordY + 54.0 * s), QStringLiteral("浮世エンジン"));
 
-    // Version, top right, over the sky rather than the island.
+    // Version, bottom right, on the dark cloud mass. It was in the top right corner, where it sat on the sun disc in a
+    // grey that disappeared into the orange; the foot of the card is where a print puts its colophon anyway.
     const QString version = QStringLiteral("v0.1");
     const QFont versionFont = sized(font(), 8.0 * s, QFont::Normal, 0.8 * s);
     const qreal versionWidth = QFontMetricsF(versionFont).horizontalAdvance(version);
     painter.setFont(versionFont);
-    painter.setPen(QColor(kDim.red(), kDim.green(), kDim.blue(), 220));
-    painter.drawText(QPointF(width() - kMargin * s - versionWidth, 46.0 * s), version);
+    painter.setPen(QColor(kMuted.red(), kMuted.green(), kMuted.blue(), 150));
+    painter.drawText(QPointF(width() - kMargin * s - versionWidth, 511.0 * s), version);
 
     // ---- the status block, low in the left column
     const qreal typeWidth = std::min(430.0 * s, width() - kMargin * 2.0 * s);

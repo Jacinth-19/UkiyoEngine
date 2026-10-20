@@ -521,12 +521,12 @@ int captureSplash(const QString& dir) {
     splash.setCaption(QStringLiteral("~/Projects/UkiyoEngine"));
     splash.resize(960, 540);
 
-    // Beat 1. The mark has a settle animation; let it run so the grab is the design, not a half-faded frame.
-    splash.skipIntro();
+    // Beat 1. The intro runs rather than being skipped: skipIntro() sends the screen straight to the artwork, so the
+    // grab has to wait out the mark's own hold (kMarkHoldMs) to be the design the launcher actually opens on.
     splash.setStage(0.0f, QString());
     QElapsedTimer beat;
     beat.start();
-    while (beat.elapsed() < 260) QCoreApplication::processEvents(QEventLoop::AllEvents, 16);
+    while (beat.elapsed() < 700) QCoreApplication::processEvents(QEventLoop::AllEvents, 16);
     if (!splash.grab().save(dir + QStringLiteral("/splash_mark.png"))) {
         std::fprintf(stderr, "could not write splash_mark.png\n");
         return 1;
@@ -535,7 +535,8 @@ int captureSplash(const QString& dir) {
     // Beat 2: the artwork, a heading, and the bar part-way through the work the splash is for.
     splash.setStage(0.36f, QStringLiteral("Loading renderer and assets"));
     beat.restart();
-    while (beat.elapsed() < 900) QCoreApplication::processEvents(QEventLoop::AllEvents, 16);
+    // Long enough for the crossfade to finish, so the grab is the second beat and not the middle of the transition.
+    while (beat.elapsed() < 1100) QCoreApplication::processEvents(QEventLoop::AllEvents, 16);
     if (!splash.grab().save(dir + QStringLiteral("/splash.png"))) {
         std::fprintf(stderr, "could not write splash.png\n");
         return 1;

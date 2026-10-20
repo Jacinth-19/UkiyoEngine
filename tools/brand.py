@@ -330,9 +330,11 @@ def main():
     os.makedirs(RES_DIR, exist_ok=True)
     os.makedirs(DOC_DIR, exist_ok=True)
 
-    mark(512).save(os.path.join(RES_DIR, "ukiyo-mark.png"))
+    # The seal belongs to the mark: drawing the ring alone and adding the stamp later produced assets that read as a
+    # letter C wherever they were used on their own. Only the 32 px mark stays bare, where the glyph is mud anyway.
+    mark_with_seal(512).save(os.path.join(RES_DIR, "ukiyo-mark.png"))
     for s in (256, 128):
-        mark(s).save(os.path.join(RES_DIR, f"ukiyo-mark-{s}.png"))
+        mark_with_seal(s).save(os.path.join(RES_DIR, f"ukiyo-mark-{s}.png"))
     # At 64 px the character inside the seal is mud; the block still reads as a dot of pigment.
     hanko(64).save(os.path.join(RES_DIR, "ukiyo-mark-64.png"))
     mark(32).save(os.path.join(RES_DIR, "ukiyo-mark-32.png"))
