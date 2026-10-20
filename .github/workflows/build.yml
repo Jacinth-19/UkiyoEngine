@@ -175,11 +175,11 @@ jobs:
   #   * Everything else (GLM, GLFW, Jolt, Lua, miniaudio, Recast, ...) is vendored under third_party/ and needs no
   #     package manager at all — which is exactly why the checkout and the build are the only network-dependent steps.
   #
-  # ccache is deliberately not used here: its MSVC support only works through the Ninja/cl wrapper path, and the cache
-  # would be cold for every runner image update. Qt and the Vulkan SDK are cached instead, and the build itself uses
-  # /MP for parallel translation units.
+  # ccache is deliberately not used here: its MSVC support is young (it has to stay away from /Zi debug info and PDBs),
+  # and a cache broken by a runner image update is worse than no cache. Qt and the Vulkan SDK are cached instead, and
+  # the Ninja build compiles in parallel.
   windows:
-    runs-on: windows-latest
+    runs-on: windows-2022
     defaults:
       run:
         shell: pwsh
@@ -207,27 +207,39 @@ jobs:
           }
           Write-Host "VULKAN_SDK=$env:VULKAN_SDK"
 
+      # Ninja rather than the Visual Studio generator: it is the configuration MSVC developers actually use, it compiles
+      # translation units in parallel by default, and it puts the binaries in one directory instead of per-config
+      # subdirectories. vcvars is what supplies cl.exe and the SDK to CMake.
+      - name: Set up MSVC
+        uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: x64
+
       # Configure and build are teed to files so a failure can be lifted into annotations: the job log lives behind a
       # signed URL on a host this repository's tooling cannot always reach, and an annotation is readable from the API.
       - name: Configure CMake
         run: |
-          cmake -B build -G "Visual Studio 17 2022" -A x64 -DCMAKE_BUILD_TYPE=Release 2>&1 |
-            Tee-Object -FilePath configure.log
+          cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=Release 2>&1 | Tee-Object -FilePath configure.log
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
       - name: Build Everything
         run: |
           $env:CL = "/MP"
-          cmake --build build --config Release --parallel 8 2>&1 | Tee-Object -FilePath build.log
+          cmake --build build 2>&1 | Tee-Object -FilePath build.log
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
       - name: Annotate configure errors
         if: failure()
         run: |
           if (Test-Path configure.log) {
-            Select-String -Path configure.log -Pattern "CMake Error|CMake Warning at|Error at|error" |
-              Select-Object -First 25 |
-              ForEach-Object { Write-Host ("::error::" + ($_.Line -replace '%','%25')) }
+            # Context matters: "CMake Error at CMakeLists.txt:2 (project):" says nothing on its own, the line under it
+            # names the compiler or generator that was missing.
+            Get-Content configure.log | Select-String -Pattern "CMake Error" -Context 0,4 |
+              Select-Object -First 12 |
+              ForEach-Object {
+                Write-Host ("::error::" + ($_.Line -replace '%','%25'))
+                $_.Context.PostContext | ForEach-Object { Write-Host "::error::  $_" }
+              }
           }
 
       - name: Annotate compile errors
@@ -242,25 +254,25 @@ jobs:
       # The same tests the Linux job runs, in the same order. A failure here is a portability bug in the engine, not in
       # the test: none of these need a window, a GPU or a network.
       - name: Run Systems Test
-        run: ./build/Release/systems_test.exe
+        run: ./build/systems_test.exe
       - name: Run Network Test
-        run: ./build/Release/network_test.exe
+        run: ./build/network_test.exe
       - name: Run Project Template Test
-        run: ./build/Release/project_test.exe
+        run: ./build/project_test.exe
       - name: Run Virtual Geometry Test
-        run: ./build/Release/vgeom_test.exe
+        run: ./build/vgeom_test.exe
       - name: Run Motion Matching Test
-        run: ./build/Release/motion_test.exe
+        run: ./build/motion_test.exe
       - name: Run Real-Time GI Test
-        run: ./build/Release/gi_test.exe
+        run: ./build/gi_test.exe
       - name: Run Input System Test
-        run: ./build/Release/input_test.exe
+        run: ./build/input_test.exe
 
       # The hub is the only Qt program CI can run without a desktop: offscreen, the same self-test the Linux job runs.
       - name: Run Hub Self-Test
         run: |
           $env:QT_QPA_PLATFORM = "offscreen"
-          ./build/Release/ukiyo_hub.exe --selftest
+          ./build/ukiyo_hub.exe --selftest
 
       - name: Upload build log
         if: always()
