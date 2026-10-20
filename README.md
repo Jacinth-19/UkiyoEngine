@@ -290,5 +290,7 @@ GPU — the screenshots in this README are that pipeline's output. `tests/` also
 ## Status
 
 The engine builds and tests on Linux CI, and the editor and hub run on Windows, Linux and macOS. Known gaps are listed
-at the end of each doc — the largest are GPU-driven virtual geometry (no compute or multi-draw in the RHI yet) and
-contact occlusion in the traced bounce light (its rays start 5 cm off the surface).
+at the end of each doc — the largest is GPU-driven virtual geometry, which needs compute or multi-draw in the RHI. The
+traced bounce light does not see creases narrower than 5 cm, and that has been measured rather than estimated: closing
+it changes 0.35 % of pixels in the reference and costs 17 % more march, which is why it is a documented trade
+([docs/PATHTRACE.md](docs/PATHTRACE.md)).

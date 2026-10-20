@@ -254,11 +254,23 @@ On an iGPU the editor draws the same scene with rasterisation, and the differenc
 
 The honest gaps that remain are contact occlusion and anything that is not terrain. SSAO covers the first at a
 fraction of a millisecond, and the estimator's rays start 5 cm off the surface, so a crease narrower than that is not
-seen. The second is structural: the rays march a heightfield, so a character, a rock or a tree standing between a
+seen.
+
+The second gap is structural: the rays march a heightfield, so a character, a rock or a tree standing between a
 surface and the sky does not block the bounce. Their contact is still darkened by SSAO, and they still cast into the
 sun's cascade; what they cannot do is change the colour of the light in their shadow. Closing that needs a
 three-dimensional acceleration structure, which is exactly the thing an iGPU cannot traverse fast enough to be worth
 the trade — so it is written down rather than hidden.
+
+**How much the first one costs, measured rather than assumed.** The contact term was priced by building the tracer
+twice: once as it ships (50 mm ray offset, 80 mm minimum march step) and once with a 2 mm offset, a 1.5 mm
+self-intersection plane test and a 4 mm step floor, at 96 samples a pixel on the same view. The two images differ by
+**RMSE 0.0028 — 0.71 of 255 levels** — with a difference above a visible 2/255 in **0.35 % of pixels**, almost all of
+them single-pixel creases at the foot of a ridge. The estimator's own error against either reference is 0.0410,
+fifteen times larger and spread over the whole frame, so the crease term sits an order of magnitude below the noise
+the pass already has. The fine march costs 17 % more time in the CPU model and would cost proportionally more taps on
+the GPU, so it is not shipped: an iGPU pass that pays a fifth more for a signal it cannot resolve is the wrong trade.
+What the experiment bought is a limitation with a number on it, which is worth more than the assumption it replaced.
 
 ## 7. Reproducing
 
