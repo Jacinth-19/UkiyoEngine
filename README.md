@@ -204,8 +204,8 @@ Regenerate the identity with:
 python3 tools/brand.py .     # needs pillow + numpy
 ```
 
-This writes the mark at 512/256/128/64/32 px, the seal, the horizontal lockup, the stacked splash mark and the README
-plate into `editor/res/brand/` and `docs/brand/`.
+This writes the mark at 512/256/128 px and its stamp form at 64 and 32, the seal alone, the horizontal lockup, the
+stacked splash mark and the README plate into `editor/res/brand/` and `docs/brand/`.
 
 ## Textures
 
