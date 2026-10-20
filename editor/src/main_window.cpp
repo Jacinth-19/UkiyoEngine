@@ -6834,7 +6834,7 @@ bool MainWindow::applySceneDocument(const QJsonObject& root, const QString& sour
     st.gi = std::clamp(float(s.value("gi").toDouble(st.gi)), 0.0f, 1.0f);
     st.giRadius = std::clamp(float(s.value("giRadius").toDouble(st.giRadius)), 2.0f, 40.0f);
     st.giRays = std::clamp(float(s.value("giRays").toDouble(st.giRays)), 1.0f, 8.0f);
-    st.giDenoise = s.value("giDenoise", st.giDenoise).toBool();
+    if (s.contains("giDenoise")) st.giDenoise = s.value("giDenoise").toBool();
     st.ssr = std::clamp(float(s.value("ssr").toDouble(st.ssr)), 0.0f, 1.0f);
     st.depthNormalOutline = std::clamp(float(s.value("depthNormalOutline").toDouble(st.depthNormalOutline)), 0.0f, 1.0f);
     st.flare = std::clamp(float(s.value("flare").toDouble(st.flare)), 0.0f, 1.0f);
