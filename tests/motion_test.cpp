@@ -57,6 +57,70 @@ MotionClip makeWalk(const char* name, float speed, float turnRate, int frames = 
     return clip;
 }
 
+// A walk cycle with real legs and planted feet: the hips advance at `speed`, and each foot is pinned in world space
+// for the stance half of its cycle and swings forward for the other half. That is the shape a capture has, and the
+// shape foot locking exists to keep. The leg is solved at build time with the same two-bone geometry the lock uses, so
+// the clip's bone lengths are constant and a correction that stretches them is a bug in the lock, not in the test.
+constexpr float kThigh = 0.50f;
+constexpr float kShin = 0.50f;
+constexpr float kAnkleY = 0.08f, kHipY = 0.90f;
+
+MotionClip makeSteppingWalk(const char* name, float speed, int frames = 210, float fps = 30.0f) {
+    MotionClip clip;
+    clip.name = name;
+    clip.fps = fps;
+    clip.root = 0;
+    clip.joints = {
+        {"Hips", -1, glm::vec3(0.0f)},
+        {"LeftUpLeg", 0, glm::vec3(0.0f)},   {"LeftLowerLeg", 1, glm::vec3(0.0f)},
+        {"LeftFoot", 2, glm::vec3(0.0f)},    {"LeftToe", 3, glm::vec3(0.0f)},
+        {"RightUpLeg", 0, glm::vec3(0.0f)},  {"RightLowerLeg", 5, glm::vec3(0.0f)},
+        {"RightFoot", 6, glm::vec3(0.0f)},   {"RightToe", 7, glm::vec3(0.0f)},
+    };
+    const float cycle = 0.8f;                 // seconds for a full stride
+    const float stride = speed * cycle;
+    clip.frames.resize(size_t(frames));
+    for (int i = 0; i < frames; ++i) {
+        const float t = float(i) / fps;
+        MotionFrame& f = clip.frames[size_t(i)];
+        f.world.assign(clip.joints.size(), glm::vec3(0.0f));
+        const glm::vec3 hips(0.0f, 0.95f, speed * t);
+        f.world[0] = hips;
+        f.rootPos = hips;
+        for (int side = 0; side < 2; ++side) {
+            const float x = side == 0 ? 0.11f : -0.11f;
+            const float phase = t / cycle + (side == 0 ? 0.0f : 0.5f);
+            const float wrapped = phase - std::floor(phase);
+            const float plantZ = std::floor(phase) * stride;
+            // Stance pins the foot at the plant point; swing carries it to the next one.
+            glm::vec3 ankle(x, kAnkleY, plantZ);
+            if (wrapped >= 0.5f) {
+                const float sw = (wrapped - 0.5f) * 2.0f;
+                const float e = sw * sw * (3.0f - 2.0f * sw);
+                ankle.z = plantZ + stride * e;
+                ankle.y = kAnkleY + 0.14f * std::sin(3.14159265f * sw);
+            }
+            const glm::vec3 hip(x, kHipY, speed * t);
+            // Two-bone solve for the knee, bending forward.
+            glm::vec3 toAnkle = ankle - hip;
+            float d = glm::length(toAnkle);
+            d = glm::clamp(d, std::fabs(kThigh - kShin) + 1e-3f, kThigh + kShin - 1e-3f);
+            const glm::vec3 u = glm::normalize(toAnkle);
+            glm::vec3 bend = glm::vec3(0.0f, 0.0f, 1.0f) - u * u.z;
+            bend = glm::length(bend) > 1e-4f ? glm::normalize(bend) : glm::vec3(0.0f, 0.0f, 1.0f);
+            const float a = (kThigh * kThigh - kShin * kShin + d * d) / (2.0f * d);
+            const float h = std::sqrt(std::max(0.0f, kThigh * kThigh - a * a));
+            const glm::vec3 knee = hip + u * a + bend * h;
+            const int base = 1 + side * 4;
+            f.world[size_t(base + 0)] = hip;
+            f.world[size_t(base + 1)] = knee;
+            f.world[size_t(base + 2)] = ankle;
+            f.world[size_t(base + 3)] = ankle + glm::vec3(0.0f, -0.02f, 0.16f);
+        }
+    }
+    return clip;
+}
+
 const char* kTinyBvh = R"(HIERARCHY
 ROOT Hips
 {
@@ -357,6 +421,106 @@ Frame Time: 0.0333333
         controller.reset(glm::vec3(0.0f), 0.0f);
         for (int i = 0; i < 60; ++i) controller.update(glm::vec3(1.0f, 0.0f, 0.0f), 1.4f, 1.0f / 30.0f, 1.5708f);
         check(std::fabs(controller.yaw() - 1.5708f) < 0.05f, "the controller turns the body to the requested facing");
+    }
+
+    // ---- Foot locking --------------------------------------------------------------------------------------
+    // A walk built at 1.2 m/s, driven at 1.8: without a lock the planted foot has to skate 0.6 m/s backwards
+    // through the whole stance. That is the case the fix exists for, and it is deliberately worse than a real one —
+    // a real character accelerates through it, this one is held at the mismatch for seven seconds.
+    {
+        std::vector<MotionClip> stepping;
+        stepping.push_back(makeSteppingWalk("step", 1.2f));
+        MotionDatabase stepDb;
+        std::string stepError;
+        stepDb.build(std::move(stepping), MotionSettings{}, &stepError);
+        check(!stepDb.empty(), "the stepping walk builds a database");
+
+        const int kFootJoints[2] = {3, 7};
+        // Slide, in metres per frame, of any foot that is low enough to be in contact. Height alone decides what
+        // counts: it is the one signal the lock does not move, so the measurement cannot flatter itself.
+        const auto measure = [&](bool lock, float wishSpeed, float* travel, int* contactFrames,
+                                 float* worstLegError) {
+            MotionController controller;
+            controller.setDatabase(&stepDb);
+            controller.footLock().enabled = lock;
+            controller.reset(glm::vec3(0.0f), 0.0f);
+            std::vector<glm::vec3> last(2, glm::vec3(0.0f));
+            int lowRun[2] = {0, 0};
+            bool hasLast = false;
+            float slide = 0.0f;
+            int frames = 0;
+            float error = 0.0f;
+            for (int i = 0; i < 210; ++i) {
+                controller.update(glm::vec3(0.0f, 0.0f, 1.0f), wishSpeed, 1.0f / 30.0f, 0.0f);
+                const std::vector<glm::vec3>& pose = controller.pose();
+                if (pose.size() < 8) break;
+                for (int side = 0; side < 2; ++side) {
+                    const glm::vec3 foot = pose[size_t(kFootJoints[side])];
+                    const glm::vec3 knee = pose[size_t(kFootJoints[side] - 1)];
+                    const glm::vec3 hip = pose[size_t(kFootJoints[side] - 3)];
+                    // The lock must not stretch the leg, whatever it does to the foot.
+                    error = std::max(error, std::fabs(glm::length(knee - hip) - kThigh));
+                    error = std::max(error, std::fabs(glm::length(foot - knee) - kShin));
+                    // 3.5 cm over the ground: inside the stance and outside the swing, where the foot lifts 14 cm.
+                    // 3.5 cm over the ground: inside the stance and outside the swing, where the foot lifts 14 cm.
+                    // Only the steady part of a contact counts — three frames in — because the frame a foot touches
+                    // down and the frame it leaves both move by design, and a metric that includes them measures the
+                    // gait rather than the skate. The first half-second is skipped for the same reason: it is the
+                    // acceleration ramp, where no clip can be in step.
+                    const bool low = foot.y - controller.position().y < 0.035f;
+                    lowRun[side] = low ? lowRun[side] + 1 : 0;
+                    if (hasLast && i > 30 && lowRun[side] >= 3) {
+                        slide += glm::length(glm::vec2(foot.x - last[size_t(side)].x, foot.z - last[size_t(side)].z));
+                        ++frames;
+                    }
+                    last[size_t(side)] = foot;
+                }
+                hasLast = true;
+            }
+            *travel = controller.position().z;
+            *contactFrames = frames;
+            *worstLegError = error;
+            return frames > 0 ? slide / float(frames) : 0.0f;
+        };
+
+        float travelOff = 0.0f, travelOn = 0.0f, legErrorOff = 0.0f, legErrorOn = 0.0f;
+        int framesOff = 0, framesOn = 0;
+        const float slideOff = measure(false, 1.8f, &travelOff, &framesOff, &legErrorOff);
+        const float slideOn = measure(true, 1.8f, &travelOn, &framesOn, &legErrorOn);
+
+        std::printf("[INFO] foot slide per contact frame: %.4f m unlocked, %.4f m locked (%d/%d frames)\n",
+                    slideOff, slideOn, framesOff, framesOn);
+        check(framesOff > 40 && framesOn > 40, "the measurement saw feet on the ground");
+        check(slideOff > 0.004f, "an out-of-step clip really does slide without a lock");
+        check(slideOn < slideOff * 0.35f, "foot locking removes most of the slide");
+        check(legErrorOn < std::max(0.01f, legErrorOff), "foot locking does not stretch the leg");
+        check(travelOn > travelOff * 0.9f, "foot locking does not cost the character its travel");
+
+        // The lock has to let go: a foot that is pinned for ever is not a planted foot, it is a stuck one. With a
+        // 50 % duty cycle there is always a foot down, so the check is not "no feet locked" — it is that the foot
+        // itself keeps travelling, one stride at a time.
+        MotionController walker;
+        walker.setDatabase(&stepDb);
+        walker.reset(glm::vec3(0.0f), 0.0f);
+        int lockedFrames = 0;
+        float firstFootZ = 0.0f, lastFootZ = 0.0f;
+        for (int i = 0; i < 210; ++i) {
+            walker.update(glm::vec3(0.0f, 0.0f, 1.0f), 1.2f, 1.0f / 30.0f, 0.0f);
+            if (walker.lockedFeet() > 0) ++lockedFrames;
+            if (walker.pose().size() > 3) {
+                if (i == 5) firstFootZ = walker.pose()[3].z;
+                lastFootZ = walker.pose()[3].z;
+            }
+        }
+        check(lockedFrames > 150, "a matched walk keeps a foot locked through every stance");
+        check(lastFootZ - firstFootZ > walker.position().z * 0.8f,
+              "the foot still travels: the lock releases and the leg swings");
+
+        // At the clip's own speed the lock should be doing almost nothing: the match is already right, and a
+        // correction that moves a foot on a correct clip is a bug that only shows when nothing needs fixing.
+        const float slideMatched = measure(true, 1.2f, &travelOn, &framesOn, &legErrorOn);
+        std::printf("[INFO] foot slide at the clip's own speed: %.4f m per contact frame\n", slideMatched);
+        check(slideMatched < 0.002f, "the lock is near-silent when the stride already matches the wish");
     }
 
     // ---- Inertialization ------------------------------------------------------------------------------------

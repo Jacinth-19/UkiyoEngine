@@ -117,7 +117,9 @@ Vulkan backend and an OpenGL backend; `--backend gl` selects the latter.
   descriptor), a KD-tree over the 17 dimensions that separate one gait from another, a full-skeleton pose cost, and
   inertialized playback, plus a controller that turns stick input into a world-space pose. All 77 LAFAN1 captures —
   490 000 poses — build in 0.7 s and match in 0.37 ms. The reader trims the T-pose calibration hold and takes the
-  character's forward from the toes, both of which the corpus proved necessary. See [docs/MOTION.md](docs/MOTION.md).
+  character's forward from the toes, both of which the corpus proved necessary. **Foot locking** pins the contact foot
+  with a two-bone solve, cutting a 0.6 m/s stride mismatch from 21 mm to 1 mm of slide per frame. See
+  [docs/MOTION.md](docs/MOTION.md).
 * Two-bone and FABRIK arm IK, hand-on-waist constraints, spring bones, hit reactions and sway.
 
 ### Systems
@@ -288,5 +290,5 @@ GPU — the screenshots in this README are that pipeline's output. `tests/` also
 ## Status
 
 The engine builds and tests on Linux CI, and the editor and hub run on Windows, Linux and macOS. Known gaps are listed
-at the end of each doc — the largest are GPU-driven virtual geometry (no compute or multi-draw in the RHI yet), contact
-occlusion in the traced bounce light (its rays start 5 cm off the surface), and foot locking in motion matching.
+at the end of each doc — the largest are GPU-driven virtual geometry (no compute or multi-draw in the RHI yet) and
+contact occlusion in the traced bounce light (its rays start 5 cm off the surface).

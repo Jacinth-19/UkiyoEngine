@@ -214,8 +214,8 @@ over the clip's lowest point (`MotionClip::ground`). Without that the character 
 ![The controller driven through a route](motion-demo.png)
 
 *`tools/motion_demo.cpp`: ten seconds of input over the synthetic clips CI can build — walk, run, strafe left and
-right, idle. Left: the route (walk, a left-hand curve, a run leg that overshoots the curve, then a stop) with
-footprints in vermilion. Right: four poses projected along each moment's own forward axis, so the stride is visible.
+right, idle — with foot locking on (§5a). Left: the route (walk, a left-hand curve, a run leg that overshoots the
+curve, then a stop) with footprints in vermilion. Right: four poses projected along each moment's own forward axis, so the stride is visible.
 The route covers 17.18 m, peaks at 5.00 m/s and ends at rest; the matcher chooses 13 times and plays walk, run and
 idle — the stop is a real match to the idle clip, not a frozen walk. Blend offsets average 0.067 m. The tool prints
 the database's build time, peak memory, match cost, per-clip usage and blend offsets, and fails if the character does
@@ -232,7 +232,44 @@ Run the same tool with a capture folder as the second argument and it uses the r
 *The same route over all 77 LAFAN1 captures: 489 942 entries, 13 matches, ten different clips played, and the path is
 the same 17.18 m because the controller, not the animation, owns the transform. The blend offsets are larger — 0.56 m
 mean, 1.09 m worst — because the route crosses between performers of different heights and from a walk into a sprint.
-That is the retargeting gap in §8, and it is what foot locking and a height-normalised pose descriptor would fix.*
+That is the retargeting gap in §8, and it is what a height-normalised pose descriptor would fix.*
+
+## 5a. Foot locking
+
+The matcher chooses by trajectory, so the clip it picks has its own stride — close to the wish, never equal to it.
+When the character accelerates, or when a match crosses between two clips whose strides differ, the difference is
+visible as a foot that keeps moving after it has touched down. The controller owns the world transform, so it can see
+the foot in world space, and that is where the correction belongs.
+
+Every frame, for each foot (found by name, as the features already find them):
+
+1. **Contact.** The foot is in contact when it is within 6 cm of the character's ground plane and moving slower than
+   0.9 m/s *in the clip's own pose*. The second condition is measured before any correction, because a foot that has
+   been pinned would look stationary and the lock would never let go.
+2. **Pin.** The first frame of contact remembers the foot's world position. Every later frame of that contact the
+   correction is `pin − current`.
+3. **Solve.** The ankle is put back on the pin by an analytic two-bone solve on hip, knee and ankle, and the foot's
+   whole subtree (the toe, and anything else parented to the ankle) is carried by the same rotation *about the knee*
+   — which is what keeps the shin's length exactly `|ankle − knee|`.
+4. **Release.** 70 ms of lost contact unlocks the foot, and the correction fades over 90 ms instead of snapping back.
+
+Two details stop it from reading as IK. The knee's bend direction is carried from frame to frame, so the pole never
+flips on a nearly straight leg; and a lock that would need more than 32 cm of correction — the controller has outrun
+the clip's stride — is dropped rather than clamped, because a hyper-extended leg reads worse than the skate it
+would have hidden.
+
+The tests measure it on a synthetic walk cycle built at 1.2 m/s and driven at 1.8 m/s, which is a 0.6 m/s mismatch
+held for seven seconds:
+
+| | Slide per contact frame | Leg length error |
+| --- | --- | --- |
+| No lock | 0.0209 m | — |
+| Foot locking on | **0.0011 m** | < 1 mm |
+
+`motion_test` asserts all of it: the slide falls by more than 65 %, the leg is not stretched, the character does not
+lose its travel, a matched walk keeps a foot locked through every stance, and the foot still swings a full stride per
+cycle. At the clip's own speed the correction is near-silent (0.0015 m per contact frame), which is the property that
+matters most: a lock that moves the foot on a correct clip is a bug that only shows where nothing needed fixing.
 
 ## 6. Driving a model
 
@@ -272,10 +309,9 @@ The regression tests are the ones that matter here, because each of them is a bu
 
 ## 8. Limits
 
-* **No foot locking.** The controller moves by its own velocity and the pose is re-expressed around it, so when the
-  matched clip's stride speed differs from the wished speed the planted foot slides by the difference. A clip whose
-  speed matches the wish (which is what the trajectory features select for) has no visible skate; an accelerating
-  character does. Foot IK is the fix, and it is the next thing this system needs.
+* **Foot locking is a pose correction, not a motion plan.** It pins the ankle, so a stride that is far too long or too
+  short still shows in the knee and in the hip height; what it removes is the skate. A proper fix at extreme
+  mismatches is to bias the search by stride length, which is a feature the database does not carry yet.
 * **No idle in LAFAN1.** The corpus is locomotion and action only — no standing still. Ask for 0 m/s and the best the
   matcher can do is the slowest frame it has, so the character walks in place while stopped. A production database
   adds an idle clip and the problem disappears: the synthetic demo clips include one, and the controller stops cleanly
@@ -288,5 +324,5 @@ The regression tests are the ones that matter here, because each of them is a bu
 * **Directional retarget only** (§6).
 * **No editor page yet.** The API is in `src/engine/motion_match.h`; the animation panel still plays clip libraries.
 
-Those are the honest gaps, and they are the order the system would grow: foot locking first, then a height-normalised
-pose descriptor, then annotations.
+Those are the honest gaps, and they are the order the system would grow: a height-normalised pose descriptor first,
+then annotations.

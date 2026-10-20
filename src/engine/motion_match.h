@@ -293,6 +293,31 @@ private:
     glm::quat blendRot_{1.0f, 0.0f, 0.0f, 0.0f};
 };
 
+// Foot locking: the correction that turns a matched walk into a planted one.
+//
+// The matcher picks the frame whose *trajectory* is closest to the wish, but the stride it picked has its own speed.
+// When the character accelerates, or crosses between two clips whose strides differ, the difference shows up as a foot
+// that keeps moving after it has touched down. The controller owns the world transform, so it can see the foot in
+// world space, and that is where the fix belongs.
+//
+// While a foot is in contact — low over the character's ground plane and slow in the clip — its world position is
+// remembered. Every later frame of that contact the foot is put back on that point by a two-bone solve on the hip,
+// knee and ankle, with the foot and its descendants carried rigidly by the same rotation. Nothing is keyframed and
+// nothing is authored: the lock is derived from the pose the matcher already produced, and it releases the moment the
+// clip lifts the foot.
+//
+// Two details stop it from looking like IK. The bend direction is carried from frame to frame, so the knee does not
+// flip; and a lock that would over-extend the leg (the controller has outrun the clip's stride) is dropped rather than
+// clamped, because a hyper-extended leg reads worse than a slide.
+struct FootLockSettings {
+    bool enabled = true;
+    float contactHeight = 0.06f;   // metres over the character's ground plane
+    float contactSpeed = 0.90f;    // metres per second, measured from the clip's own pose, not the locked one
+    float releaseTime = 0.07f;     // seconds of lost contact before the lock lets go (hysteresis against a flicker)
+    float reach = 0.32f;           // metres of correction; past this the stride is wrong and the lock is dropped
+    float blendOut = 0.09f;        // seconds for the correction to fade after release, so the foot does not snap back
+};
+
 // A character driven by motion matching: input in, world pose out. The controller owns the world transform — the
 // clip's root motion is discarded, so a gamepad, an AI or a cutscene curve can all drive it — and every frame it asks
 // the player for the pose that fits the wanted velocity, then re-expresses that pose around the character's own
@@ -320,7 +345,33 @@ public:
     // Writes the current pose onto a model's humanoid rig, if the clip's joints line up with the rig's names.
     int applyTo(Model& model, float scale = 1.0f) const;
 
+    // Foot locking is on by default; a clip whose feet are not named (or a debug view of the raw match) can turn it off.
+    FootLockSettings& footLock() { return footLock_; }
+    const FootLockSettings& footLock() const { return footLock_; }
+    // How many feet were locked on the last update, and the largest correction it applied, in metres. Both are for
+    // the debug overlay and for tests; neither affects playback.
+    int lockedFeet() const { return lockedFeet_; }
+    float lastFootCorrection() const { return lastFootCorrection_; }
+
 private:
+    // One leg, resolved from the clip's joint names once per clip. `subtree` is the foot and everything under it, so a
+    // correction carries the toes (and anything else parented to the ankle) rigidly.
+    struct Leg {
+        int hip = -1, knee = -1, foot = -1;
+        std::vector<int> subtree;
+        bool inContact = false;
+        bool locked = false;
+        glm::vec3 lockPos{0.0f};
+        glm::vec3 correction{0.0f};   // world offset currently applied, for a smooth release
+        glm::vec3 lastSample{0.0f};   // the clip's own foot position last frame, before any correction
+        bool hasSample = false;
+        float lost = 0.0f;            // seconds since contact was last seen
+        glm::vec3 bend{0.0f};         // the knee's bend direction, carried across frames so it cannot flip
+    };
+
+    void resolveLegs(const MotionClip& clip);
+    void lockFeet(const MotionClip& clip, float dt);
+
     const MotionDatabase* database_ = nullptr;
     MotionPlayer player_;
     glm::vec3 position_{0.0f};
@@ -329,6 +380,11 @@ private:
     std::vector<glm::vec3> pose_;
     float acceleration_ = 7.0f;    // m/s^2 towards the wish velocity
     float turnRate_ = 7.5f;        // radians per second towards the facing
+    FootLockSettings footLock_{};
+    std::array<Leg, 2> legs_{};
+    int legsClip_ = -1;            // which clip the legs were resolved for, -1 before the first update
+    int lockedFeet_ = 0;
+    float lastFootCorrection_ = 0.0f;
 };
 
 // Writes a motion frame onto a model's humanoid rig, as the animation pose the rest of the engine already consumes

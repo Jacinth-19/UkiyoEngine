@@ -916,6 +916,11 @@ void MotionController::reset(glm::vec3 position, float yaw) {
     velocity_ = glm::vec3(0.0f);
     yaw_ = yaw;
     pose_.clear();
+    // A reset starts a new performance: no foot is still standing on the old one.
+    for (Leg& leg : legs_) leg = Leg{};
+    legsClip_ = -1;
+    lockedFeet_ = 0;
+    lastFootCorrection_ = 0.0f;
     player_.reset();
     if (database_ && !database_->empty()) player_.start(0);
 }
@@ -960,6 +965,170 @@ void MotionController::update(glm::vec3 wishDir, float wishSpeed, float dt, floa
     pose_.resize(sampled.size());
     for (size_t i = 0; i < sampled.size(); ++i)
         pose_[i] = position_ + q * (sampled[i] - root) + glm::vec3(0.0f, rootHeight, 0.0f);
+
+    // Foot locking runs on the finished world pose: it is the last thing that happens to a frame before it is drawn,
+    // so the skinning and any debug renderer see the same feet.
+    if (footLock_.enabled) {
+        if (legsClip_ != player_.index()) resolveLegs(clip);
+        lockFeet(clip, dt);
+    }
+}
+
+// --------------------------------------------------------------------------------------------- foot locking
+
+namespace {
+
+const MotionJoint* findJoint(const MotionClip& clip, const char* upper, const char* lower) {
+    for (const MotionJoint& j : clip.joints) {
+        if (j.name == upper || j.name == lower) return &j;
+    }
+    return nullptr;
+}
+
+// Every joint at or under `root`, in the clip's own order. A foot correction has to move the toes with the ankle.
+void collectSubtree(const MotionClip& clip, int root, std::vector<int>* out) {
+    out->clear();
+    if (root < 0) return;
+    out->push_back(root);
+    // Joints are stored parent-before-child by the BVH reader, so one forward pass is enough; a file that ordered
+    // them differently still resolves because the pass repeats until it stops growing.
+    for (size_t pass = 0; pass < clip.joints.size(); ++pass) {
+        bool grew = false;
+        for (size_t i = 0; i < clip.joints.size(); ++i) {
+            const int parent = clip.joints[i].parent;
+            if (parent < 0) continue;
+            const bool parentIn = std::find(out->begin(), out->end(), parent) != out->end();
+            const bool selfIn = std::find(out->begin(), out->end(), int(i)) != out->end();
+            if (parentIn && !selfIn) { out->push_back(int(i)); grew = true; }
+        }
+        if (!grew) break;
+    }
+}
+
+} // namespace
+
+void MotionController::resolveLegs(const MotionClip& clip) {
+    legsClip_ = player_.index();
+    for (Leg& leg : legs_) leg = Leg{};
+    const char* names[2][2] = {{"LeftFoot", "leftFoot"}, {"RightFoot", "rightFoot"}};
+    for (int side = 0; side < 2; ++side) {
+        Leg& leg = legs_[size_t(side)];
+        const MotionJoint* foot = findJoint(clip, names[side][0], names[side][1]);
+        if (!foot) continue;
+        leg.foot = clip.indexOf(names[side][0]) >= 0 ? clip.indexOf(names[side][0]) : clip.indexOf(names[side][1]);
+        if (leg.foot < 0) continue;
+        // The knee is the ankle's parent and the hip is the knee's. A rig with more than two segments in the leg
+        // (a twist bone, a toe base) still works: the solve uses the two outermost, which is what the pose shows.
+        leg.knee = clip.joints[size_t(leg.foot)].parent;
+        if (leg.knee < 0) { leg.foot = -1; continue; }
+        leg.hip = clip.joints[size_t(leg.knee)].parent;
+        if (leg.hip < 0) { leg.foot = -1; continue; }
+        collectSubtree(clip, leg.foot, &leg.subtree);
+    }
+}
+
+// Two-bone solve, then a rigid carry of the foot's subtree. Everything is metres in world space.
+void MotionController::lockFeet(const MotionClip& clip, float dt) {
+    lockedFeet_ = 0;
+    lastFootCorrection_ = 0.0f;
+    const float ground = position_.y;
+    const float footprint = std::max(dt, 1e-4f);
+
+    for (Leg& leg : legs_) {
+        if (leg.foot < 0 || leg.hip < 0 || leg.knee < 0) continue;
+        const glm::vec3 hip = pose_[size_t(leg.hip)];
+        const glm::vec3 knee = pose_[size_t(leg.knee)];
+        const glm::vec3 ankle = pose_[size_t(leg.foot)];
+
+        // Contact is read from the clip's own motion, never from the corrected pose: a foot that has been pinned in
+        // place would look stationary and the lock would never release.
+        const float speed = leg.hasSample ? glm::length(ankle - leg.lastSample) / footprint : 0.0f;
+        leg.lastSample = ankle;
+        leg.hasSample = true;
+        const bool touching = (ankle.y - ground) <= footLock_.contactHeight && speed <= footLock_.contactSpeed;
+
+        if (touching) {
+            leg.lost = 0.0f;
+            if (!leg.locked) {
+                leg.locked = true;
+                leg.lockPos = ankle;
+            } else if (glm::length(leg.lockPos - ankle) > footLock_.reach) {
+                // The controller has outrun the clip's stride. Re-locking accepts the slide; clamping here would
+                // straighten the leg and read worse than the skate it was hiding.
+                leg.lockPos = ankle;
+            }
+            leg.inContact = true;
+        } else {
+            leg.lost += dt;
+            if (leg.lost >= footLock_.releaseTime) {
+                leg.locked = false;
+                leg.inContact = false;
+            }
+        }
+
+        // The correction to apply this frame: the full pin while locked, a decaying remainder after release.
+        glm::vec3 want(0.0f);
+        if (leg.locked) {
+            want = leg.lockPos - ankle;
+            const float len = glm::length(want);
+            if (len > footLock_.reach) {
+                want = want * (footLock_.reach / len);
+                leg.lockPos = ankle + want;
+            }
+            leg.correction = want;
+        } else if (glm::length(leg.correction) > 1e-5f) {
+            const float fade = std::exp(-dt / std::max(footLock_.blendOut, 1e-3f) * 3.0f);
+            leg.correction *= fade;
+            if (glm::length(leg.correction) < 1e-5f) leg.correction = glm::vec3(0.0f);
+        }
+        if (leg.locked) ++lockedFeet_;
+        if (glm::length(leg.correction) <= 1e-5f) continue;
+
+        // ---- two-bone IK: hip -> knee -> ankle, with the ankle put back on the lock point.
+        const glm::vec3 target = ankle + leg.correction;
+        const float l1 = glm::length(knee - hip);
+        const float l2 = glm::length(ankle - knee);
+        if (l1 < 1e-4f || l2 < 1e-4f) continue;
+        glm::vec3 toTarget = target - hip;
+        float d = glm::length(toTarget);
+        if (d < 1e-4f) continue;
+        // Keep the leg inside its own reach: a solve outside [l1-l2, l1+l2] has no real elbow/knee.
+        d = glm::clamp(d, std::fabs(l1 - l2) + 1e-3f, l1 + l2 - 1e-3f);
+        const glm::vec3 u = toTarget / glm::length(toTarget);
+        const glm::vec3 pole = knee - hip;
+        glm::vec3 bend = pole - u * glm::dot(pole, u);
+        if (glm::length(bend) < 1e-5f) bend = leg.bend;   // straight leg: reuse the last bend, or pick one below
+        if (glm::length(bend) < 1e-5f) {
+            bend = glm::cross(u, std::fabs(u.y) < 0.9f ? glm::vec3(0.0f, 1.0f, 0.0f) : glm::vec3(1.0f, 0.0f, 0.0f));
+            if (glm::length(bend) < 1e-5f) continue;
+        }
+        bend = glm::normalize(bend);
+        leg.bend = bend;
+        const float a = (l1 * l1 - l2 * l2 + d * d) / (2.0f * d);
+        const float h = std::sqrt(std::max(0.0f, l1 * l1 - a * a));
+        const glm::vec3 newKnee = hip + u * a + bend * h;
+        const glm::vec3 newTarget = hip + u * d;
+
+        const glm::vec3 from = ankle - knee;
+        const glm::vec3 to = newTarget - newKnee;
+        const float fromLen = glm::length(from), toLen = glm::length(to);
+        glm::quat rot(1.0f, 0.0f, 0.0f, 0.0f);
+        if (fromLen > 1e-5f && toLen > 1e-5f) {
+            const glm::vec3 f = from / fromLen, t = to / toLen;
+            const float c = glm::clamp(glm::dot(f, t), -1.0f, 1.0f);
+            if (c < 0.999999f) {
+                glm::vec3 axis = glm::cross(f, t);
+                if (glm::length(axis) < 1e-6f) axis = glm::cross(f, glm::vec3(0.0f, 0.0f, 1.0f));
+                if (glm::length(axis) > 1e-6f) rot = glm::angleAxis(std::acos(c), glm::normalize(axis));
+            }
+        }
+        // The knee, then every joint under the ankle carried rigidly about the knee. Rotating about the knee is what
+        // keeps the shin's length: |newTarget - newKnee| is l2 by construction.
+        pose_[size_t(leg.knee)] = newKnee;
+        for (int j : leg.subtree) pose_[size_t(j)] = newKnee + rot * (pose_[size_t(j)] - knee);
+
+        lastFootCorrection_ = std::max(lastFootCorrection_, glm::length(leg.correction));
+    }
 }
 
 int MotionController::applyTo(Model& model, float scale) const {
