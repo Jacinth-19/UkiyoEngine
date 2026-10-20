@@ -63,24 +63,52 @@ jobs:
           grep -E "error:|Error [0-9]" build.log | head -40 | while IFS= read -r line; do
             echo "::error::${line//'%'/'%25'}"
           done
+
+      # A failing test's own output, as annotations. The job log is served from a signed URL that is not reachable from
+      # every environment, and the lines that matter (FAIL, and the summary) are never the last ones.
+      - name: Annotate test failures
+        if: failure()
+        run: |
+          shopt -s nullglob
+          for f in /tmp/ukiyo-test-*.log; do
+            echo "::group::$f"
+            grep -E "FAIL|failed|error" "$f" | head -20 | while IFS= read -r line; do
+              echo "::error::${line//'%'/'%25'}"
+            done
+            echo "::endgroup::"
+          done
       - name: Run Systems Test
-        run: ./build/systems_test
+        run: |
+          set -o pipefail
+          ./build/systems_test 2>&1 | tee /tmp/ukiyo-test-systems_test.log
       - name: Run Network Test
-        run: ./build/network_test
+        run: |
+          set -o pipefail
+          ./build/network_test 2>&1 | tee /tmp/ukiyo-test-network_test.log
       - name: Run Project Template Test
-        run: ./build/project_test
+        run: |
+          set -o pipefail
+          ./build/project_test 2>&1 | tee /tmp/ukiyo-test-project_test.log
       - name: Run Virtual Geometry Test
-        run: ./build/vgeom_test
+        run: |
+          set -o pipefail
+          ./build/vgeom_test 2>&1 | tee /tmp/ukiyo-test-vgeom_test.log
       - name: Run Motion Matching Test
-        run: ./build/motion_test
+        run: |
+          set -o pipefail
+          ./build/motion_test 2>&1 | tee /tmp/ukiyo-test-motion_test.log
       # The estimator's maths, mirrored on the CPU: the shader cannot run here, but its algebra can be checked.
       - name: Run Real-Time GI Test
-        run: ./build/gi_test
+        run: |
+          set -o pipefail
+          ./build/gi_test 2>&1 | tee /tmp/ukiyo-test-gi_test.log
       # The input runtime, its asset format and its actions, driven from synthetic devices: no window, no GPU, no GLFW.
       # It checks press/hold/tap/multitap, 1D and 2D composites, processors, control schemes, rebinding, and that the
       # .inputactions file the engine writes loads back byte-for-byte. docs/INPUT.md.
       - name: Run Input System Test
-        run: ./build/input_test
+        run: |
+          set -o pipefail
+          ./build/input_test 2>&1 | tee /tmp/ukiyo-test-input_test.log
       # NOTICE.md claims the ground textures are complete and correct. This checks that claim: every layer has
       # albedo/normal/AO at the atlas size, the three layers are genuinely different images, and the normal maps are
       # tangent-space rather than mis-exported. It is cheap and it is the difference between a documented promise and
