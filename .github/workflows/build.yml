@@ -293,22 +293,24 @@ jobs:
               ForEach-Object { Write-Host ("::error::" + ($_.Line -replace '%','%25')) }
           }
 
-      # The same tests the Linux job runs, in the same order. A failure here is a portability bug in the engine, not in
-      # the test: none of these need a window, a GPU or a network.
-      - name: Run Systems Test
-        run: ./build/systems_test.exe
-      - name: Run Network Test
-        run: ./build/network_test.exe
-      - name: Run Project Template Test
-        run: ./build/project_test.exe
-      - name: Run Virtual Geometry Test
-        run: ./build/vgeom_test.exe
-      - name: Run Motion Matching Test
-        run: ./build/motion_test.exe
-      - name: Run Real-Time GI Test
-        run: ./build/gi_test.exe
-      - name: Run Input System Test
-        run: ./build/input_test.exe
+      # The same tests the Linux job runs, in the same order, in one step: a failing test's own output is the only
+      # useful diagnostic, and the job log is not reachable from everywhere, so the last lines go out as annotations.
+      - name: Run the portable tests
+        run: |
+          $failed = @()
+          foreach ($t in @("systems_test", "network_test", "project_test", "vgeom_test", "motion_test", "gi_test", "input_test")) {
+            Write-Host "::group::$t"
+            $out = & "./build/$t.exe" 2>&1
+            $code = $LASTEXITCODE
+            $out | ForEach-Object { Write-Host $_ }
+            Write-Host "::endgroup::"
+            if ($code -ne 0) {
+              Write-Host "::error::$t failed with exit code $code"
+              $out | Select-Object -Last 14 | ForEach-Object { Write-Host "::error::  $_" }
+              $failed += $t
+            }
+          }
+          if ($failed.Count -gt 0) { throw "failed: $($failed -join ', ')" }
 
       # The hub is the only Qt program CI can run without a desktop: offscreen, the same self-test the Linux job runs.
       - name: Run Hub Self-Test
