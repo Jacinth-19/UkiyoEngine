@@ -73,8 +73,15 @@ find_program(GLSLANG_VALIDATOR glslangValidator
 if(NOT GLSLANG_VALIDATOR)
   message(FATAL_ERROR "glslangValidator not found: install the Vulkan SDK, or glslang-tools on Debian")
 endif()
-# glslang is linked into the engine: GLSL -> SPIR-V at runtime (generated material shaders).
+# glslang is linked into the engine: GLSL -> SPIR-V at runtime (generated material shaders). The SDK's own directory
+# layout is the reliable place to look: VULKAN_SDK is not always exported to the process, while C:/VulkanSDK/<version>
+# always exists on Windows. Debian keeps glslang in libglslang-dev, which the default search path already finds.
 find_package(glslang CONFIG QUIET HINTS "$ENV{VULKAN_SDK}/Lib/cmake" "$ENV{VULKAN_SDK}/lib/cmake")
+if(NOT glslang_FOUND)
+  file(GLOB UKIYO_SDK_CMAKE_DIRS "C:/VulkanSDK/*/Lib/cmake" "$ENV{VULKAN_SDK}/Lib/cmake"
+       "$ENV{VULKAN_SDK}/lib/cmake")
+  find_package(glslang CONFIG QUIET PATHS ${UKIYO_SDK_CMAKE_DIRS})
+endif()
 if(NOT glslang_FOUND)
   find_package(glslang CONFIG REQUIRED)
 endif()

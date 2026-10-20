@@ -215,6 +215,19 @@ jobs:
           }
           Write-Host "VULKAN_SDK=$env:VULKAN_SDK"
 
+      # The SDK's location, in annotations rather than the job log: when a package is missing, the useful question is
+      # "what is actually installed", and this answers it without downloading anything.
+      - name: Where the Vulkan SDK is
+        run: |
+          Write-Host "VULKAN_SDK=$env:VULKAN_SDK"
+          Write-Host "::warning::VULKAN_SDK=$env:VULKAN_SDK"
+          Get-ChildItem C:\VulkanSDK -Directory -ErrorAction SilentlyContinue |
+            ForEach-Object { Write-Host "::warning::sdk dir: $($_.FullName)" }
+          Get-ChildItem C:\VulkanSDK -Recurse -Filter "glslang*config.cmake" -ErrorAction SilentlyContinue |
+            Select-Object -First 5 | ForEach-Object { Write-Host "::warning::glslang config: $($_.FullName)" }
+          $v = Get-Command glslangValidator -ErrorAction SilentlyContinue
+          if ($v) { Write-Host "::warning::glslangValidator: $($v.Source)" } else { Write-Host "::warning::glslangValidator: not on PATH" }
+
       # Ninja rather than the Visual Studio generator: it is the configuration MSVC developers actually use, it compiles
       # translation units in parallel by default, and it puts the binaries in one directory instead of per-config
       # subdirectories. vcvars is what supplies cl.exe and the SDK to CMake.
