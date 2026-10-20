@@ -196,6 +196,7 @@ add_library(ukiyo_core STATIC
   src/engine/trail.cpp
   src/engine/trail_renderer.cpp
   src/engine/search.cpp
+  src/engine/texture_mips.cpp
   src/engine/renderer.cpp
   src/engine/rig.cpp
   src/third_party_impl.cpp
@@ -317,6 +318,18 @@ add_executable(contact_shadow_preview tools/contact_shadow_preview.cpp)
 target_include_directories(contact_shadow_preview PRIVATE ${CMAKE_SOURCE_DIR}/src ${CMAKE_SOURCE_DIR}/third_party)
 target_link_libraries(contact_shadow_preview PRIVATE glm::glm)
 target_compile_options(contact_shadow_preview PRIVATE ${UKIYO_WARNINGS})
+
+# Alpha-coverage-preserving mipmaps (docs/ALPHA_MIPS.md): the chain builder the model loader runs, on the CPU.
+add_executable(alpha_mips_test tests/alpha_mips_test.cpp src/engine/texture_mips.cpp)
+target_include_directories(alpha_mips_test PRIVATE ${CMAKE_SOURCE_DIR}/src ${CMAKE_SOURCE_DIR}/third_party)
+target_link_libraries(alpha_mips_test PRIVATE glm::glm)
+target_compile_options(alpha_mips_test PRIVATE ${UKIYO_WARNINGS})
+
+# The figure in docs/ALPHA_MIPS.md: the plain chain against the preserved one, per mip level.
+add_executable(alpha_mips_preview tools/alpha_mips_preview.cpp src/engine/texture_mips.cpp)
+target_include_directories(alpha_mips_preview PRIVATE ${CMAKE_SOURCE_DIR}/src ${CMAKE_SOURCE_DIR}/third_party)
+target_link_libraries(alpha_mips_preview PRIVATE glm::glm)
+target_compile_options(alpha_mips_preview PRIVATE ${UKIYO_WARNINGS})
 
 # Fuzzy asset search and glob matching (docs/SEARCH.md): the engine half of the editor's Project filter. Pure C++17.
 add_executable(search_test tests/search_test.cpp src/engine/search.cpp)

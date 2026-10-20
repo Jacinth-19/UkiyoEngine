@@ -256,6 +256,11 @@ struct ModelLoadOptions {
     bool smoothNormals = false;
     std::string faceSdfPath;               // PNG face shadow atlas (tools/make_face_sdf.py); empty = none
     std::string faceMaterial = "face";      // materials whose name contains this (any case) use the SDF
+    // Alpha-coverage-preserving mips (GH-104289): the base-colour texture of an alpha-masked material gets a chain whose
+    // alpha is scaled per level to hold the level-0 coverage, so a cutout stops dissolving at distance. The threshold is
+    // the material's own cutoff when it has one; this is the fallback for materials without an explicit cutoff.
+    bool preserveAlphaTestCoverage = true;
+    float alphaTestThreshold = 0.5f;
 };
 
 // Loads a .vrm (GLB) or .gltf. Throws std::runtime_error on failure.

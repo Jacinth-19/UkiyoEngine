@@ -67,6 +67,12 @@ struct TextureDesc {
     Wrap wrap = Wrap::Clamp;
 };
 
+// Optional CPU-built RGBA8 mip chain for createTexture: levels[i] is level i, sized max(1, width >> i) by
+// max(1, height >> i). When it is non-empty the backend uploads it as-is instead of filtering the chain itself — that is
+// how alpha-coverage-preserving mips (engine/texture_mips.h) reach the GPU, since the coverage search cannot run on a
+// blit. `desc.mipmaps` must be true and the chain must have the full number of levels.
+using MipChain = std::vector<std::vector<uint8_t>>;
+
 struct DeviceConfig {
     uint32_t width = 1280;
     uint32_t height = 720;
@@ -148,7 +154,8 @@ public:
     virtual bool presentFlipsY() const = 0;
 
     virtual std::unique_ptr<Buffer> createBuffer(BufferUsage usage, size_t size) = 0;
-    virtual std::unique_ptr<Texture> createTexture(const TextureDesc& desc, const void* rgba8 = nullptr) = 0;
+    virtual std::unique_ptr<Texture> createTexture(const TextureDesc& desc, const void* rgba8 = nullptr,
+                                                   const MipChain* mipChain = nullptr) = 0;
     virtual std::unique_ptr<Pipeline> createPipeline(const PipelineDesc& desc) = 0;
     virtual std::unique_ptr<DescriptorSet> createDescriptorSet(SetType type) = 0;
 

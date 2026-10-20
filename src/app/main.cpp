@@ -417,6 +417,8 @@ int main(int argc, char** argv) {
         }
         ModelLoadOptions lo;
         lo.smoothNormals = opt.settings.smoothNormals;
+        lo.preserveAlphaTestCoverage = opt.settings.preserveAlphaCoverage;
+        lo.alphaTestThreshold = opt.settings.alphaTestThreshold;
         lo.faceSdfPath = opt.faceSdf;
         if (!opt.faceMaterial.empty()) lo.faceMaterial = opt.faceMaterial;
         auto model = loadModel(*device, opt.model, lo);

@@ -40,8 +40,10 @@ Plus the offline tools, which are part of the build rather than a separate scrip
 | Trail ribbons built by the engine's CPU code and shaded by a software rasteriser, so the figure needs no GPU: an additive sword sweep, the three UV mappings, and a ground ribbon that does not billboard ([docs/TRAIL.md](docs/TRAIL.md)). | Ten seconds of motion matching: the route, the footprints and four poses from the run. Walk, run and idle are chosen by the matcher from a database of 490 000 poses ([docs/MOTION.md](docs/MOTION.md)). |
 | ![Contact shadows](docs/contact-shadows.png) | ![Splash](docs/splash-capture.png) |
 | Screen-space contact shadows (GH-118045): a 32 × 32 shadow map with 20 cm of bias (top left), the depth-buffer march alone (top right) and both (bottom left), each with a 2× crop of the same contact. The pass darkens 86 % of the contact band and touches 0.43 % of the lit pixels ([docs/CONTACT_SHADOWS.md](docs/CONTACT_SHADOWS.md)). | The launcher's splash, painted in C++ by the program itself — the woodblock artwork, the lockup in the open sky, and the determinate bar. |
-| ![Virtual geometry](docs/vgeom-levels.png) | ![Grass scatter](docs/grass-scatter-preview.png) |
-| The 131 072-triangle Terrain Lab tile built into a virtual-geometry cluster tree, cut at 1 px and 8 px ([docs/VGEOM.md](docs/VGEOM.md)). | Grass scatter over the terrain, drawn by `grass_scatter_preview` from the same bands the engine uses ([docs/GRASS.md](docs/GRASS.md)). |
+| ![Alpha mipmaps](docs/alpha-mips.png) | ![Virtual geometry](docs/vgeom-levels.png) |
+| Alpha-coverage-preserving mipmaps (GH-104289): one fixed mip level per column, the plain box filter on the top row and the preserved chain below it. Coverage holds at 0.37 instead of collapsing to 0.007, so the cut-out does not dissolve ([docs/ALPHA_MIPS.md](docs/ALPHA_MIPS.md)). | The 131 072-triangle Terrain Lab tile built into a virtual-geometry cluster tree, cut at 1 px and 8 px ([docs/VGEOM.md](docs/VGEOM.md)). |
+| ![Grass scatter](docs/grass-scatter-preview.png) | ![Splash](docs/splash-capture.png) |
+| Grass scatter over the terrain, drawn by `grass_scatter_preview` from the same bands the engine uses ([docs/GRASS.md](docs/GRASS.md)). | The launcher's splash, painted in C++ by the program itself — the woodblock artwork, the lockup in the open sky, and the determinate bar. |
 
 The hub is the first thing anyone sees, so it is checked like a screen and not like a build artifact: CI captures its
 three pages offscreen with `ukiyo_hub --screenshots renders` and commits them to `docs/hub/`. The images below are the
@@ -131,6 +133,11 @@ Vulkan backend and an OpenGL backend; `--backend gl` selects the latter.
   going grey and black. The albedo rides in the normal pre-pass's second target; the fit is applied in the screen-space
   pass, clamped so a post-processed frame can only have light restored, never added
   ([docs/AO.md](docs/AO.md), 21 % closer to a two-bounce tracer in the figure).
+* **Alpha-coverage-preserving mipmaps** (Godot 4.8's GH-104289): an alpha-tested cut-out keeps the fraction of its
+  surface that passes the cutoff on every mip level, instead of losing it to the average — the reason a fence dissolves
+  at distance. The loader builds the chain on the CPU, where a coverage search can run, and both backends upload it
+  as-is. The figure's plane holds 0.37 coverage to LOD 5 where the plain chain is at 0.007
+  ([docs/ALPHA_MIPS.md](docs/ALPHA_MIPS.md)).
 * **Screen-space contact shadows** (Godot 4.8's GH-118045): the short shadows a cascaded shadow map cannot resolve,
   marched in the depth buffer that the screen-space pass already holds — 0.35 m towards the sun in 24 steps, with a
   growing bias and a thickness that keeps the result at contact scale instead of turning into a second shadow map. No per-
@@ -307,6 +314,7 @@ own glslang package is generated with a broken SPIRV-Tools path; everything else
 | [docs/INPUT.md](docs/INPUT.md) | action maps, the `.inputactions` format, the Unity semantics kept, the CI test |
 | [docs/AO.md](docs/AO.md) | the multi-bounce AO fit, where the albedo comes from, and why the post pass clamps it |
 | [docs/CONTACT_SHADOWS.md](docs/CONTACT_SHADOWS.md) | the contact-shadow march: parameters, why per pixel, and what the test pins |
+| [docs/ALPHA_MIPS.md](docs/ALPHA_MIPS.md) | alpha-coverage-preserving mipmaps: the measurement, the search, and the chain upload |
 | [docs/TRAIL.md](docs/TRAIL.md) | trail ribbons: sections, the width curve and gradient, the alignment and tiling modes, the test |
 | [docs/SEARCH.md](docs/SEARCH.md) | fuzzy asset ranking and the glob grammar, and why the ranking is deliberately not "contains" |
 

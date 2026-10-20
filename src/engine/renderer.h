@@ -89,6 +89,11 @@ struct RenderSettings {
     float contactShadowLength = 0.35f;
     float contactShadowThickness = 0.08f;
     int contactShadowSteps = 24;
+    // Alpha-coverage-preserving mips (GH-104289): the base-colour chain of an alpha-masked material keeps the level-0
+    // test coverage, so a cutout does not dissolve into its average at distance. It is a load-time option, so a change
+    // takes effect when the model is loaded again.
+    bool preserveAlphaCoverage = true;
+    float alphaTestThreshold = 0.5f;
     float ssr = 0.0f;                // screen-space reflections, 0..1 (normal pre-pass)
     // Real-time diffuse GI (the iGPU path tracer): half-resolution traced bounce light, temporally accumulated and
     // composited at full resolution. 0 = off, 1 = one bounce at full strength. Needs a heightfield (setHeightfield) and

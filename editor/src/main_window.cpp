@@ -1177,6 +1177,10 @@ QWidget* MainWindow::buildProjectSettings() {
         number(toon, "Eye: matcap strength (needs a matcap texture)", &settings_.eyeMatcap, 0.0, 1.0, 0.05);
         number(toon, "Eye: highlight map strength (needs a highlight texture)", &settings_.eyeHighlight, 0.0, 1.0, 0.05);
         check(toon, "Smooth object normals (applies on model load)", &settings_.smoothNormals);
+        // Alpha-coverage-preserving mips (GH-104289): keep a cut-out's coverage through its mip chain so it does not
+        // dissolve at distance. Load-time, like the normals option above.
+        check(toon, "Preserve alpha-test coverage in mipmaps (on load)", &settings_.preserveAlphaCoverage);
+        number(toon, "Alpha-test cutoff for mip coverage", &settings_.alphaTestThreshold, 0.05, 0.95, 0.05);
         QFormLayout* fx = addSection(v, "Screen Effects");
         number(fx, "Fog density (per metre)", &settings_.fogDensity, 0.0, 0.1, 0.001);
         number(fx, "Fog sun in-scatter", &settings_.fogSun, 0.0, 1.0, 0.05);
@@ -1882,7 +1886,14 @@ void MainWindow::loadModel(const QString& path) {
     ModelInfo info;
     bool ok = false;
     const bool smoothNow = settings_.smoothNormals;
-    runOnWorker([&] { worker_->setSmoothNormals(smoothNow); ok = worker_->loadModel(path, &err, &info); });
+    const bool preserveNow = settings_.preserveAlphaCoverage;
+    const float cutoffNow = settings_.alphaTestThreshold;
+    runOnWorker([&] {
+        worker_->setSmoothNormals(smoothNow);
+        worker_->setPreserveAlphaCoverage(preserveNow);
+        worker_->setAlphaTestThreshold(cutoffNow);
+        ok = worker_->loadModel(path, &err, &info);
+    });
     if (!ok) {
         log("error: " + err);
         return;
@@ -5735,6 +5746,7 @@ QJsonObject MainWindow::sceneDocument() {
         || settings_.autoExposure || settings_.celBand || settings_.screenRim > 0.0f || settings_.outlineNoise > 0.0f
         || settings_.depthEdgeRim > 0.0f
         || settings_.normalMap > 0.0f || settings_.outlineMatNoise > 0.0f || settings_.smoothNormals
+        || !settings_.preserveAlphaCoverage || settings_.alphaTestThreshold != 0.5f
         || settings_.softLight > 0.0f || settings_.lightSweep > 0.0f || settings_.ditherFadeFar > settings_.ditherFadeNear
         || settings_.pbrStyle > 0.0f || settings_.eyeFlatten > 0.0f || settings_.eyeParallax > 0.0f
         || settings_.eyeMatcap > 0.0f || settings_.eyeHighlight > 0.0f) {
@@ -5749,6 +5761,8 @@ QJsonObject MainWindow::sceneDocument() {
         s["ditherFadeNear"] = double(settings_.ditherFadeNear);
         s["ditherFadeFar"] = double(settings_.ditherFadeFar);
         s["smoothNormals"] = settings_.smoothNormals;
+        s["preserveAlphaCoverage"] = settings_.preserveAlphaCoverage;
+        s["alphaTestThreshold"] = double(settings_.alphaTestThreshold);
         s["screenRim"] = double(settings_.screenRim);
         s["outlineNoise"] = double(settings_.outlineNoise);
         s["depthEdgeRim"] = double(settings_.depthEdgeRim);
@@ -6891,6 +6905,8 @@ bool MainWindow::applySceneDocument(const QJsonObject& root, const QString& sour
     st.normalMap = std::clamp(float(s.value("normalMap").toDouble(st.normalMap)), 0.0f, 1.0f);
     st.outlineMatNoise = std::clamp(float(s.value("outlineMatNoise").toDouble(st.outlineMatNoise)), 0.0f, 1.0f);
     st.smoothNormals = s.value("smoothNormals").toBool(st.smoothNormals);
+    if (s.contains("preserveAlphaCoverage")) st.preserveAlphaCoverage = s.value("preserveAlphaCoverage").toBool();
+    st.alphaTestThreshold = std::clamp(float(s.value("alphaTestThreshold").toDouble(st.alphaTestThreshold)), 0.05f, 0.95f);
     st.softLight = std::clamp(float(s.value("softLight").toDouble(st.softLight)), 0.0f, 1.0f);
     st.lightSweep = std::clamp(float(s.value("lightSweep").toDouble(st.lightSweep)), 0.0f, 1.0f);
     st.sweepSpeed = std::clamp(float(s.value("sweepSpeed").toDouble(st.sweepSpeed)), 0.0f, 2.0f);

@@ -82,6 +82,9 @@ public:
     bool loadModel(const QString& path, QString* error);
     // Applied to models loaded from now on (RealToon smooth object normals).
     void setSmoothNormals(bool on) { smoothNormals_ = on; }
+    // Alpha-coverage-preserving mips (GH-104289) and the cutoff they preserve. Load-time, like smooth normals.
+    void setPreserveAlphaCoverage(bool on) { preserveAlphaCoverage_ = on; }
+    void setAlphaTestThreshold(float t) { alphaTestThreshold_ = t; }
 
     // Adds a model to the scene at `position` (metres) with `yawDeg` (degrees about +Y). The new
     // instance becomes active; its index is returned in *index.
@@ -257,6 +260,8 @@ public:
 
 private:
     bool smoothNormals_ = false;
+    bool preserveAlphaCoverage_ = true;
+    float alphaTestThreshold_ = 0.5f;
     std::unique_ptr<rhi::Device> device_;
     std::unique_ptr<Renderer> renderer_;
     std::optional<ukiyo::WaterVolume> water_;
@@ -342,6 +347,8 @@ private:
         std::unique_ptr<Model> model;
         qint64 modified = -1;
         bool smoothNormals = false;
+        bool preserveAlphaCoverage = true;
+        float alphaTestThreshold = 0.5f;
     };
     std::map<std::string, StagedModel> staged_;
     std::unique_ptr<Model> takeModel(const QString& path, QString* error);

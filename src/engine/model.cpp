@@ -1,6 +1,7 @@
 // VRM / glTF loader. Geometry, skins and textures come from cgltf; the VRM
 // extensions (VRMC_vrm, VRMC_materials_mtoon, and the VRM 0.x "VRM" block) are
 // read from the GLB JSON chunk with nlohmann::json.
+#include "engine/texture_mips.h"
 #include "engine/vfs.h"
 #include "engine/vfs_cgltf.h"
 #include "engine/model.h"
@@ -16,6 +17,7 @@
 #include <algorithm>
 #include <array>
 #include <map>
+#include <tuple>
 #include <cctype>
 #include <cmath>
 #include <cstdio>
@@ -153,6 +155,8 @@ public:
     bool smoothNormals = false;   // set before run()
     std::string faceSdfPath;      // set before run()
     std::string faceMaterial;     // set before run()
+    bool preserveAlphaTestCoverage = true;   // set before run()
+    float alphaTestThreshold = 0.5f;         // set before run()
 
     void run() {
         detectFormat();
@@ -576,9 +580,12 @@ private:
         m_.textures.push_back(std::move(ntex));
     }
 
-    rhi::Texture* texture(int idx, bool srgb) {
+    // `masked` asks for an alpha-coverage-preserving chain at the material's cutoff: the same image can be shared between
+    // an opaque material and a cutout, and the two need different chains, so the cutoff is part of the cache key.
+    rhi::Texture* texture(int idx, bool srgb, bool masked = false, float cutoff = 0.5f) {
         if (idx < 0 || idx >= static_cast<int>(data_->textures_count)) return white_;
-        auto key = std::make_pair(idx, srgb);
+        const int cutoffKey = int(std::clamp(cutoff, 0.0f, 1.0f) * 255.0f + 0.5f);
+        auto key = std::make_tuple(idx, srgb, masked, cutoffKey);
         auto it = cache_.find(key);
         if (it != cache_.end()) return it->second;
 
@@ -607,7 +614,16 @@ private:
         d.mipmaps = true;
         d.filter = rhi::Filter::Linear;
         d.wrap = rhi::Wrap::Repeat;
-        auto tex = dev_.createTexture(d, px);
+        // Alpha-coverage-preserving mips for cutouts (GH-104289). The chain is built here, on the CPU, because the
+        // coverage search cannot run inside a blit; every other texture keeps the backend's own filtering.
+        rhi::MipChain chain;
+        if (masked && preserveAlphaTestCoverage) {
+            const float threshold = cutoff > 0.0f ? cutoff : alphaTestThreshold;
+            const std::vector<MipLevel> levels = buildMipChain(px, uint32_t(w), uint32_t(h), true, threshold);
+            chain.reserve(levels.size());
+            for (const MipLevel& level : levels) chain.push_back(level.rgba);
+        }
+        auto tex = dev_.createTexture(d, px, chain.empty() ? nullptr : &chain);
         stbi_image_free(px);
         rhi::Texture* raw = tex.get();
         m_.textures.push_back(std::move(tex));
@@ -743,7 +759,7 @@ private:
             mat->ubo = dev_.createBuffer(rhi::BufferUsage::Uniform, sizeof(MaterialUBO));
             mat->ubo->upload(&p, sizeof(p));
             mat->set = dev_.createDescriptorSet(rhi::SetType::Material);
-            mat->set->setTexture(4, texture(baseIdx, true));
+            mat->set->setTexture(4, texture(baseIdx, true, mat->mask, p.flags.y));
             mat->set->setTexture(5, texture(shadeIdx, true));
             mat->set->setTexture(6, texture(emisIdx, true));
             // RealToon: a normal map (linear data) and a gloss mask from the metallic-roughness texture.
@@ -1039,7 +1055,7 @@ private:
         m_.textures.push_back(std::move(tex));
         return faceSdf_;
     }
-    std::map<std::pair<int, bool>, rhi::Texture*> cache_;
+    std::map<std::tuple<int, bool, bool, int>, rhi::Texture*> cache_;
     std::vector<Material*> materialPtrs_;
     Material* defaultMaterial_ = nullptr;
     std::vector<int> meshFirst_;
@@ -1112,6 +1128,8 @@ std::unique_ptr<Model> loadModel(rhi::Device& device, const std::string& path, c
     loader.smoothNormals = lopts.smoothNormals;
     loader.faceSdfPath = lopts.faceSdfPath;
     loader.faceMaterial = lopts.faceMaterial;
+    loader.preserveAlphaTestCoverage = lopts.preserveAlphaTestCoverage;
+    loader.alphaTestThreshold = lopts.alphaTestThreshold;
     loader.run();
     return model;
 }

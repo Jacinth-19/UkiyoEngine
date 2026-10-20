@@ -72,11 +72,19 @@ private:
 
 class GLTexture final : public Texture {
 public:
-    GLTexture(const TextureDesc& d, const void* rgba) : desc_(d) {
+    GLTexture(const TextureDesc& d, const void* rgba, const MipChain* chain) : desc_(d) {
         levels_ = d.mipmaps ? static_cast<GLsizei>(std::floor(std::log2(std::max(d.width, d.height)))) + 1 : 1;
         glCreateTextures(GL_TEXTURE_2D, 1, &id_);
         glTextureStorage2D(id_, levels_, toGLInternal(d.format), static_cast<GLsizei>(d.width), static_cast<GLsizei>(d.height));
-        if (rgba) {
+        if (chain && !chain->empty()) {
+            // A chain built on the CPU (alpha-coverage-preserving mips): upload every level, generate nothing.
+            const GLsizei n = std::min(levels_, static_cast<GLsizei>(chain->size()));
+            for (GLsizei i = 0; i < n; ++i) {
+                const GLsizei lw = std::max<GLsizei>(1, static_cast<GLsizei>(d.width) >> i);
+                const GLsizei lh = std::max<GLsizei>(1, static_cast<GLsizei>(d.height) >> i);
+                glTextureSubImage2D(id_, i, 0, 0, lw, lh, GL_RGBA, GL_UNSIGNED_BYTE, (*chain)[size_t(i)].data());
+            }
+        } else if (rgba) {
             glTextureSubImage2D(id_, 0, 0, 0, static_cast<GLsizei>(d.width), static_cast<GLsizei>(d.height),
                                 GL_RGBA, GL_UNSIGNED_BYTE, rgba);
             if (levels_ > 1) glGenerateTextureMipmap(id_);
@@ -179,7 +187,7 @@ public:
             d.height = cfg.height;
             d.format = Format::RGBA8;
             d.filter = Filter::Nearest;
-            offscreenColor_ = std::make_unique<GLTexture>(d, nullptr);
+            offscreenColor_ = std::make_unique<GLTexture>(d, nullptr, nullptr);
             glCreateFramebuffers(1, &offscreenFbo_);
             glNamedFramebufferTexture(offscreenFbo_, GL_COLOR_ATTACHMENT0, offscreenColor_->id(), 0);
         } else {
@@ -211,8 +219,9 @@ public:
         return std::make_unique<GLBuffer>(std::max<size_t>(size, 16));
     }
 
-    std::unique_ptr<Texture> createTexture(const TextureDesc& desc, const void* rgba8) override {
-        return std::make_unique<GLTexture>(desc, rgba8);
+    std::unique_ptr<Texture> createTexture(const TextureDesc& desc, const void* rgba8,
+                                           const MipChain* mipChain) override {
+        return std::make_unique<GLTexture>(desc, rgba8, mipChain);
     }
 
     std::unique_ptr<Pipeline> createPipeline(const PipelineDesc& desc) override {

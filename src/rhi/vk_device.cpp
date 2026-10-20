@@ -137,7 +137,7 @@ private:
 class VKTexture final : public Texture {
 public:
     // Owned image created from a description (optionally with initial RGBA8 data).
-    VKTexture(VKCore* core, const TextureDesc& d, VkFormat vkFmt, bool depth, const void* rgba)
+    VKTexture(VKCore* core, const TextureDesc& d, VkFormat vkFmt, bool depth, const void* rgba, const MipChain* chain)
         : core_(core), desc_(d), vkFormat_(vkFmt), depth_(depth) {
         aspect_ = depth ? VK_IMAGE_ASPECT_DEPTH_BIT : VK_IMAGE_ASPECT_COLOR_BIT;
         levels_ = d.mipmaps ? static_cast<uint32_t>(std::floor(std::log2(std::max(d.width, d.height)))) + 1 : 1;
@@ -177,7 +177,9 @@ public:
         VK_CHECK(vkCreateSampler(core_->device, &si, nullptr, &sampler_), "vkCreateSampler");
 
         // Initial contents: optional RGBA8 upload (+ mip chain), then a sampled layout.
-        if (rgba) {
+        if (chain && !chain->empty()) {
+            uploadChain(*chain);
+        } else if (rgba) {
             upload(rgba);
         } else {
             immediate(core_, [&](VkCommandBuffer cb) {
@@ -218,6 +220,48 @@ public:
     bool isDepth() const { return depth_; }
 
 private:
+    // Uploads a CPU-built chain, one buffer-to-image copy per level. Same staging buffer, sized for the whole chain.
+    void uploadChain(const MipChain& chain) {
+        size_t total = 0;
+        for (const auto& level : chain) total += level.size();
+        if (total == 0) return;
+
+        VkBufferCreateInfo bi{VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO};
+        bi.size = static_cast<VkDeviceSize>(total);
+        bi.usage = VK_BUFFER_USAGE_TRANSFER_SRC_BIT;
+        VmaAllocationCreateInfo ai{};
+        ai.usage = VMA_MEMORY_USAGE_AUTO;
+        ai.flags = VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT | VMA_ALLOCATION_CREATE_MAPPED_BIT;
+        VkBuffer staging = VK_NULL_HANDLE;
+        VmaAllocation salloc = nullptr;
+        VmaAllocationInfo sinfo{};
+        VK_CHECK(vmaCreateBuffer(core_->vma, &bi, &ai, &staging, &salloc, &sinfo), "staging buffer");
+        uint8_t* dst = static_cast<uint8_t*>(sinfo.pMappedData);
+        for (const auto& level : chain) {
+            std::memcpy(dst, level.data(), level.size());
+            dst += level.size();
+        }
+
+        immediate(core_, [&](VkCommandBuffer cb) {
+            barrierLayout(cb, image_, aspect_, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
+            VkDeviceSize offset = 0;
+            const uint32_t n = std::min(levels_, static_cast<uint32_t>(chain.size()));
+            for (uint32_t i = 0; i < n; ++i) {
+                const uint32_t lw = std::max(1u, desc_.width >> i);
+                const uint32_t lh = std::max(1u, desc_.height >> i);
+                VkBufferImageCopy region{};
+                region.bufferOffset = offset;
+                region.imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, i, 0, 1};
+                region.imageExtent = {lw, lh, 1};
+                vkCmdCopyBufferToImage(cb, staging, image_, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &region);
+                offset += static_cast<VkDeviceSize>(lw) * lh * 4u;
+            }
+            barrierLayout(cb, image_, aspect_, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, sampledLayout(), 0, levels_);
+        });
+        layout_ = sampledLayout();
+        vmaDestroyBuffer(core_->vma, staging, salloc);
+    }
+
     void upload(const void* rgba) {
         const uint32_t w = desc_.width, h = desc_.height;
         const VkDeviceSize bytes = static_cast<VkDeviceSize>(w) * h * 4;
@@ -387,7 +431,7 @@ public:
             d.height = cfg.height;
             d.format = Format::RGBA8;
             d.filter = Filter::Nearest;
-            offscreen_ = std::make_unique<VKTexture>(&core_, d, VK_FORMAT_R8G8B8A8_UNORM, false, nullptr);
+            offscreen_ = std::make_unique<VKTexture>(&core_, d, VK_FORMAT_R8G8B8A8_UNORM, false, nullptr, nullptr);
         }
     }
 
@@ -422,9 +466,11 @@ public:
         return std::make_unique<VKBuffer>(&core_, usage, std::max<size_t>(size, 16));
     }
 
-    std::unique_ptr<Texture> createTexture(const TextureDesc& desc, const void* rgba8) override {
+    std::unique_ptr<Texture> createTexture(const TextureDesc& desc, const void* rgba8,
+                                           const MipChain* mipChain) override {
         bool depth = desc.format == Format::D32F;
-        return std::make_unique<VKTexture>(&core_, desc, toVkFormat(desc.format, backbufferFormat_), depth, rgba8);
+        return std::make_unique<VKTexture>(&core_, desc, toVkFormat(desc.format, backbufferFormat_), depth, rgba8,
+                                           mipChain);
     }
 
     std::unique_ptr<Pipeline> createPipeline(const PipelineDesc& desc) override {
@@ -658,7 +704,7 @@ public:
         d.height = h;
         d.format = Format::RGBA8;
         d.filter = Filter::Nearest;
-        offscreen_ = std::make_unique<VKTexture>(&core_, d, VK_FORMAT_R8G8B8A8_UNORM, false, nullptr);
+        offscreen_ = std::make_unique<VKTexture>(&core_, d, VK_FORMAT_R8G8B8A8_UNORM, false, nullptr, nullptr);
         return true;
     }
 

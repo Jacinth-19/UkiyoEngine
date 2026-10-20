@@ -82,11 +82,14 @@ void EngineSession::libraryData(ukiyo::SourceRig* rig, std::vector<ukiyo::AnimCl
 namespace {
 
 // Reads one model file and applies the editor's defaults. Returns null with `error` set on failure.
-std::unique_ptr<Model> readModelFile(rhi::Device& dev, const QString& path, bool smoothNormals, QString* error) {
+std::unique_ptr<Model> readModelFile(rhi::Device& dev, const QString& path, bool smoothNormals, bool preserveAlpha,
+                                   float alphaThreshold, QString* error) {
     std::unique_ptr<Model> m;
     try {
         ukiyo::ModelLoadOptions lo;
         lo.smoothNormals = smoothNormals;
+        lo.preserveAlphaTestCoverage = preserveAlpha;
+        lo.alphaTestThreshold = alphaThreshold;
         m = ukiyo::loadModel(dev, path.toStdString(), lo);
     } catch (const std::exception& e) {
         if (error) *error = QString::fromStdString(e.what());
@@ -144,7 +147,7 @@ void EngineSession::clearInstances() {
 }
 
 bool EngineSession::loadModel(const QString& path, QString* error) {
-    std::unique_ptr<Model> m = readModelFile(*device_, path, smoothNormals_, error);
+    std::unique_ptr<Model> m = readModelFile(*device_, path, smoothNormals_, preserveAlphaCoverage_, alphaTestThreshold_, error);
     if (!m) return false;
     if (active_ < 0) {
         instances_.push_back(Instance{});
@@ -195,12 +198,14 @@ std::unique_ptr<Model> EngineSession::takeModel(const QString& path, QString* er
     if (it != staged_.end()) {
         // A staged model is used once. It is only used if the file and the normals setting still match.
         const bool fresh = it->second.smoothNormals == smoothNormals_ &&
+                           it->second.preserveAlphaCoverage == preserveAlphaCoverage_ &&
+                           it->second.alphaTestThreshold == alphaTestThreshold_ &&
                            it->second.modified == QFileInfo(path).lastModified().toMSecsSinceEpoch();
         std::unique_ptr<Model> m = std::move(it->second.model);
         staged_.erase(it);
         if (fresh) return m;
     }
-    return readModelFile(*device_, path, smoothNormals_, error);
+    return readModelFile(*device_, path, smoothNormals_, preserveAlphaCoverage_, alphaTestThreshold_, error);
 }
 
 bool EngineSession::preloadModel(const QString& path, QString* error) {
@@ -211,18 +216,22 @@ bool EngineSession::preloadModel(const QString& path, QString* error) {
     const std::string key = path.toStdString();
     const qint64 modified = QFileInfo(path).lastModified().toMSecsSinceEpoch();
     auto it = staged_.find(key);
-    if (it != staged_.end() && it->second.smoothNormals == smoothNormals_ && it->second.modified == modified)
+    if (it != staged_.end() && it->second.smoothNormals == smoothNormals_ &&
+        it->second.preserveAlphaCoverage == preserveAlphaCoverage_ && it->second.alphaTestThreshold == alphaTestThreshold_ &&
+        it->second.modified == modified)
         return true;
     if (it == staged_.end() && staged_.size() >= kMaxStaged) {
         if (error) *error = QStringLiteral("the preload cache is full (%1 models)").arg(kMaxStaged);
         return false;
     }
-    std::unique_ptr<Model> m = readModelFile(*device_, path, smoothNormals_, error);
+    std::unique_ptr<Model> m = readModelFile(*device_, path, smoothNormals_, preserveAlphaCoverage_, alphaTestThreshold_, error);
     if (!m) return false;
     StagedModel s;
     s.model = std::move(m);
     s.modified = modified;
     s.smoothNormals = smoothNormals_;
+    s.preserveAlphaCoverage = preserveAlphaCoverage_;
+    s.alphaTestThreshold = alphaTestThreshold_;
     staged_[key] = std::move(s);
     return true;
 }
