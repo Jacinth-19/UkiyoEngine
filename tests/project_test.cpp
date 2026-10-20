@@ -222,6 +222,10 @@ static void testAnimeProject() {
 
     const json scene = readJson(root / "Scenes" / "Main.ukscene");
     const std::string path = scene["models"][0].value("path", std::string());
+    // Only when it is wrong: the scene as written, so a platform difference is visible instead of inferred.
+    if (path.empty())
+        check(false, "anime: the scene records a model path", scene.contains("models") ? scene.dump().substr(0, 600)
+                                                                                       : std::string("no models key"));
     check(!path.empty() && path.find('\\') == std::string::npos,
           "anime: the model is stored as a relative path with forward slashes", path);
     check(fs::exists(fs::path(root) / path),
@@ -330,6 +334,9 @@ static void testTerrainProject() {
     check(terrain["grass"]["includeLayers"].size() == 2,
           "terrain: the meadow covers the moss and the heather, not just the valley floor");
     // The vendored ground textures and the detail overlay are linked from the engine folder, relative to the project.
+    if (!terrain["layers"][0].contains("diffuseMap"))
+        check(false, "terrain: the first layer records its maps",
+              terrain["layers"][0].dump().substr(0, 400) + " | engineRoot=" + std::string(UKIYO_ROOT));
     check(terrain["layers"][0].contains("diffuseMap") && terrain["layers"][0].contains("normalMap") &&
               terrain["layers"][0].contains("aoMap"),
           "terrain: layer 0 links the albedo, normal and occlusion of the vendored ground textures");
