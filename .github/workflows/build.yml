@@ -207,9 +207,13 @@ jobs:
           }
           Write-Host "VULKAN_SDK=$env:VULKAN_SDK"
 
+      # Configure and build are teed to files so a failure can be lifted into annotations: the job log lives behind a
+      # signed URL on a host this repository's tooling cannot always reach, and an annotation is readable from the API.
       - name: Configure CMake
         run: |
-          cmake -B build -G "Visual Studio 17 2022" -A x64 -DCMAKE_BUILD_TYPE=Release
+          cmake -B build -G "Visual Studio 17 2022" -A x64 -DCMAKE_BUILD_TYPE=Release 2>&1 |
+            Tee-Object -FilePath configure.log
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
       - name: Build Everything
         run: |
@@ -217,12 +221,23 @@ jobs:
           cmake --build build --config Release --parallel 8 2>&1 | Tee-Object -FilePath build.log
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
+      - name: Annotate configure errors
+        if: failure()
+        run: |
+          if (Test-Path configure.log) {
+            Select-String -Path configure.log -Pattern "CMake Error|CMake Warning at|Error at|error" |
+              Select-Object -First 25 |
+              ForEach-Object { Write-Host ("::error::" + ($_.Line -replace '%','%25')) }
+          }
+
       - name: Annotate compile errors
         if: failure()
         run: |
-          Select-String -Path build.log -Pattern "error C[0-9]+|error LNK|fatal error" |
-            Select-Object -First 40 |
-            ForEach-Object { Write-Host "::error::$($_.Line)" }
+          if (Test-Path build.log) {
+            Select-String -Path build.log -Pattern "error C[0-9]+|error LNK|fatal error" |
+              Select-Object -First 40 |
+              ForEach-Object { Write-Host ("::error::" + ($_.Line -replace '%','%25')) }
+          }
 
       # The same tests the Linux job runs, in the same order. A failure here is a portability bug in the engine, not in
       # the test: none of these need a window, a GPU or a network.
@@ -252,5 +267,7 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: windows-build-log
-          path: build.log
+          path: |
+            configure.log
+            build.log
           if-no-files-found: warn
