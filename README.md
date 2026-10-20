@@ -130,8 +130,10 @@ Vulkan backend and an OpenGL backend; `--backend gl` selects the latter.
 * **Recast/Detour** navigation and pathfinding.
 * **Lua** scripting with a bound world API; prefabs, scenes and materials are JSON.
 * **Input** as action maps with Unity's `.inputactions` assets: keyboard, mouse and gamepads, 1D and 2D composites,
-  press/hold/tap interactions, processors, control schemes and rebinding. The parser and runtime are tested in CI
-  against the semantics of the Unity Input System, not a simplified subset. See [docs/INPUT.md](docs/INPUT.md).
+  press/hold/tap interactions, processors, control schemes and rebinding — and multi-player pairing in Unity's
+  `PlayerInput` / `InputUser` shape, so four players share one asset and none of them shares a press. The parser and
+  runtime are tested in CI, on Linux and Windows, against the semantics of the Unity Input System rather than a
+  simplified subset. See [docs/INPUT.md](docs/INPUT.md).
 * **Audio** through miniaudio; **networking** over UDP with snapshots and interpolation.
 * **Virtual file system** with a pak format (`tools/ukiyo_pak.cpp`), so a shipped project is one folder.
 

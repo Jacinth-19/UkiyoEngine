@@ -10,28 +10,53 @@ on:
 permissions:
   contents: write
 
+# ccache settings shared by every job. The cache is the difference between a four-minute build and a one-minute one:
+# only the files a change actually touches are recompiled, and every other translation unit comes back as an object
+# file from the previous run.
+env:
+  CCACHE_COMPRESS: "1"
+  CCACHE_COMPRESSLEVEL: "6"
+  CCACHE_MAXSIZE: "2G"
+
 jobs:
   build:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      # ccache, before anything configures the build: CMAKE_*_COMPILER_LAUNCHER below makes every compile go through
+      # it. The key is per-platform, not per-commit, so each run restores the newest cache from the branch and only
+      # recompiles what changed. Qt comes from apt and is not cached — it is unchanged between runs, so apt's own
+      # download cache inside the runner image handles it.
+      - name: Set up ccache
+        uses: hendrikmuhs/ccache-action@v1.2
+        with:
+          key: linux-release
+          max-size: 2G
       - name: Install dependencies
         run: |
           sudo apt-get update
           # GLM, nlohmann_json and GLFW are vendored under third_party/ (third_party/VENDOR.md), so their -dev packages
           # are not installed. GLFW is built from source and its X11 backend needs these headers; the Wayland backend
           # is off (see the GLFW_BUILD_WAYLAND block in CMakeLists.txt), which is why no wayland-scanner is needed.
-          sudo apt-get install -y cmake g++ libvulkan-dev glslang-tools glslang-dev python3 python3-pip \
+          sudo apt-get install -y cmake g++ ccache libvulkan-dev glslang-tools glslang-dev python3 python3-pip \
             qt6-base-dev qt6-base-dev-tools libqt6opengl6-dev qt6-tools-dev qt6-tools-dev-tools \
             libx11-dev libxrandr-dev libxinerama-dev libxcursor-dev libxi-dev libxext-dev
       - name: Configure CMake
-        run: cmake -B build -DCMAKE_BUILD_TYPE=Release
+        run: |
+          cmake -B build -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_C_COMPILER_LAUNCHER=ccache -DCMAKE_CXX_COMPILER_LAUNCHER=ccache
       - name: Build Everything
         run: |
           set -o pipefail
           cmake --build build --parallel 4 2>&1 | tee build.log
       # A compiler error in a 4-minute log is hard to find, so the failing lines are lifted into the run's
       # annotations, where the summary shows them without downloading anything.
+      # The hit rate is the number that says whether the cache is doing its job; it is printed on every run, pass or
+      # fail, so a regression in the cache is visible without downloading anything.
+      - name: ccache stats
+        if: always()
+        run: ccache --show-stats --verbose 2>/dev/null || ccache --show-stats
+
       - name: Annotate compile errors
         if: failure()
         run: |
@@ -136,4 +161,96 @@ jobs:
             renders/splash*.png
             renders/motion-demo.png
             renders/gi-*.png
+          if-no-files-found: warn
+
+  # --------------------------------------------------------------------------------------------- Windows (MSVC)
+  # The same engine, built by a different compiler, against a different Vulkan loader, with a different Qt. The point
+  # is not a second opinion on Linux: it is the platform most of the team's players run, and the input system in
+  # particular has to prove it does not depend on POSIX or on GLFW's X11 backend.
+  #
+  # Where things come from:
+  #   * MSVC and the Windows SDK: installed on windows-latest; the Visual Studio generator finds them, so no vcvars.
+  #   * Vulkan SDK: preinstalled on the image, and it brings glslangValidator, the glslang CMake package and vulkan-1.lib.
+  #   * Qt 6: aqtinstall via install-qt-action, cached between runs, because a Qt download is the slowest step here.
+  #   * Everything else (GLM, GLFW, Jolt, Lua, miniaudio, Recast, ...) is vendored under third_party/ and needs no
+  #     package manager at all — which is exactly why the checkout and the build are the only network-dependent steps.
+  #
+  # ccache is deliberately not used here: its MSVC support only works through the Ninja/cl wrapper path, and the cache
+  # would be cold for every runner image update. Qt and the Vulkan SDK are cached instead, and the build itself uses
+  # /MP for parallel translation units.
+  windows:
+    runs-on: windows-latest
+    defaults:
+      run:
+        shell: pwsh
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Qt 6
+        uses: jurplel/install-qt-action@v4
+        with:
+          version: "6.7.2"
+          arch: win64_msvc2019_64
+          cache: true
+          cache-key-prefix: ukiyo-qt-windows
+
+      # The image ships the SDK, but not every image version does; if VULKAN_SDK is unset the job installs it rather
+      # than failing at find_package(Vulkan).
+      - name: Check the Vulkan SDK
+        run: |
+          if (-not $env:VULKAN_SDK) {
+            Write-Host "VULKAN_SDK is not set; installing the SDK"
+            choco install vulkan-sdk -y --no-progress
+            $sdk = Get-ChildItem "C:\VulkanSDK" -Directory | Sort-Object Name -Descending | Select-Object -First 1
+            if (-not $sdk) { throw "the Vulkan SDK installed but C:\VulkanSDK is empty" }
+            "VULKAN_SDK=$($sdk.FullName)" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+          }
+          Write-Host "VULKAN_SDK=$env:VULKAN_SDK"
+
+      - name: Configure CMake
+        run: |
+          cmake -B build -G "Visual Studio 17 2022" -A x64 -DCMAKE_BUILD_TYPE=Release
+
+      - name: Build Everything
+        run: |
+          $env:CL = "/MP"
+          cmake --build build --config Release --parallel 8 2>&1 | Tee-Object -FilePath build.log
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      - name: Annotate compile errors
+        if: failure()
+        run: |
+          Select-String -Path build.log -Pattern "error C[0-9]+|error LNK|fatal error" |
+            Select-Object -First 40 |
+            ForEach-Object { Write-Host "::error::$($_.Line)" }
+
+      # The same tests the Linux job runs, in the same order. A failure here is a portability bug in the engine, not in
+      # the test: none of these need a window, a GPU or a network.
+      - name: Run Systems Test
+        run: ./build/Release/systems_test.exe
+      - name: Run Network Test
+        run: ./build/Release/network_test.exe
+      - name: Run Project Template Test
+        run: ./build/Release/project_test.exe
+      - name: Run Virtual Geometry Test
+        run: ./build/Release/vgeom_test.exe
+      - name: Run Motion Matching Test
+        run: ./build/Release/motion_test.exe
+      - name: Run Real-Time GI Test
+        run: ./build/Release/gi_test.exe
+      - name: Run Input System Test
+        run: ./build/Release/input_test.exe
+
+      # The hub is the only Qt program CI can run without a desktop: offscreen, the same self-test the Linux job runs.
+      - name: Run Hub Self-Test
+        run: |
+          $env:QT_QPA_PLATFORM = "offscreen"
+          ./build/Release/ukiyo_hub.exe --selftest
+
+      - name: Upload build log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-build-log
+          path: build.log
           if-no-files-found: warn

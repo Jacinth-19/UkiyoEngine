@@ -14,6 +14,7 @@
 
 #include "engine/project_settings.h"
 #include "input/input.h"
+#include "input/input_users.h"
 #include "systems/anim_state.h"
 #include "systems/audio.h"
 #include "systems/navigation.h"
@@ -95,6 +96,12 @@ public:
     ukiyo::input::State& input() { return input_; }
     const ukiyo::input::State& input() const { return input_; }
 
+    // Multi-player (Unity's PlayerInput / InputUser, § input_users.h). Created on first use, with this world's input
+    // state as the master, so the devices and the "Gameplay" map are shared and only the pairing is per player. The
+    // world updates the master itself in tick(), so the manager is told not to update it again.
+    ukiyo::input::InputSystem& inputPlayers();
+    bool hasInputPlayers() const { return players_ != nullptr; }
+
     PhysicsWorld physics;
     NavMesh nav;
     AudioEngine audio;
@@ -146,6 +153,7 @@ private:
     std::vector<std::string> preloads_;
     std::vector<engine::InputAction> actions_;
     ukiyo::input::State input_;
+    std::unique_ptr<ukiyo::input::InputSystem> players_;
     std::map<std::string, Entity> entities_;   // std::map keeps the update order deterministic
     std::map<std::string, AudioEngine::SoundId> sounds_;
     double time_ = 0.0;

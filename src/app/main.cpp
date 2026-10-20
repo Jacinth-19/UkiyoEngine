@@ -37,6 +37,13 @@
 #include "rhi/rhi.h"
 #include "stb_image_write.h"
 
+// ffmpeg is started through a pipe. MSVC spells the same two functions with a leading underscore and puts them in
+// <stdio.h>, which <cstdio> already pulled in.
+#ifdef _WIN32
+#define popen _popen
+#define pclose _pclose
+#endif
+
 // The repository root, for the default asset paths. CMake defines it; a standalone build of this file uses the working
 // directory, which is where the assets are when the viewer is run the documented way.
 #ifndef UKIYO_ROOT

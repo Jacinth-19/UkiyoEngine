@@ -287,6 +287,12 @@ public:
     // Devices present when update last ran, used by tests and by the rebind path.
     Device* deviceForPath(const std::string& path);
 
+    // Copies the *authoring* of another state: its maps, their actions and bindings, and its control schemes. The
+    // callbacks, the enabled flags and every runtime value are left alone — they belong to the receiver, which is the
+    // whole point: four players share one asset and none of them shares a press. Used by InputSystem when a player
+    // joins (see input_users.h).
+    void copyMapsFrom(const State& other);
+
     // Interactive rebinding (Unity's PerformInteractiveRebinding): the next control pressed on any enabled device
     // whose kind matches the binding's device becomes the binding's path. Returns false if nothing was pressed.
     // `onRebind` fires with the new path when it happens.

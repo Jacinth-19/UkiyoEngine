@@ -8,10 +8,12 @@
 // .inputactions file expects the same edge cases to hold.
 #include "input/input.h"
 #include "input/input_asset.h"
+#include "input/input_users.h"
 
 #include <cmath>
 #include <cstdio>
 #include <fstream>
+#include <memory>
 #include <string>
 #include <vector>
 
@@ -761,6 +763,260 @@ void testViewerAsset() {
     checkNear(viewer->find("Zoom")->readVector2().y, 2.0f, 1e-4f, "the viewer's Zoom reads the wheel");
 }
 
+// ---------------------------------------------------------------- 13. players and pairing
+//
+// Two players, one keyboard and two gamepads. The master State owns the devices and the asset; each PlayerInput owns a
+// copy of the maps and a mirror of only its own devices. Everything below is a consequence of that split.
+
+struct MultiFixture {
+    State master;
+    Device* keyboard = nullptr;
+    Device* mouse = nullptr;
+    Device* pad0 = nullptr;
+    Device* pad1 = nullptr;
+    std::unique_ptr<InputSystem> sys;
+    int masterCallbacks = 0;
+
+    MultiFixture() {
+        keyboard = &master.addDevice(DeviceKind::Keyboard, 0);
+        mouse = &master.addDevice(DeviceKind::Mouse, 0);
+        pad0 = &master.addDevice(DeviceKind::Gamepad, 0);
+        pad1 = &master.addDevice(DeviceKind::Gamepad, 1);
+        master.setPoller([](State&) {});
+
+        ControlScheme kb;
+        kb.name = "Keyboard";
+        kb.bindingGroup = "Keyboard";
+        kb.devices = {DeviceKind::Keyboard, DeviceKind::Mouse};
+        ControlScheme gp;
+        gp.name = "Gamepad";
+        gp.bindingGroup = "Gamepad";
+        gp.devices = {DeviceKind::Gamepad};
+        master.controlSchemes = {kb, gp};
+
+        ActionMap& game = master.addMap("Gameplay");
+        Action& jump = game.add("Jump", ActionType::Button);
+        jump.bindings.push_back(Binding{"", "", "<Keyboard>/space", "Jump", "Keyboard", "", "", false, false, -1});
+        jump.bindings.push_back(Binding{"", "", "<Gamepad>/buttonSouth", "Jump", "Gamepad", "", "", false, false, -1});
+        Action& move = game.add("Move", ActionType::Value);
+        move.expectedControlType = "Vector2";
+        move.bindings.push_back(Binding{"", "", "<Gamepad>/leftStick", "Move", "Gamepad", "", "", false, false, -1});
+        ActionMap& menu = master.addMap("Menu");
+        menu.add("Pause", ActionType::Button)
+            .bindings.push_back(Binding{"", "", "<Keyboard>/escape", "Pause", "Keyboard", "", "", false, false, -1});
+
+        // A callback on the master's action must not be inherited by a player: the master's maps are a template.
+        master.action("Gameplay", "Jump")->onPerformed = [this](const Action&) { ++masterCallbacks; };
+        sys = std::make_unique<InputSystem>(&master);
+    }
+
+    PlayerInput* join(JoinOptions options, std::string* error = nullptr) {
+        PlayerInput* p = sys->join(options, error);
+        if (p) p->switchActionMap("Gameplay");
+        return p;
+    }
+
+    void tick(float dt = 1.0f / 60.0f) { sys->update(dt); }
+
+    Action* jump(PlayerInput* p) { return p->action("Gameplay", "Jump"); }
+};
+
+void testPlayers() {
+    std::printf("\n13. players, pairing and independent actions\n");
+    MultiFixture f;
+
+    std::string error;
+    PlayerInput* p1 = f.join(JoinOptions{"Keyboard", {f.keyboard, f.mouse}, false}, &error);
+    PlayerInput* p2 = f.join(JoinOptions{"Gamepad", {f.pad0}, false}, &error);
+    checkTrue(p1 != nullptr && p2 != nullptr, "two players join with their own devices");
+    checkTrue(p1 && p1->index() == 1 && p2 && p2->index() == 2, "player indices are 1 and 2");
+    checkTrue(p1 && p1->devices().size() == 2, "player 1 holds a keyboard and a mouse");
+    checkTrue(p2 && p2->devices().size() == 1, "player 2 holds one gamepad");
+    checkEq(p1 ? p1->controlScheme() : "", "Keyboard", "player 1's scheme is recorded");
+    checkTrue(f.sys->ownerOf(f.pad0) == p2 && f.sys->ownerOf(f.keyboard) == p1, "ownerOf maps a device to its player");
+    checkTrue(p1 && p1->actions().device(DeviceKind::Gamepad, 0) == nullptr,
+              "player 1 has no gamepad in its own State");
+    checkTrue(p2 && p2->actions().device(DeviceKind::Keyboard, 0) == nullptr,
+              "player 2 has no keyboard in its own State");
+
+    // One press, one player.
+    f.keyboard->setButton("space", true);
+    f.tick();
+    checkTrue(p1 && f.jump(p1)->triggered(), "player 1's Jump triggers on the keyboard");
+    checkTrue(p2 && !f.jump(p2)->triggered(), "and player 2's Jump, which has no keyboard, does not");
+    checkNear(p2 ? f.jump(p2)->readFloat() : -1.0f, 0.0f, 1e-4f, "player 2's Jump value stays at zero");
+
+    f.keyboard->setButton("space", false);
+    f.pad0->setButton("buttonSouth", true);
+    f.tick();
+    checkTrue(!f.jump(p1)->triggered(), "player 1 cannot press player 2's button");
+    checkTrue(f.jump(p2)->triggered(), "player 2's Jump triggers on its own gamepad");
+
+    // Two players can hold the same logical action at once; the values are separate numbers.
+    f.keyboard->setButton("space", true);
+    f.tick();
+    checkTrue(f.jump(p1)->performed() && f.jump(p2)->performed(), "both players hold Jump in the same frame");
+    checkNear(f.jump(p1)->readFloat(), 1.0f, 1e-4f, "player 1 reads its own value");
+    checkNear(f.jump(p2)->readFloat(), 1.0f, 1e-4f, "player 2 reads its own value");
+
+    // The master's callback belongs to the master, not to the players that copied its maps.
+    f.pad0->setButton("buttonSouth", false);
+    f.keyboard->setButton("space", false);
+    f.tick();
+    f.keyboard->setButton("space", true);
+    f.tick();
+    checkTrue(f.masterCallbacks == 0, "a callback installed on the master's action does not fire for a player");
+
+    // Analog values are per player too: player 2's stick moves only player 2.
+    f.keyboard->setButton("space", false);
+    f.pad0->setVector2("leftStick", glm::vec2(0.75f, -0.25f));
+    f.tick();
+    checkNear2(f.sys->player(2)->action("Gameplay", "Move")->readVector2(), glm::vec2(0.75f, -0.25f), 1e-4f,
+               "player 2 reads its stick");
+    checkTrue(f.sys->player(1)->action("Gameplay", "Move") == nullptr ||
+                  glm::length(f.sys->player(1)->action("Gameplay", "Move")->readVector2()) < 1e-4f,
+              "player 1's Move stays at zero with no gamepad");
+
+    // Action-map switching is per player: player 2 pauses, player 1 keeps playing.
+    Action* pause = p2->action("Menu", "Pause");
+    checkTrue(pause != nullptr, "player 2 has the Menu map");
+    p2->switchActionMap("Menu");
+    checkEq(p2->currentActionMap(), "Menu", "player 2 switches to Menu");
+    checkTrue(!f.jump(p2)->enabled, "switching away disables Gameplay for that player");
+    f.pad0->setButton("buttonSouth", false);
+    f.tick();
+    f.pad0->setButton("buttonSouth", true);
+    f.tick();
+    checkTrue(!f.jump(p2)->triggered(), "player 2's Jump is silent in the Menu map");
+    f.keyboard->setButton("space", true);
+    f.tick();
+    checkTrue(f.jump(p1)->triggered(), "player 1's Jump still fires in its own Gameplay map");
+    p2->switchActionMap("Gameplay");
+    checkTrue(f.jump(p2)->enabled, "switching back re-enables Gameplay");
+}
+
+// ---------------------------------------------------------------- 14. join rules
+
+void testJoinRules() {
+    std::printf("\n14. join rules, refusals and leaving\n");
+    MultiFixture f;
+
+    // The scheme picks the devices when the caller does not.
+    PlayerInput* byScheme = f.join(JoinOptions{"Gamepad", {}, false});
+    checkTrue(byScheme != nullptr && byScheme->devices().size() == 1 && byScheme->devices()[0] == f.pad0,
+              "a scheme join takes the first free gamepad");
+    PlayerInput* second = f.join(JoinOptions{"Gamepad", {}, false});
+    checkTrue(second != nullptr && second->devices()[0] == f.pad1,
+              "the second scheme join takes the next free gamepad, not the same one");
+
+    std::string error;
+    checkTrue(f.join(JoinOptions{"Gamepad", {}, false}, &error) == nullptr, "a third gamepad join finds no device");
+    checkTrue(!error.empty(), "and reports why");
+
+    // The same physical device cannot drive two players by accident.
+    error.clear();
+    checkTrue(f.sys->join(JoinOptions{"", {f.pad0}, false}, &error) == nullptr,
+              "pairing an already-paired gamepad is refused");
+    checkTrue(error.find("player") != std::string::npos, "the refusal names the player that holds it");
+    checkTrue(f.sys->join(JoinOptions{"", {f.pad0}, true}) != nullptr, "allowDuplicates lets two players share it");
+
+    checkNear(float(f.sys->playerCount()), 3.0f, 0.0f, "three players are in the game");
+
+    // Leaving frees the device, and the next join can have it.
+    f.sys->players();   // const accessor, just to be exercised
+    f.sys->leave(f.sys->player(2));
+    checkTrue(f.sys->playerCount() == 2, "leaving removes the player");
+    checkTrue(f.sys->ownerOf(f.pad1) == nullptr, "and frees its gamepad");
+    PlayerInput* again = f.join(JoinOptions{"Gamepad", {}, false});
+    checkTrue(again != nullptr && again->devices()[0] == f.pad1, "the freed gamepad joins a new player");
+    checkTrue(again->index() == 4, "player indices keep counting up, as Unity's do");
+
+    // The keyboard scheme needs both devices in this asset; with the keyboard taken, the join must fail rather than
+    // hand out a mouse on its own.
+    std::string error2;
+    f.sys->join(JoinOptions{"Keyboard", {f.keyboard, f.mouse}, false});
+    checkTrue(f.join(JoinOptions{"Keyboard", {}, false}, &error2) == nullptr,
+              "a scheme whose devices are taken returns null");
+
+    // An empty scheme with a device picks that device alone.
+    PlayerInput* bare = f.sys->join(JoinOptions{"", {f.pad1}, true});
+    checkTrue(bare != nullptr && bare->devices().size() == 1, "an explicit device joins without a scheme");
+    checkTrue(bare && bare->controlScheme().empty(), "and records no scheme");
+
+    // Maps added to the master after the fact reach the players on refreshMaps.
+    f.master.addMap("Debug").add("Toggle", ActionType::Button)
+        .bindings.push_back(Binding{"", "", "<Keyboard>/f1", "Toggle", "", "", "", false, false, -1});
+    checkTrue(f.sys->player(1)->action("Debug", "Toggle") == nullptr, "a new map is not in the player yet");
+    checkEq(f.sys->player(1)->currentActionMap(), "Gameplay", "refreshMaps keeps the map the player was driving");
+    f.sys->refreshMaps();
+    checkTrue(f.sys->player(1)->action("Debug", "Toggle") != nullptr, "refreshMaps copies the new map");
+    checkEq(f.sys->player(1)->currentActionMap(), "Gameplay", "and keeps the player's current map");
+}
+
+// ---------------------------------------------------------------- 15. auto-join and per-player schemes
+
+void testAutoJoin() {
+    std::printf("\n15. auto-join, default maps and per-player scheme filtering\n");
+    MultiFixture f;
+    f.sys->setDefaultActionMap("Gameplay");
+    f.sys->autoJoin(true, JoinOptions{"Gamepad", {}, false}, 2);
+    int joined = 0;
+    f.sys->onPlayerJoined = [&](PlayerInput&) { ++joined; };
+
+    f.tick();
+    checkTrue(f.sys->playerCount() == 0, "no player joins without a press");
+
+    // Pressing a gamepad button joins the player that pressed it, on the same frame.
+    f.pad0->setButton("buttonSouth", true);
+    f.tick();
+    checkTrue(f.sys->playerCount() == 1 && joined == 1, "a press edge joins one player");
+    checkTrue(f.sys->player(1)->devices()[0] == f.pad0, "the player is paired with the device that was pressed");
+    checkEq(f.sys->player(1)->currentActionMap(), "Gameplay", "the default map is enabled on join");
+    checkTrue(f.sys->player(1)->action("Gameplay", "Jump")->performed(), "and the joining press already reads");
+
+    // Holding does not join a second player; a new press on another device does.
+    f.tick();
+    checkTrue(f.sys->playerCount() == 1, "holding the button does not join again");
+    f.pad1->setButton("buttonSouth", true);
+    f.tick();
+    checkTrue(f.sys->playerCount() == 2, "a press on an unpaired device joins the second player");
+
+    // The cap holds.
+    f.pad0->setButton("buttonSouth", false);
+    f.pad1->setButton("buttonSouth", false);
+    f.tick();
+    f.pad0->setButton("buttonSouth", true);
+    f.tick();
+    checkTrue(f.sys->playerCount() == 2, "autoJoin respects maxPlayers");
+
+    // A player with both a keyboard and a gamepad, on the Gamepad scheme, ignores its keyboard.
+    MultiFixture g;
+    PlayerInput* p = g.join(JoinOptions{"Gamepad", {g.pad0}, false});
+    // Hand the same player a keyboard as well: the scheme, not the device list, decides what is live.
+    g.sys->master().addDevice(DeviceKind::Keyboard, 0);
+    p->pairDevice(g.sys->master().device(DeviceKind::Keyboard, 0));
+    g.keyboard->setButton("space", true);
+    g.tick();
+    checkTrue(!g.jump(p)->triggered(), "with the Gamepad scheme, the player's keyboard binding is filtered out");
+    g.pad0->setButton("buttonSouth", true);
+    g.tick();
+    checkTrue(g.jump(p)->triggered(), "and the gamepad binding still fires");
+
+    // Losing the device mid-game zeroes the player, keeps its map, and does not leave a stale value behind.
+    p->unpairDevice(g.pad0);
+    checkTrue(p->devices().size() == 1, "unpairing removes the device");
+    checkTrue(g.jump(p)->enabled, "the player keeps driving the map it was on across a pairing change");
+    checkEq(p->currentActionMap(), "Gameplay", "and keeps its name");
+    g.tick();
+    checkNear(g.jump(p)->readFloat(), 0.0f, 1e-4f, "a player with no gamepad reads zero");
+    // Hot-swapping is the reason the map survives: plug a gamepad back in and Jump reads again with no game code.
+    g.pad1->setButton("buttonSouth", true);
+    p->pairDevice(g.pad1);
+    g.tick();
+    checkTrue(g.jump(p)->triggered() || g.jump(p)->performed(),
+              "re-pairing a gamepad while it is held reads as a press on the rebuilt bindings");
+}
+
 } // namespace
 
 int main() {
@@ -777,6 +1033,9 @@ int main() {
     testPassThroughAndCallbacks();
     testParserEdges();
     testViewerAsset();
+    testPlayers();
+    testJoinRules();
+    testAutoJoin();
     std::printf("\n%d checks, %d failure(s)\n", gChecks, gFailures);
     return gFailures == 0 ? 0 : 1;
 }

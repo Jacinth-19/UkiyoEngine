@@ -8,6 +8,23 @@ if(NOT CMAKE_BUILD_TYPE)
   set(CMAKE_BUILD_TYPE Release)
 endif()
 
+# ---- Compiler flags --------------------------------------------------------
+# One variable per intent, so no target has to know which compiler is building it. CI builds both: Ubuntu with GCC and
+# Windows with MSVC. The MSVC set keeps the same level of noise: /W3 is its -Wall, /permissive- rejects the GNU
+# extensions GCC accepts by default, and /utf-8 matters because the sources contain Japanese and box drawing.
+if(MSVC)
+  set(UKIYO_WARNINGS /W3 /permissive- /utf-8)
+  set(UKIYO_WARNINGS_PEDANTIC ${UKIYO_WARNINGS})
+  set(UKIYO_NO_WARNINGS /w)
+  # min() and max() from <windows.h> collide with std::min/std::max; the CRT's "unsafe function" warnings are noise
+  # for a codebase that already uses the bounded forms.
+  add_compile_definitions(NOMINMAX WIN32_LEAN_AND_MEAN _CRT_SECURE_NO_WARNINGS)
+else()
+  set(UKIYO_WARNINGS -Wall -Wextra -Wno-missing-field-initializers)
+  set(UKIYO_WARNINGS_PEDANTIC -Wall -Wextra -Wpedantic)
+  set(UKIYO_NO_WARNINGS -w)
+endif()
+
 find_package(Python3 COMPONENTS Interpreter REQUIRED)
 find_package(Vulkan REQUIRED)
 
@@ -48,9 +65,19 @@ if(EXISTS ${CMAKE_SOURCE_DIR}/third_party/glfw/CMakeLists.txt)
 else()
   find_package(glfw3 REQUIRED)
 endif()
-find_program(GLSLANG_VALIDATOR glslangValidator REQUIRED)
+# The Vulkan SDK ships glslangValidator and the glslang package, but neither is on CMake's default search path: the
+# SDK puts tools in Bin/ and the package config in Lib/cmake (capital L on Windows, lowercase on Linux). Debian splits
+# glslang out into libglslang-dev, where the default path already finds it, hence QUIET first and REQUIRED after.
+find_program(GLSLANG_VALIDATOR glslangValidator
+  HINTS "$ENV{VULKAN_SDK}/Bin" "$ENV{VULKAN_SDK}/bin")
+if(NOT GLSLANG_VALIDATOR)
+  message(FATAL_ERROR "glslangValidator not found: install the Vulkan SDK, or glslang-tools on Debian")
+endif()
 # glslang is linked into the engine: GLSL -> SPIR-V at runtime (generated material shaders).
-find_package(glslang CONFIG REQUIRED)
+find_package(glslang CONFIG QUIET HINTS "$ENV{VULKAN_SDK}/Lib/cmake" "$ENV{VULKAN_SDK}/lib/cmake")
+if(NOT glslang_FOUND)
+  find_package(glslang CONFIG REQUIRED)
+endif()
 
 # ---- Shaders: tools/shaderc.py -> build/shaders/{gl,spv} ------------------
 set(SHADER_SRC_DIR ${CMAKE_SOURCE_DIR}/shaders)
@@ -105,20 +132,28 @@ target_include_directories(ukiyo_recast PUBLIC
   ${CMAKE_SOURCE_DIR}/third_party/recastnavigation/Recast/Include
   ${CMAKE_SOURCE_DIR}/third_party/recastnavigation/Detour/Include
   ${CMAKE_SOURCE_DIR}/third_party/recastnavigation/DetourCrowd/Include)
-target_compile_options(ukiyo_recast PRIVATE -w)
+target_compile_options(ukiyo_recast PRIVATE ${UKIYO_NO_WARNINGS})
 
 # Lua 5.4 (scripting). Core and standard libraries only; the standalone interpreter is not built.
 file(GLOB LUA_SRC CONFIGURE_DEPENDS ${CMAKE_SOURCE_DIR}/third_party/lua/*.c)
 add_library(ukiyo_lua STATIC ${LUA_SRC})
 target_include_directories(ukiyo_lua PUBLIC ${CMAKE_SOURCE_DIR}/third_party/lua)
-target_compile_definitions(ukiyo_lua PRIVATE LUA_USE_LINUX)
-target_compile_options(ukiyo_lua PRIVATE -w)
+if(WIN32)
+  target_compile_definitions(ukiyo_lua PRIVATE LUA_USE_WINDOWS)
+else()
+  target_compile_definitions(ukiyo_lua PRIVATE LUA_USE_LINUX)
+endif()
+target_compile_options(ukiyo_lua PRIVATE ${UKIYO_NO_WARNINGS})
 
 # miniaudio (audio output, mixing, and 3D sound).
 add_library(ukiyo_miniaudio STATIC ${CMAKE_SOURCE_DIR}/third_party/miniaudio/miniaudio_impl.cpp)
 target_include_directories(ukiyo_miniaudio PUBLIC ${CMAKE_SOURCE_DIR}/third_party/miniaudio)
-target_compile_options(ukiyo_miniaudio PRIVATE -w)
-target_link_libraries(ukiyo_miniaudio PUBLIC ${CMAKE_DL_LIBS} pthread m)
+target_compile_options(ukiyo_miniaudio PRIVATE ${UKIYO_NO_WARNINGS})
+if(UNIX)
+  # miniaudio's ALSA/PulseAudio backends open their libraries with dlopen and mix on its own thread; Windows uses
+  # WASAPI and the Win32 thread API, which need no extra library.
+  target_link_libraries(ukiyo_miniaudio PUBLIC ${CMAKE_DL_LIBS} pthread m)
+endif()
 
 # ---- Engine core library ---------------------------------------------------
 add_library(ukiyo_core STATIC
@@ -165,7 +200,7 @@ target_link_libraries(ukiyo_core PUBLIC
 if(UNIX AND NOT APPLE)
   target_link_libraries(ukiyo_core PUBLIC pthread)
 endif()
-target_compile_options(ukiyo_core PRIVATE -Wall -Wextra -Wno-missing-field-initializers)
+target_compile_options(ukiyo_core PRIVATE ${UKIYO_WARNINGS})
 
 # ---- Game systems: physics, navigation, audio, animation state, scripting, particles -----
 add_library(ukiyo_systems STATIC
@@ -182,12 +217,12 @@ target_link_libraries(ukiyo_systems PUBLIC ukiyo_core ukiyo_input Jolt ukiyo_rec
 if(WIN32)
   target_link_libraries(ukiyo_systems PUBLIC ws2_32)
 endif()
-target_compile_options(ukiyo_systems PRIVATE -Wall -Wextra -Wno-missing-field-initializers)
+target_compile_options(ukiyo_systems PRIVATE ${UKIYO_WARNINGS})
 
 add_executable(systems_test tests/systems_test.cpp)
 add_executable(pmx_glb_test tests/pmx_glb_test.cpp src/engine/pmx_glb.cpp)
 target_include_directories(pmx_glb_test PRIVATE ${CMAKE_SOURCE_DIR}/src)
-target_compile_options(pmx_glb_test PRIVATE -Wall -Wextra -Wpedantic)
+target_compile_options(pmx_glb_test PRIVATE ${UKIYO_WARNINGS_PEDANTIC})
 add_executable(ukiyo_pak tools/ukiyo_pak.cpp)
 target_link_libraries(ukiyo_pak PRIVATE ukiyo_core)
 
@@ -198,7 +233,7 @@ add_executable(terrain_preview tools/terrain_preview.cpp src/engine/terrain.cpp 
                src/engine/grass.cpp)
 target_include_directories(terrain_preview PRIVATE ${CMAKE_SOURCE_DIR}/src ${CMAKE_SOURCE_DIR}/third_party)
 target_link_libraries(terrain_preview PRIVATE glm::glm)
-target_compile_options(terrain_preview PRIVATE -Wall -Wextra -Wno-missing-field-initializers)
+target_compile_options(terrain_preview PRIVATE ${UKIYO_WARNINGS})
 # Virtual geometry (docs/VGEOM.md). The builder and the selector are CPU code, so this test needs no device and runs
 # anywhere, including CI.
 # The docs figure for docs/VGEOM.md, rendered without a GPU: the same build and the same cuts the renderer uses, with a
@@ -208,21 +243,21 @@ add_executable(vgeom_preview tools/vgeom_preview.cpp src/engine/terrain.cpp src/
 target_include_directories(vgeom_preview PRIVATE ${CMAKE_SOURCE_DIR}/src ${CMAKE_SOURCE_DIR}/third_party
                            ${CMAKE_SOURCE_DIR}/third_party/meshoptimizer)
 target_link_libraries(vgeom_preview PRIVATE glm::glm)
-target_compile_options(vgeom_preview PRIVATE -Wall -Wextra -Wno-missing-field-initializers)
+target_compile_options(vgeom_preview PRIVATE ${UKIYO_WARNINGS})
 
 # The CPU path tracer behind docs/PATHTRACE.md and docs/pathtrace-terrain.png: the ground-truth render of the Terrain
 # Lab scene, on any CPU and with no GPU at all. STB is implemented in the tool itself, so it does not link ukiyo_core.
 add_executable(pathtrace_preview tools/pathtrace_preview.cpp src/engine/terrain.cpp)
 target_include_directories(pathtrace_preview PRIVATE ${CMAKE_SOURCE_DIR}/src ${CMAKE_SOURCE_DIR}/third_party)
 target_link_libraries(pathtrace_preview PRIVATE glm::glm)
-target_compile_options(pathtrace_preview PRIVATE -Wall -Wextra -Wno-missing-field-initializers)
+target_compile_options(pathtrace_preview PRIVATE ${UKIYO_WARNINGS})
 
 # Motion matching (docs/MOTION.md). The database, the BVH reader and the player are CPU code; the model retarget is
 # compiled here too, so the test links the engine's model header without needing the renderer.
 add_executable(motion_test tests/motion_test.cpp src/engine/motion_match.cpp)
 target_include_directories(motion_test PRIVATE ${CMAKE_SOURCE_DIR}/src ${CMAKE_SOURCE_DIR}/third_party)
 target_link_libraries(motion_test PRIVATE glm::glm)
-target_compile_options(motion_test PRIVATE -Wall -Wextra -Wno-missing-field-initializers)
+target_compile_options(motion_test PRIVATE ${UKIYO_WARNINGS})
 
 # The real-time GI estimator's algorithm on the CPU (docs/PATHTRACE.md §4). The pass is GLSL and CI has no GPU, so the
 # march, the hemisphere model and the accumulation weight are mirrored here and checked against analytic answers: the
@@ -231,60 +266,61 @@ target_compile_options(motion_test PRIVATE -Wall -Wextra -Wno-missing-field-init
 add_executable(gi_test tests/gi_test.cpp)
 target_include_directories(gi_test PRIVATE ${CMAKE_SOURCE_DIR}/src ${CMAKE_SOURCE_DIR}/third_party)
 target_link_libraries(gi_test PRIVATE glm::glm)
-target_compile_options(gi_test PRIVATE -Wall -Wextra -Wno-missing-field-initializers)
+target_compile_options(gi_test PRIVATE ${UKIYO_WARNINGS})
 
 # ---- Input system (docs/INPUT.md) ------------------------------------------
 # The runtime and the .inputactions asset format are plain C++ (glm + nlohmann), with no GLFW, Vulkan or window, so the
 # test below runs on any machine and in CI. The GLFW backend is its own target: only applications link it.
 add_library(ukiyo_input STATIC
   src/input/input.cpp
-  src/input/input_asset.cpp)
+  src/input/input_asset.cpp
+  src/input/input_users.cpp)
 target_include_directories(ukiyo_input PUBLIC ${CMAKE_SOURCE_DIR}/src)
 target_link_libraries(ukiyo_input PUBLIC glm::glm nlohmann_json::nlohmann_json)
-target_compile_options(ukiyo_input PRIVATE -Wall -Wextra -Wno-missing-field-initializers)
+target_compile_options(ukiyo_input PRIVATE ${UKIYO_WARNINGS})
 
 add_library(ukiyo_input_glfw STATIC src/input/input_glfw.cpp)
 target_link_libraries(ukiyo_input_glfw PUBLIC ukiyo_input glfw)
-target_compile_options(ukiyo_input_glfw PRIVATE -Wall -Wextra -Wno-missing-field-initializers)
+target_compile_options(ukiyo_input_glfw PRIVATE ${UKIYO_WARNINGS})
 
 add_executable(input_test tests/input_test.cpp)
 target_link_libraries(input_test PRIVATE ukiyo_input)
 target_compile_definitions(input_test PRIVATE UKIYO_ROOT="${CMAKE_SOURCE_DIR}")
-target_compile_options(input_test PRIVATE -Wall -Wextra -Wno-missing-field-initializers)
+target_compile_options(input_test PRIVATE ${UKIYO_WARNINGS})
 
 # The motion demo (docs/MOTION.md): drives the controller through a scripted route with synthetic clips and writes
 # the figure, so the runtime half of motion matching is exercised on every build.
 add_executable(motion_demo tools/motion_demo.cpp src/engine/motion_match.cpp)
 target_include_directories(motion_demo PRIVATE ${CMAKE_SOURCE_DIR}/src ${CMAKE_SOURCE_DIR}/third_party)
 target_link_libraries(motion_demo PRIVATE glm::glm)
-target_compile_options(motion_demo PRIVATE -Wall -Wextra -Wno-missing-field-initializers)
+target_compile_options(motion_demo PRIVATE ${UKIYO_WARNINGS})
 
 add_executable(vgeom_test tests/vgeom_test.cpp src/engine/vgeom.cpp third_party/meshoptimizer/simplifier.cpp
                third_party/meshoptimizer/allocator.cpp)
 target_include_directories(vgeom_test PRIVATE ${CMAKE_SOURCE_DIR}/src ${CMAKE_SOURCE_DIR}/third_party
                            ${CMAKE_SOURCE_DIR}/third_party/meshoptimizer)
 target_link_libraries(vgeom_test PRIVATE glm::glm)
-target_compile_options(vgeom_test PRIVATE -Wall -Wextra -Wno-missing-field-initializers)
+target_compile_options(vgeom_test PRIVATE ${UKIYO_WARNINGS})
 
 add_executable(particles_gpu_test tests/particles_gpu_test.cpp)
 add_executable(water_render tests/water_render.cpp)
 target_link_libraries(water_render PRIVATE ukiyo_core)
-target_compile_options(water_render PRIVATE -Wall -Wextra -Wno-missing-field-initializers)
+target_compile_options(water_render PRIVATE ${UKIYO_WARNINGS})
 target_link_libraries(particles_gpu_test PRIVATE ukiyo_core)
-target_compile_options(particles_gpu_test PRIVATE -Wall -Wextra -Wno-missing-field-initializers)
+target_compile_options(particles_gpu_test PRIVATE ${UKIYO_WARNINGS})
 target_link_libraries(systems_test PRIVATE ukiyo_systems)
 target_compile_definitions(systems_test PRIVATE UKIYO_ROOT="${CMAKE_SOURCE_DIR}")
-target_compile_options(systems_test PRIVATE -Wall -Wextra -Wno-missing-field-initializers)
+target_compile_options(systems_test PRIVATE ${UKIYO_WARNINGS})
 
 add_executable(network_test tests/network_test.cpp)
 target_link_libraries(network_test PRIVATE ukiyo_systems)
-target_compile_options(network_test PRIVATE -Wall -Wextra -Wno-missing-field-initializers)
+target_compile_options(network_test PRIVATE ${UKIYO_WARNINGS})
 
 # Project templates and the hub's new-project scaffold. No Qt, so this runs anywhere.
 add_executable(project_test tests/project_test.cpp)
 target_link_libraries(project_test PRIVATE ukiyo_core)
 target_compile_definitions(project_test PRIVATE UKIYO_ROOT="${CMAKE_SOURCE_DIR}")
-target_compile_options(project_test PRIVATE -Wall -Wextra -Wno-missing-field-initializers)
+target_compile_options(project_test PRIVATE ${UKIYO_WARNINGS})
 
 # ---- Application -----------------------------------------------------------
 add_executable(ukiyo src/app/main.cpp)
@@ -292,29 +328,29 @@ target_link_libraries(ukiyo PRIVATE ukiyo_core ukiyo_input_glfw)
 # glfw3.h includes GL/gl.h unless told not to. The viewer never makes a GL call itself (the RHI does), so it asks GLFW
 # for the no-GL header and the build does not need GL development headers on the machine.
 target_compile_definitions(ukiyo PRIVATE GLFW_INCLUDE_NONE UKIYO_ROOT="${CMAKE_SOURCE_DIR}")
-target_compile_options(ukiyo PRIVATE -Wall -Wextra -Wno-missing-field-initializers)
+target_compile_options(ukiyo PRIVATE ${UKIYO_WARNINGS})
 
 # ---- Tests -----------------------------------------------------------------
 add_executable(lod_gpu_test tests/lod_gpu_test.cpp)
 target_link_libraries(lod_gpu_test PRIVATE ukiyo_core)
-target_compile_options(lod_gpu_test PRIVATE -Wall -Wextra -Wno-missing-field-initializers)
+target_compile_options(lod_gpu_test PRIVATE ${UKIYO_WARNINGS})
 
 add_executable(endfield_shader_test tests/endfield_shader_test.cpp)
 target_link_libraries(endfield_shader_test PRIVATE ukiyo_core)
 target_compile_definitions(endfield_shader_test PRIVATE UKIYO_ROOT="${CMAKE_SOURCE_DIR}")
-target_compile_options(endfield_shader_test PRIVATE -Wall -Wextra -Wno-missing-field-initializers)
+target_compile_options(endfield_shader_test PRIVATE ${UKIYO_WARNINGS})
 
 add_executable(endfield_gpu_test tests/endfield_gpu_test.cpp)
 target_link_libraries(endfield_gpu_test PRIVATE ukiyo_core)
-target_compile_options(endfield_gpu_test PRIVATE -Wall -Wextra -Wno-missing-field-initializers)
+target_compile_options(endfield_gpu_test PRIVATE ${UKIYO_WARNINGS})
 
 add_executable(endfield_scene_test tests/endfield_scene_test.cpp)
 target_link_libraries(endfield_scene_test PRIVATE ukiyo_core)
-target_compile_options(endfield_scene_test PRIVATE -Wall -Wextra -Wno-missing-field-initializers)
+target_compile_options(endfield_scene_test PRIVATE ${UKIYO_WARNINGS})
 
 add_executable(rig_smoke tests/rig_smoke.cpp)
 target_link_libraries(rig_smoke PRIVATE ukiyo_core)
-target_compile_options(rig_smoke PRIVATE -Wall -Wextra -Wno-missing-field-initializers)
+target_compile_options(rig_smoke PRIVATE ${UKIYO_WARNINGS})
 
 # ---- World editor (Qt6 Widgets) ---------------------------------------------
 option(UKIYO_EDITOR "Build the Ukiyo World Editor (needs Qt6 Widgets)" ON)
@@ -332,7 +368,7 @@ if(UKIYO_EDITOR)
       ${CMAKE_SOURCE_DIR}/third_party/nodeeditor/include/QtNodes/internal)
     target_compile_definitions(ukiyo_nodeeditor PUBLIC NODE_EDITOR_STATIC)
     target_link_libraries(ukiyo_nodeeditor PUBLIC Qt6::Core Qt6::Gui Qt6::Widgets Qt6::OpenGL)
-    target_compile_options(ukiyo_nodeeditor PRIVATE -w)
+    target_compile_options(ukiyo_nodeeditor PRIVATE ${UKIYO_NO_WARNINGS})
 
     # Shader tool: default shader graphs, node coverage, and .ukshader round-trip checks.
     add_executable(ukiyo_shader_tool tools/ukiyo_shader_tool.cpp
@@ -341,7 +377,7 @@ if(UKIYO_EDITOR)
     set_target_properties(ukiyo_shader_tool PROPERTIES AUTOMOC ON CXX_STANDARD 17)
     target_include_directories(ukiyo_shader_tool PRIVATE ${CMAKE_SOURCE_DIR}/editor/src/shader_graph)
     target_link_libraries(ukiyo_shader_tool PRIVATE ukiyo_core ukiyo_nodeeditor Qt6::Widgets)
-    target_compile_options(ukiyo_shader_tool PRIVATE -Wall -Wextra -Wno-missing-field-initializers)
+    target_compile_options(ukiyo_shader_tool PRIVATE ${UKIYO_WARNINGS})
 
     add_executable(ukiyo_editor
       editor/src/main.cpp
@@ -383,12 +419,15 @@ if(UKIYO_EDITOR)
     target_include_directories(ukiyo_editor PRIVATE ${CMAKE_SOURCE_DIR}/editor/src)
     target_compile_definitions(ukiyo_editor PRIVATE UKIYO_ROOT="${CMAKE_SOURCE_DIR}")
     target_link_libraries(ukiyo_editor PRIVATE ukiyo_core ukiyo_systems ukiyo_nodeeditor Qt6::Widgets)
-    target_compile_options(ukiyo_editor PRIVATE -Wall -Wextra -Wno-missing-field-initializers)
+    target_compile_options(ukiyo_editor PRIVATE ${UKIYO_WARNINGS})
     # main_window.cpp is very large. Optimising it at -O3 needs more memory than the build machine has,
     # so this one file is built at -O0 (the build machine has about 1 GB; -O1 runs out of memory here).
-    # The rest of the editor keeps the Release flags.
-    set_source_files_properties(${CMAKE_SOURCE_DIR}/editor/src/main_window.cpp PROPERTIES COMPILE_OPTIONS "-O0")
-    set_source_files_properties(${CMAKE_SOURCE_DIR}/editor/src/main_window_terrain.cpp PROPERTIES COMPILE_OPTIONS "-O0")
+    # The rest of the editor keeps the Release flags. MSVC has no -O0; /Od is its equivalent and its optimiser copes
+    # with the file at /O2, so Windows keeps the default there.
+    if(NOT MSVC)
+      set_source_files_properties(${CMAKE_SOURCE_DIR}/editor/src/main_window.cpp PROPERTIES COMPILE_OPTIONS "-O0")
+      set_source_files_properties(${CMAKE_SOURCE_DIR}/editor/src/main_window_terrain.cpp PROPERTIES COMPILE_OPTIONS "-O0")
+    endif()
 
     # The hub: a launcher that lists recent projects, scaffolds new ones from the templates, and
     # starts the editor on them with --project.
@@ -409,7 +448,7 @@ if(UKIYO_EDITOR)
     target_include_directories(ukiyo_hub PRIVATE ${CMAKE_SOURCE_DIR}/editor/src)
     target_compile_definitions(ukiyo_hub PRIVATE UKIYO_ROOT="${CMAKE_SOURCE_DIR}")
     target_link_libraries(ukiyo_hub PRIVATE ukiyo_core Qt6::Widgets)
-    target_compile_options(ukiyo_hub PRIVATE -Wall -Wextra -Wno-missing-field-initializers)
+    target_compile_options(ukiyo_hub PRIVATE ${UKIYO_WARNINGS})
   else()
     message(STATUS "Qt6 Widgets not found: ukiyo_editor is skipped")
   endif()

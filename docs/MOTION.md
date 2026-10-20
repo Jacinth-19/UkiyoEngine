@@ -289,7 +289,7 @@ not solved for, only directions.
 `tests/motion_test.cpp` runs without a device and is built as `motion_test`; CI runs it on every push.
 
 ```sh
-./build/motion_test     # 48 checks, exit code 0
+./build/motion_test     # 57 checks, exit code 0
 ./build/motion_demo renders/motion-demo.png
 ```
 

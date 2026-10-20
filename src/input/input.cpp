@@ -860,4 +860,43 @@ void State::evaluateBinding(Action& a, Binding& b, float dt) {
     b.prevMag = mag;
 }
 
+
+void State::copyMapsFrom(const State& other) {
+    maps_.clear();
+    controlSchemes = other.controlSchemes;
+    for (const ActionMap& src : other.maps_) {
+        ActionMap& dst = addMap(src.name);
+        dst.id = src.id;
+        // The map arrives disabled and without its callback: enabling a map is a decision the receiver makes, and a
+        // callback belongs to whoever holds this state.
+        dst.enabled = false;
+        for (const Action& a : src.actions) {
+            Action& copy = dst.add(a.name, a.type);
+            copy.id = a.id;
+            copy.expectedControlType = a.expectedControlType;
+            copy.processors = a.processors;
+            copy.interactions = a.interactions;
+            copy.pressPoint = a.pressPoint;
+            copy.bindings = a.bindings;
+            // Runtime fields are reset by Action's own defaults, and the bindings' resolved pointers are stale until
+            // resolveBindings runs against this state's devices.
+            for (Binding& b : copy.bindings) {
+                b.control = nullptr;
+                b.device = nullptr;
+                b.holdTime = 0.0f;
+                b.tapCount = 0;
+                b.lastTapTime = 1e9f;
+                b.startedThisFrame = b.performedThisFrame = b.canceledThisFrame = false;
+                b.down = b.prevDown = false;
+                b.interactionDone = b.interactionFailed = false;
+                b.prevMag = 0.0f;
+                b.hasValue = false;
+                b.outValue = 0.0f;
+                b.outVector = glm::vec2(0.0f);
+            }
+        }
+    }
+    resolveBindings();
+}
+
 } // namespace ukiyo::input

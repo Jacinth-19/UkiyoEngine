@@ -9,17 +9,19 @@ The implementation is Unity's Input System minus touch and XR: Keyboard, Mouse a
 PassThrough actions; 1D and 2D composites; Press, Hold, Tap, SlowTap and MultiTap interactions; the processors an
 everyday project uses; runtime rebinding; control schemes; and the asset format in both directions.
 
-The runtime is plain C++ with no window, no GPU and no GLFW in it, which is why `tests/input_test.cpp` can drive 128
-checks of it from synthetic devices on every push. The GLFW backend is a separate target that only applications link.
+The runtime is plain C++ with no window, no GPU and no GLFW in it, which is why `tests/input_test.cpp` can drive 187
+checks of it from synthetic devices on every push, on Linux and on Windows. The GLFW backend is a separate target that only applications link.
 
 ```
 src/input/input.h          the public API: Control, Device, Binding, Action, ActionMap, State
 src/input/input.cpp        evaluation, processors, interactions, rebinding
+src/input/input_users.h    multi-player: InputSystem (the manager) and PlayerInput (one player)
+src/input/input_users.cpp  pairing, per-player mirrors, join rules, auto-join
 src/input/input_asset.h    .inputactions read/write
 src/input/input_asset.cpp  the JSON reader and writer
 src/input/input_glfw.h     the backend: install(state, window), pushScroll
 src/input/input_glfw.cpp   keyboard, mouse and gamepad polling
-tests/input_test.cpp       the 120 checks CI runs
+tests/input_test.cpp       the 187 checks CI runs
 assets/input/viewer.inputactions  the standalone viewer's bindings, loaded at runtime
 ```
 
@@ -203,7 +205,7 @@ authored in Unity has to behave the same way here. The one extension is marked a
     rule, and the reason a keyboard binding works with no scheme set at all.
 11. **Changing the control scheme re-resolves bindings.** The value has to return to zero before a new press reads as a
     press: switching from a held pad button to a held key with no gap in the value does not re-trigger. Unity behaves
-    this way; the test in §9 pins it down.
+    this way; the test in §10 pins it down.
 12. **An action bound to a device that is not connected is inactive, not an error.** Plugging the device in later makes
     it live after `resolveBindings()`, without rebuilding the asset.
 13. **`initialStateCheck` is accepted and ignored.** The engine evaluates every action every frame against the current
@@ -259,9 +261,67 @@ Where it is used:
 | `src/app/main.cpp` | The standalone viewer's bindings live in `assets/input/viewer.inputactions`; the camera, its toggles and its screenshot key are actions. |
 | `editor/src/main_window.cpp` | The editor's own chrome (Ctrl+S, menu shortcuts) stays on Qt. Key presses in the Game view are forwarded to the running world as portable key text, which `World::setKeyHeld` translates to a control name. |
 
-## 9. The test
+## 9. Multi-player: PlayerInput and InputUser
 
-`tests/input_test.cpp` drives the runtime with synthetic devices: no window, no GPU, no GLFW. 128 checks, grouped:
+One `State` is one player's worth of input: it owns the devices it evaluates and the maps they are bound to. Four
+players therefore cannot share one — `Jump` would be a single action with a single value, and player 1 releasing it would
+cancel player 2's press.
+
+The split is Unity's, and so are the names:
+
+| Unity | Here | What it owns |
+| --- | --- | --- |
+| `InputSystem` | `InputSystem` | the *master* `State` (devices and the authored maps) and the players |
+| `InputUser` | `PlayerInput` | one player: its devices and its own action values |
+| `PlayerInput` | `PlayerInput` | the same object: a user with one set of actions *is* the player here, so the two collapse |
+| `PlayerInputManager` | `InputSystem::join` / `leave` / `autoJoin` | who joins, with what, and when |
+| `InputUserPairingOptions` | `JoinOptions` | scheme, explicit devices, duplicates |
+
+The master is the only `State` a backend writes to. Once a frame `InputSystem::update` polls it, then for every player
+copies the values of the devices that player owns into a private mirror and updates the player's own `State`. A player
+whose devices are a keyboard and a mouse has no gamepad device in its `State` at all, so `<Gamepad>/buttonSouth` resolves
+to nothing for it: player 1 physically cannot press player 2's Jump.
+
+Everything downstream is the single-player code. Phases, processors, interactions, callbacks, rebinding — a player's
+`State` is an ordinary `State`, and `player.actions().action("Gameplay", "Jump")` is the same kind of object the rest of
+the engine reads.
+
+```cpp
+ukiyo::input::InputSystem players(&world.input());   // World::inputPlayers() does this for you
+players.setDefaultActionMap("Gameplay");
+
+ukiyo::input::PlayerInput* p = players.join(ukiyo::input::JoinOptions{"Gamepad"});   // the first free gamepad
+if (!p) return;                                       // no pad free: a normal answer, not an exception
+p->actions().action("Gameplay", "Jump")->triggered();
+```
+
+`join()` returns `nullptr` rather than throwing when nothing is free, because "the second player has no controller" is
+an answer a game has to render. Three ways to ask:
+
+* **by scheme** — `JoinOptions{"Gamepad"}`: the first free device set that satisfies that scheme, skipping devices
+  another player already holds, so four players fill four gamepads instead of all landing on the first;
+* **by device** — `JoinOptions{"", {pad}}`: exactly these, refused if one belongs to another player. `allowDuplicates`
+  lifts the refusal, and it is off by default because the failure it prevents — player 2 pressing player 1's button — is
+  silent;
+* **by press** — `autoJoin(true, …, maxPlayers)`: Unity's "Join Players When Button Is Pressed". The manager watches
+  unpaired devices and joins on the first press edge, pairing the player with the device that was pressed. It runs
+  before the mirrors, so the button that joined you already reads on the frame you pressed it.
+
+Per player: `switchActionMap("Menu")` disables the other maps for that player alone; `setControlScheme("Gamepad")`
+filters that player's bindings by group; `pairDevice` / `unpairDevice` re-mirror immediately, and a hot-swap keeps the
+map the player was driving — a button held during the swap reads as a press rather than being swallowed.
+
+The cost is one copy of a few hundred floats per player per frame, and it buys the property that matters: the players'
+actions cannot alias each other. A `State`'s maps are a template, so the copy is `State::copyMapsFrom`, which takes the
+maps, actions, bindings and control schemes and leaves every callback and runtime value behind.
+
+From Lua a game gets the small surface it needs: `ukiyo.joinPlayer(scheme)`, `playerCount()`, `leavePlayer(index)`, and
+`playerActionDown` / `playerActionValue` / `playerActionVector2(index, action)`. `World::inputPlayers()` is created on
+first use and shares the world's `Gameplay` map and its devices.
+
+## 10. The test
+
+`tests/input_test.cpp` drives the runtime with synthetic devices: no window, no GPU, no GLFW. 187 checks, grouped:
 
 1. devices and control paths — a keyboard has `space`, a trigger is an Axis, `readPath` resolves a control;
 2. button actions — press, hold, release, and `triggered()` being true for exactly one frame;
@@ -274,7 +334,15 @@ Where it is used:
 9. absent devices — inactive, then live when hot-plugged, then dead when disabled;
 10. pass-through actions, the action callbacks and the map's `onActionPerformed` callback;
 11. parser edges — interactions, processors, GUID stability, portable key names;
-12. the shipped `viewer.inputactions`: every action the viewer reads exists, and WASD/E/Q/wheel drive it.
+12. the shipped `viewer.inputactions`: every action the viewer reads exists, and WASD/E/Q/wheel drive it;
+13. players and pairing — two players on one keyboard and two gamepads hold the same action at once with separate
+    values, and neither can press the other's button;
+14. join rules — a scheme takes the first *free* device, a second join takes the next one, a third finds none, an
+    explicit device already held is refused by name, `allowDuplicates` allows it, leaving frees the device, and
+    `refreshMaps` copies a map added to the master without disturbing the map a player is driving;
+15. auto-join, default maps and per-player schemes — a press edge joins one player and not two, `maxPlayers` caps it,
+    the joining press already reads, a player on the `Gamepad` scheme ignores its own keyboard, and unpairing zeroes the
+    player while keeping its map.
 
 Run it anywhere:
 
@@ -294,17 +362,21 @@ Three bugs it caught before the system shipped, each now covered:
 - A Button action was marked Performed whenever its value was past the press point, even with a Tap attached, so a tap
   fired on press. Interactions own the phase now.
 - Disabling a map left the phases frozen, so `triggered()` reported the same press forever. Disabling cancels (§6.9).
+- A pairing change rebuilt a player's maps and dropped the map it was driving, so a hot-swapped controller left the
+  player silent with no error anywhere. `PlayerInput::rebuild` restores the map by name (§9).
 
-## 10. What is not here
+## 11. What is not here
 
-Touch, XR, `PlayerInput`, `InputUser` pairing and multi-player device assignment; control path wildcards
+Touch and XR. A **split keyboard** — two players on one keyboard, WASD versus the arrow keys — needs Unity's
+device-indexed control paths (`<Keyboard>/w` on device 1), which the asset parser does not speak; two players can share
+a keyboard today only with `allowDuplicates`, which hands both of them every key. Control path wildcards
 (`<Keyboard>/*`); per-binding press points; `press` interaction parameters; `Dpad` as a non-composite control; and the
 editor's rebinding overlay (the API is there — §7 — the UI is not). A device is one keyboard, one mouse and up to four
 gamepads, which is the shape this engine's games use.
 
-## 11. Rebuilding the viewer asset
+## 12. Rebuilding the viewer asset
 
-The viewer's file is the source of truth for its bindings; if an action is renamed there, the build fails at §9.12
-rather than the viewer silently losing a key. To regenerate it from code, build the state you want and call
+The viewer's file is the source of truth for its bindings; if an action is renamed there, the build fails at §10.12
+rather than the viewer silently losing a key (§10.12). To regenerate it from code, build the state you want and call
 `saveAssetFile(state, "assets/input/viewer.inputactions", &error)`; the writer's output is stable, so the diff will be
 only the change.

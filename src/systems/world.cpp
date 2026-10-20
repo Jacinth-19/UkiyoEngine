@@ -69,6 +69,68 @@ int l_actionDown(lua_State* L) {
     return 1;
 }
 
+// ukiyo.joinPlayer([scheme]) -> index, or nil when no free device matches
+int l_joinPlayer(lua_State* L) {
+    World* w = worldOf(L);
+    ukiyo::input::JoinOptions options;
+    if (lua_gettop(L) >= 1 && !lua_isnil(L, 1)) options.controlScheme = luaL_checkstring(L, 1);
+    ukiyo::input::PlayerInput* p = w->inputPlayers().join(options);
+    if (!p) {
+        lua_pushnil(L);
+        return 1;
+    }
+    lua_pushinteger(L, p->index());
+    return 1;
+}
+
+// ukiyo.playerCount() -> int
+int l_playerCount(lua_State* L) {
+    World* w = worldOf(L);
+    lua_pushinteger(L, w->hasInputPlayers() ? w->inputPlayers().playerCount() : 0);
+    return 1;
+}
+
+// ukiyo.leavePlayer(index) -> bool
+int l_leavePlayer(lua_State* L) {
+    World* w = worldOf(L);
+    if (!w->hasInputPlayers()) { lua_pushboolean(L, 0); return 1; }
+    const int index = int(luaL_checkinteger(L, 1));
+    const bool had = w->inputPlayers().player(index) != nullptr;
+    w->inputPlayers().leaveIndex(index);
+    lua_pushboolean(L, had ? 1 : 0);
+    return 1;
+}
+
+// The action a player is currently driving, or null. Shared by the three readers below.
+const ukiyo::input::Action* playerAction(World* w, int index, const char* name) {
+    if (!w->hasInputPlayers()) return nullptr;
+    ukiyo::input::PlayerInput* p = w->inputPlayers().player(index);
+    return p ? p->action("", name) : nullptr;
+}
+
+// ukiyo.playerActionDown(index, action) -> bool
+int l_playerActionDown(lua_State* L) {
+    const ukiyo::input::Action* a = playerAction(worldOf(L), int(luaL_checkinteger(L, 1)), luaL_checkstring(L, 2));
+    lua_pushboolean(L, a && a->pressed() ? 1 : 0);
+    return 1;
+}
+
+// ukiyo.playerActionValue(index, action) -> number
+int l_playerActionValue(lua_State* L) {
+    const ukiyo::input::Action* a = playerAction(worldOf(L), int(luaL_checkinteger(L, 1)), luaL_checkstring(L, 2));
+    lua_pushnumber(L, a ? a->readFloat() : 0.0);
+    return 1;
+}
+
+// ukiyo.playerActionVector2(index, action) -> x, y
+int l_playerActionVector2(lua_State* L) {
+    const ukiyo::input::Action* a = playerAction(worldOf(L), int(luaL_checkinteger(L, 1)), luaL_checkstring(L, 2));
+    const glm::vec2 v = a ? a->readVector2() : glm::vec2(0.0f);
+    lua_pushnumber(L, v.x);
+    lua_pushnumber(L, v.y);
+    return 2;
+}
+
 // ukiyo.getPosition(name) -> x, y, z
 int l_getPosition(lua_State* L) {
     World* w = worldOf(L);
@@ -440,6 +502,12 @@ World::World(bool audioNoDevice) : audio(audioNoDevice) {
     script.registerFunction("log", l_log, this);
     script.registerFunction("time", l_time, this);
     script.registerFunction("actionDown", l_actionDown, this);
+    script.registerFunction("joinPlayer", l_joinPlayer, this);
+    script.registerFunction("playerCount", l_playerCount, this);
+    script.registerFunction("leavePlayer", l_leavePlayer, this);
+    script.registerFunction("playerActionDown", l_playerActionDown, this);
+    script.registerFunction("playerActionValue", l_playerActionValue, this);
+    script.registerFunction("playerActionVector2", l_playerActionVector2, this);
     script.registerFunction("getPosition", l_getPosition, this);
     script.registerFunction("setPosition", l_setPosition, this);
     script.registerFunction("moveTo", l_moveTo, this);
@@ -595,6 +663,8 @@ void World::setInputActions(const std::vector<engine::InputAction>& actions) {
     }
     map.enabled = true;
     input_.resolveBindings();
+    // A player holds a copy of the maps, so a project that reloads its actions mid-game has to hand the new ones over.
+    if (players_) players_->refreshMaps();
 }
 
 void World::setKeyHeld(const std::string& key, bool down) {
@@ -606,6 +676,15 @@ void World::setKeyHeld(const std::string& key, bool down) {
     // Key events arrive between ticks, and a script (or the editor's self-test) can ask actionDown() before the next
     // tick. Evaluating now with dt 0 makes the press visible immediately; the next tick's update re-latches it.
     input_.update(0.0f);
+}
+
+ukiyo::input::InputSystem& World::inputPlayers() {
+    if (!players_) {
+        players_ = std::make_unique<ukiyo::input::InputSystem>(&input_);
+        players_->setAutoUpdateMaster(false);   // tick() updates the master first, once
+        players_->setDefaultActionMap("Gameplay");
+    }
+    return *players_;
 }
 
 bool World::actionDown(const std::string& action) const {
@@ -679,8 +758,10 @@ void World::dispatchContacts() {
 }
 
 void World::tick(float dt) {
-    // Input runs on unscaled time: pausing the game (timeScale 0) must still let a script read a menu key.
+    // Input runs on unscaled time: pausing the game (timeScale 0) must still let a script read a menu key. The
+    // master is updated here, so the players only mirror and evaluate.
     input_.update(dt);
+    if (players_) players_->update(dt);
     dt *= timeScale_;
     script.callUpdate(dt);
     physics.step(dt);
