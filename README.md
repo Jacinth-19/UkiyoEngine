@@ -16,7 +16,7 @@ see [Brand and design](#brand-and-design).
 
 ## The workspace
 
-Five programs and two libraries, all from one build:
+Three programs, two libraries and a set of offline tools, all from one build:
 
 | Target | What it is |
 | --- | --- |
