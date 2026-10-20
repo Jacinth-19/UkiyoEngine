@@ -29,17 +29,23 @@ namespace {
 constexpr float kPi = 3.14159265f;
 
 // A locomotion cycle: root travels along `dir` at `speed`, feet swing past each other, hands counter-swing.
-// `stride` is the cycle rate in Hz. The pose is deliberately simple — six joints — because what is being tested is
-// the matcher, not the artistry.
+// `stride` is the cycle rate in Hz. The pose is deliberately simple — a hip joint with a two-segment leg pair and a
+// head — because what is being tested is the matcher, not the artistry. The leg has to be a real chain, though: foot
+// locking is a two-bone solve on hip, knee and ankle, and with the feet parented straight to the hips there is nothing
+// to solve, so the demo would be a picture of a system that was not running.
 MotionClip makeClip(const char* name, float speed, glm::vec2 dir, float stride, int frames = 180, float fps = 30.0f,
                     bool idle = false) {
     MotionClip clip;
     clip.name = name;
     clip.fps = fps;
     clip.joints = {{"Hips", -1, glm::vec3(0.0f)},
-                   {"LeftFoot", 0, glm::vec3(0.12f, -0.95f, 0.0f)},
-                   {"RightFoot", 0, glm::vec3(-0.12f, -0.95f, 0.0f)},
+                   {"LeftUpLeg", 0, glm::vec3(0.12f, -0.42f, 0.0f)},
+                   {"LeftLowerLeg", 1, glm::vec3(0.0f, -0.45f, 0.0f)},
+                   {"LeftFoot", 2, glm::vec3(0.0f, -0.08f, 0.0f)},
                    {"LeftHand", 0, glm::vec3(0.22f, 0.10f, 0.0f)},
+                   {"RightUpLeg", 0, glm::vec3(-0.12f, -0.42f, 0.0f)},
+                   {"RightLowerLeg", 5, glm::vec3(0.0f, -0.45f, 0.0f)},
+                   {"RightFoot", 6, glm::vec3(0.0f, -0.08f, 0.0f)},
                    {"RightHand", 0, glm::vec3(-0.22f, 0.10f, 0.0f)},
                    {"Head", 0, glm::vec3(0.0f, 0.62f, 0.0f)}};
     const glm::vec2 d = glm::length(dir) > 1e-5f ? glm::normalize(dir) : glm::vec2(0.0f, 1.0f);
@@ -61,11 +67,31 @@ MotionClip makeClip(const char* name, float speed, glm::vec2 dir, float stride, 
         const float lift = idle ? 0.01f : 0.10f;
         const glm::vec3 s(d.x, 0.0f, d.y);          // forward
         const glm::vec3 c(side.x, 0.0f, side.y);    // lateral
+        // Each foot's target height: 0.06 m on the ground through stance, lifted through swing. The knee is then
+        // solved from the hip and the ankle, so the leg's two segments keep their length — which is the property the
+        // lock relies on when it puts a planted foot back.
+        const float footYA = -0.89f + lift * liftA;
+        const float footYB = -0.89f + lift * liftB;
+        const glm::vec3 ankleA = f.rootPos + c * 0.13f + s * (amp * swingA) + glm::vec3(0.0f, footYA, 0.0f);
+        const glm::vec3 ankleB = f.rootPos - c * 0.13f + s * (amp * swingB) + glm::vec3(0.0f, footYB, 0.0f);
+        const auto knee = [&](const glm::vec3& ankle) {
+            const glm::vec3 hip = f.rootPos + glm::vec3(0.0f, -0.02f, 0.0f);
+            const float thigh = 0.45f, shin = 0.44f;
+            glm::vec3 toAnkle = ankle - hip;
+            const float len = glm::clamp(glm::length(toAnkle), std::fabs(thigh - shin) + 1e-3f, thigh + shin - 1e-3f);
+            const glm::vec3 u = glm::normalize(toAnkle);
+            const glm::vec3 bend = glm::normalize(s - u * glm::dot(s, u) + glm::vec3(0.0f, 0.001f, 0.0f));
+            const float a = (thigh * thigh - shin * shin + len * len) / (2.0f * len);
+            const float h = std::sqrt(std::max(0.0f, thigh * thigh - a * a));
+            return hip + u * a + bend * h;
+        };
+        const glm::vec3 hipA = f.rootPos + glm::vec3(0.0f, -0.02f, 0.0f);
+        const glm::vec3 hipB = hipA;
         f.world = {
             f.rootPos,
-            f.rootPos + c * 0.13f + s * (amp * swingA) + glm::vec3(0.0f, -0.89f + lift * liftA, 0.0f),
-            f.rootPos - c * 0.13f + s * (amp * swingB) + glm::vec3(0.0f, -0.89f + lift * liftB, 0.0f),
+            hipA, knee(ankleA), ankleA,
             f.rootPos + c * 0.24f - s * (amp * 0.8f * swingA) + glm::vec3(0.0f, 0.07f, 0.0f),
+            hipB, knee(ankleB), ankleB,
             f.rootPos - c * 0.24f - s * (amp * 0.8f * swingB) + glm::vec3(0.0f, 0.07f, 0.0f),
             f.rootPos + glm::vec3(0.0f, 0.67f, 0.0f),
         };
@@ -102,6 +128,17 @@ struct Canvas {
                 const float dx = float(x) + 0.5f - cx, dy = float(y) + 0.5f - cy;
                 const float d = std::sqrt(dx * dx + dy * dy);
                 const float a = glm::clamp(r - d + 0.5f, 0.0f, 1.0f);
+                if (a > 0.0f) put(x, y, c, a);
+            }
+    }
+    void ring(float cx, float cy, float r, float width, glm::vec3 c) {
+        const int x0 = int(std::floor(cx - r - 1.0f)), x1 = int(std::ceil(cx + r + 1.0f));
+        const int y0 = int(std::floor(cy - r - 1.0f)), y1 = int(std::ceil(cy + r + 1.0f));
+        for (int y = y0; y <= y1; ++y)
+            for (int x = x0; x <= x1; ++x) {
+                const float dx = float(x) + 0.5f - cx, dy = float(y) + 0.5f - cy;
+                const float d = std::sqrt(dx * dx + dy * dy);
+                const float a = glm::clamp(width * 0.5f + 0.5f - std::fabs(d - r), 0.0f, 1.0f);
                 if (a > 0.0f) put(x, y, c, a);
             }
     }
@@ -181,6 +218,7 @@ int main(int argc, char** argv) {
     const float dt = 1.0f / 30.0f;
     std::vector<glm::vec2> path;
     std::vector<glm::vec2> footprints;
+    std::vector<glm::vec2> lockedPoints;
     std::vector<Snapshot> snapshots;
     std::vector<int> clipUse_;   // one entry per matcher decision: which clip it chose
     std::vector<float> offsets_; // and how far the blend had to travel at that decision
@@ -234,9 +272,15 @@ int main(int argc, char** argv) {
                 const glm::vec3 foot = controller.pose()[size_t(j)];
                 const glm::vec2 flat(foot.x, foot.z);
                 const bool near = foot.y < 0.09f;
+                // Two frames at 30 Hz: 8 mm is 0.12 m/s, i.e. a foot that is standing still rather than one on its
+                // way down. The old 35 mm threshold admitted half a metre a second and smeared the map into a band.
                 const float slide = glm::length(flat - lastFoot_[size_t(side)]);
-                if (near && slide < 0.035f) footprints.emplace_back(flat.x, flat.y);
+                if (near && slide < 0.008f) footprints.emplace_back(flat.x, flat.y);
                 lastFoot_[size_t(side)] = flat;
+                // The rings are where the lock was doing real work: a correction of more than 2 cm. A print with no
+                // ring is a foot the clip placed correctly on its own, which is most of them; a ring is a foot the
+                // controller had to hold, and the ring is the point it held it at.
+                if (controller.lastFootCorrection() > 0.02f) lockedPoints.emplace_back(flat.x, flat.y);
             }
         }
         // Four snapshots spread over the route; the offsets put them on different halves of the stride, so the
@@ -257,6 +301,8 @@ int main(int argc, char** argv) {
 
     const float finalSpeed = controller.speed();
     const int matches = controller.player().matchCount();
+    // The size of the correction the lock is carrying at the end, in centimetres: the skate it is removing.
+    const float lockCm = controller.lastFootCorrection() * 100.0f;
 
     // --- The figure: a top-down map of the route on the left, four poses on the right. ---------------------------
     Canvas big(1440, 720);
@@ -285,6 +331,12 @@ int main(int argc, char** argv) {
     for (const glm::vec2& f : footprints) {
         const glm::vec2 p = map2(f);
         big.disc(p.x, p.y, 2.8f, vermilion);
+    }
+    // The pin the lock was holding, ringed in ink: it sits inside the print, which is the point — the print is where
+    // the foot came down, the ring is where the controller kept it.
+    for (const glm::vec2& f : lockedPoints) {
+        const glm::vec2 p = map2(f);
+        big.ring(p.x, p.y, 4.2f, 1.1f, ink);
     }
 
     // Right panel: four poses, drawn side on. Joints are 0 hips, 1 left foot, 2 right foot, 3 left hand, 4 right hand,
@@ -415,6 +467,8 @@ int main(int argc, char** argv) {
                     double(worst), offsets_.size());
         std::printf("wish speed 1.4/5.0 m/s, path %.2f m\n", double(walked));
     }
+    std::printf("foot lock: %zu contacts pinned, last correction %.1f cm, %d feet locked at the end\n",
+                lockedPoints.size(), double(lockCm), controller.lockedFeet());
     std::printf("wrote %s (%dx%d)\n", out.c_str(), small.w, small.h);
 
     // The figure is only evidence if the run itself is sane: the character has to cover ground, the matcher has to

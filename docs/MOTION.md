@@ -187,7 +187,7 @@ character slides sideways for the whole blend. What has to carry across the seam
 root-relative.
 
 `MotionPlayer::lastMatchOffset()` reports the largest offset the last blend had to travel. It is the number to watch:
-on the synthetic clips the demo's mean is 0.067 m; across all 77 captures, where the matcher crosses between performers
+on the synthetic clips the demo's mean is 0.20 m; across all 77 captures, where the matcher crosses between performers
 of different heights and between a walk and a sprint, it is 0.56 m mean and 1.09 m worst.
 
 ## 5. The controller
@@ -216,10 +216,12 @@ over the clip's lowest point (`MotionClip::ground`). Without that the character 
 *`tools/motion_demo.cpp`: ten seconds of input over the synthetic clips CI can build — walk, run, strafe left and
 right, idle — with foot locking on (§5a). Left: the route (walk, a left-hand curve, a run leg that overshoots the
 curve, then a stop) with footprints in vermilion. Right: four poses projected along each moment's own forward axis, so the stride is visible.
-The route covers 17.18 m, peaks at 5.00 m/s and ends at rest; the matcher chooses 13 times and plays walk, run and
-idle — the stop is a real match to the idle clip, not a frozen walk. Blend offsets average 0.067 m. The tool prints
-the database's build time, peak memory, match cost, per-clip usage and blend offsets, and fails if the character does
-not move, never re-matches, or does not stop.*
+The route covers 17.18 m, peaks at 5.00 m/s and ends at rest; the matcher chooses five times and plays walk, run and
+idle — the stop is a real match to the idle clip, not a frozen walk. Blend offsets average 0.20 m. The prints are
+ringed where foot locking was holding the foot by more than 2 cm: most of the straight is unringed because the clips
+already match there, and the rings cluster on the corner, where the stride and the wish disagree. The tool prints the
+database's build time, peak memory, match cost, per-clip usage, blend offsets and the lock's own numbers, and fails if
+the character does not move, never re-matches, or does not stop.*
 
 Run the same tool with a capture folder as the second argument and it uses the real corpus:
 
