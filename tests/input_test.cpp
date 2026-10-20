@@ -1065,6 +1065,33 @@ void testRebindOperation() {
     checkEq(portableKeyFromControlName("numpadMinus"), "NumMinus", "a numpad key has a portable spelling");
     checkEq(portableKeyFromControlName("buttonSouth"), "", "a control that is not a key has no portable spelling");
 
+    // What a binding cell's text means. The editor's table and ProjectSettings.json share this rule, so it is tested
+    // without a widget. `why` is printed by checkEq when a case fails.
+    {
+        std::string stored, why;
+        checkTrue(resolveBindingText("<Gamepad>/buttonSouth", &stored, &why) && stored == "<Gamepad>/buttonSouth",
+                  "a control path is stored as written");
+        checkTrue(resolveBindingText("<Mouse>/leftButton", &stored, &why) && stored == "<Mouse>/leftButton",
+                  "a mouse path is stored as written");
+        checkTrue(!resolveBindingText("<Gamepad>/nonsense", &stored, &why) && why.find("not a control") != std::string::npos,
+                  "a path to a control the device does not have says so");
+        checkTrue(!resolveBindingText("<Bogus>/x", &stored, &why) && why.find("does not name a device") != std::string::npos,
+                  "a path on a device this engine does not have says so");
+        checkTrue(resolveBindingText("W", &stored, &why) && stored == "<Keyboard>/w", "a capital key is stored lower case");
+        checkTrue(resolveBindingText("q", &stored, &why) && stored == "<Keyboard>/q", "a typed lower-case key is stored");
+        checkTrue(resolveBindingText("Shift", &stored, &why) && stored == "<Keyboard>/leftShift",
+                  "a modifier is stored as the control it names");
+        checkTrue(resolveBindingText("leftShift", &stored, &why) && stored == "<Keyboard>/leftShift",
+                  "the Unity spelling reaches the same control");
+        checkTrue(resolveBindingText("PgUp", &stored, &why) && stored == "<Keyboard>/pageUp", "a named key is stored");
+        checkTrue(!resolveBindingText("Ctrl+Q", &stored, &why) && why.find("single key") != std::string::npos,
+                  "a key combination is refused, and says why");
+        checkTrue(!resolveBindingText("Nonsense", &stored, &why), "an unknown key is refused");
+        checkTrue(!resolveBindingText("   ", &stored, &why), "an empty binding is refused");
+        checkTrue(resolveBindingText("  Space  ", &stored, &why) && stored == "<Keyboard>/space",
+                  "the text is trimmed before it is read");
+    }
+
     // The operation: waiting, then a capture from another device kind.
     RebindOperation op;
     std::string applied;

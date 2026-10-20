@@ -12,6 +12,41 @@ std::string controlNameFromPath(const std::string& path) {
     return slash == std::string::npos ? path : path.substr(slash + 1);
 }
 
+bool resolveBindingText(const std::string& text, std::string* stored, std::string* error) {
+    const auto fail = [&](std::string message) {
+        if (error) *error = std::move(message);
+        return false;
+    };
+    // Trim: a cell with a space around a key is a key, not an error.
+    size_t begin = text.find_first_not_of(" \t\r\n");
+    if (begin == std::string::npos) return fail("a binding cannot be empty");
+    const size_t end = text.find_last_not_of(" \t\r\n");
+    const std::string trimmed = text.substr(begin, end - begin + 1);
+
+    if (trimmed.front() == '<') {
+        DeviceKind kind;
+        if (!deviceKindFromPath(trimmed, &kind))
+            return fail("\"" + trimmed + "\" does not name a device. Use <Keyboard>/space or <Gamepad>/buttonSouth.");
+        const std::string control = controlNameFromPath(trimmed);
+        const std::vector<std::string>& known = kind == DeviceKind::Keyboard ? keyboardControls()
+                                                : kind == DeviceKind::Mouse  ? mouseControls()
+                                                                             : gamepadControls();
+        if (control.empty() || std::find(known.begin(), known.end(), control) == known.end())
+            return fail("\"" + trimmed + "\" is not a control on that device.");
+        if (stored) *stored = trimmed;
+        return true;
+    }
+
+    // A key, in either spelling the engine reads: a Unity control name ("leftShift") or the text Qt's PortableText
+    // produces ("Shift"). Both reach the same control, so both are stored under the same path.
+    std::string control;
+    if (!controlNameFromPortableKey(trimmed, &control))
+        return fail("\"" + trimmed + "\" is not a single key this engine knows. Use names such as W, Space, Left or "
+                    "Shift, or a control path such as <Gamepad>/buttonSouth.");
+    if (stored) *stored = "<Keyboard>/" + control;
+    return true;
+}
+
 namespace {
 
 // "leftShift" -> "Left Shift", "dpad/up" -> "Dpad Up", "f1" -> "F1".

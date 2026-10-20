@@ -9,7 +9,7 @@ The implementation is Unity's Input System minus touch and XR: Keyboard, Mouse a
 PassThrough actions; 1D and 2D composites; Press, Hold, Tap, SlowTap and MultiTap interactions; the processors an
 everyday project uses; runtime rebinding; control schemes; and the asset format in both directions.
 
-The runtime is plain C++ with no window, no GPU and no GLFW in it, which is why `tests/input_test.cpp` can drive 187
+The runtime is plain C++ with no window, no GPU and no GLFW in it, which is why `tests/input_test.cpp` can drive 247
 checks of it from synthetic devices on every push, on Linux and on Windows. The GLFW backend is a separate target that only applications link.
 
 ```
@@ -21,7 +21,7 @@ src/input/input_asset.h    .inputactions read/write
 src/input/input_asset.cpp  the JSON reader and writer
 src/input/input_glfw.h     the backend: install(state, window), pushScroll
 src/input/input_glfw.cpp   keyboard, mouse and gamepad polling
-tests/input_test.cpp       the 234 checks CI runs
+tests/input_test.cpp       the 247 checks CI runs
 assets/input/viewer.inputactions  the standalone viewer's bindings, loaded at runtime
 ```
 
@@ -358,7 +358,7 @@ first use and shares the world's `Gameplay` map and its devices.
 
 ## 10. The test
 
-`tests/input_test.cpp` drives the runtime with synthetic devices: no window, no GPU, no GLFW. 234 checks, grouped:
+`tests/input_test.cpp` drives the runtime with synthetic devices: no window, no GPU, no GLFW. 247 checks, grouped:
 
 1. devices and control paths — a keyboard has `space`, a trigger is an Axis, `readPath` resolves a control;
 2. button actions — press, hold, release, and `triggered()` being true for exactly one frame;
@@ -380,8 +380,9 @@ first use and shares the world's `Gameplay` map and its devices.
 15. auto-join, default maps and per-player schemes — a press edge joins one player and not two, `maxPlayers` caps it,
     the joining press already reads, a player on the `Gamepad` scheme ignores its own keyboard, and unpairing zeroes the
     player while keeping its map;
-16. rebinding as a session — the readable names and their 102 round trips, a capture applied to the live binding, the
-    previous path and `revert`, the conflict list, cancel, a timeout, destroying the operation mid-wait, the state's own
+16. rebinding as a session — the readable names and their 102 round trips, what a binding cell's text means (a path,
+    a key, a combination, an unknown control, an unknown device), a capture applied to the live binding, the previous
+    path and `revert`, the conflict list, cancel, a timeout, destroying the operation mid-wait, the state's own
     callbacks coming back afterwards, a control pressed between two updates, and a bad map, action or index refused.
 
 Run it anywhere:

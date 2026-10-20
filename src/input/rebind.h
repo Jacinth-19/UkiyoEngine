@@ -26,6 +26,14 @@ std::string controlNameFromPath(const std::string& path);
 // "<Mouse>/leftButton" -> "Left Button". A path this build cannot name comes back unchanged rather than empty.
 std::string controlDisplayName(const std::string& path);
 
+// What a binding cell's text means, resolved to what to store. A control path ("<Gamepad>/buttonSouth",
+// "<Mouse>/leftButton") is kept as written once its device and control are known; anything else is key text
+// ("W", "Space", "LeftShift", "PgUp") and becomes that key's keyboard path. Returns false and fills *error with a
+// sentence for the person who typed it when the text is empty, names no device, names a control that device does not
+// have, or is not a single key. This is the rule the editor's table and ProjectSettings.json share, kept out of the
+// widget so it can be tested without one.
+bool resolveBindingText(const std::string& text, std::string* stored, std::string* error);
+
 // Another action that already uses the control being bound. `map` is the action's map.
 struct RebindConflict {
     std::string map;

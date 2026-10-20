@@ -12469,40 +12469,18 @@ void MainWindow::fillInputPage(QVBoxLayout* v) {
                 status->setText(problem);
                 return;
             }
-            // A control path (a gamepad button, a mouse button) is stored as written and checked against the devices
-            // and control names the engine knows; anything else is a key, and has to be exactly one.
+            // A path names its own device; anything else is a key and has to be exactly one. The rule is the engine's
+            // (input/rebind.h), so the table and a game's own rebinding screen accept the same text.
             std::string stored;
-            if (binding.startsWith(QLatin1Char('<'))) {
-                ukiyo::input::DeviceKind kind;
-                if (!ukiyo::input::deviceKindFromPath(binding.toStdString(), &kind)) {
-                    status->setText(QStringLiteral("\"%1\" does not name a device. Use <Keyboard>/space or <Gamepad>/buttonSouth.").arg(binding));
-                    return;
-                }
-                const std::string control = ukiyo::input::controlNameFromPath(binding.toStdString());
-                const auto& known = kind == ukiyo::input::DeviceKind::Keyboard ? ukiyo::input::keyboardControls()
-                                   : kind == ukiyo::input::DeviceKind::Mouse  ? ukiyo::input::mouseControls()
-                                                                             : ukiyo::input::gamepadControls();
-                if (std::find(known.begin(), known.end(), control) == known.end()) {
-                    status->setText(QStringLiteral("\"%1\" is not a control on that device.").arg(binding));
-                    return;
-                }
-                stored = binding.toStdString();
-            } else {
-                const QString key = QKeySequence::fromString(binding, QKeySequence::PortableText)
-                                        .toString(QKeySequence::PortableText);
-                if (key.isEmpty() || key.contains(QLatin1Char('+'))) {
-                    status->setText(QStringLiteral("\"%1\" is not a single key. Use names such as W, Space, Left or Shift, "
-                                                   "or a control path such as <Gamepad>/buttonSouth.").arg(binding));
-                    return;
-                }
-                std::string control;
-                if (!ukiyo::input::controlNameFromPortableKey(key.toStdString(), &control)) {
-                    status->setText(QStringLiteral("\"%1\" is not a key the engine knows.").arg(binding));
-                    return;
-                }
-                stored = pathForPortableKey(key);
-                if (table->item(r, 1) && table->item(r, 1)->text() != key) table->item(r, 1)->setText(key);
+            std::string why;
+            if (!ukiyo::input::resolveBindingText(binding.toStdString(), &stored, &why)) {
+                status->setText(QString::fromStdString(why));
+                return;
             }
+            // A keyboard binding reads as the key, not as its path ("Q", not "<Keyboard>/q"), and that is also how
+            // the cell is written back, so what was accepted is what is shown.
+            const QString key = portableKeyForPath(stored);
+            if (!key.isEmpty() && table->item(r, 1) && table->item(r, 1)->text() != key) table->item(r, 1)->setText(key);
             names << name;
             actions.push_back({name.toStdString(), stored});
         }
