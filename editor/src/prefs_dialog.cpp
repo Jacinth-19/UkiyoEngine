@@ -1,5 +1,7 @@
 #include "prefs_dialog.h"
 
+#include "engine/browser_zoom.h"
+
 #include "icons.h"
 
 #include <QCheckBox>
@@ -204,10 +206,13 @@ QWidget* PreferencesDialog::buildBrowser() {
     });
     form->addRow(QStringLiteral("Default view mode"), view);
 
+    // The same ladder the browser's own slider and Ctrl + wheel use (engine/browser_zoom.h): 32 to 224 in steps of 16.
     QSlider* thumb = new QSlider(Qt::Horizontal);
-    thumb->setRange(48, 192);
-    thumb->setValue(prefs::integer(QStringLiteral("browser/thumb"), 96));
-    tagPref(thumb, QStringLiteral("browser/thumb"), 96);
+    thumb->setRange(ukiyo::kThumbMin, ukiyo::kThumbMax);
+    thumb->setSingleStep(ukiyo::kThumbStep);
+    thumb->setPageStep(ukiyo::kThumbStep * 2);
+    thumb->setValue(ukiyo::thumbSliderValue(prefs::integer(QStringLiteral("browser/thumb"), ukiyo::kThumbDefault)));
+    tagPref(thumb, QStringLiteral("browser/thumb"), ukiyo::kThumbDefault);
     connect(thumb, &QSlider::valueChanged, this, [this](int val) {
         prefs::set(QStringLiteral("browser/thumb"), val);
         emit changed();

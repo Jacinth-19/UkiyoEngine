@@ -85,4 +85,11 @@ bool globMatch(std::string_view pattern, std::string_view text, bool caseInsensi
 std::vector<int> globSearch(const std::vector<std::string>& items, std::string_view pattern,
                             bool caseInsensitive = true);
 
+// The Project browser's query rule (Godot 4.8's GH-119103): a query is split on spaces into tokens and a name matches
+// when *every* token does — each token either as a plain substring or, when it reads as a pattern, as a glob. So
+// "hero" finds "Hero.vrm", "*.vrm hero" finds the same file with a pattern and a word, and "sword idle" needs both
+// words anywhere in the name. This is what the editor's search box speaks; it is here rather than in the widget so the
+// rule can be tested on its own, and so anything else that lists names can share it.
+bool matchesNameTokens(std::string_view name, std::string_view query, bool caseInsensitive = true);
+
 } // namespace ukiyo

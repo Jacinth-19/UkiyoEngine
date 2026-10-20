@@ -26,6 +26,24 @@ else()
   set(UKIYO_NO_WARNINGS -w)
 endif()
 
+# ---- Android -----------------------------------------------------------------------------------
+# The editor is a desktop Qt program and there is no Android application yet, so an Android configure does not build a
+# window, a renderer or a hub. What it does build is the portable core: the rules the editor's Project browser runs on
+# (the glob/fuzzy query grammar and the thumbnail ladder), which include no Qt and no graphics header. Compiling those
+# for the two ABIs the project ships is what makes "Android" a build that can be checked rather than a promise, and it
+# keeps the phone build honest: the same translation units the desktop runs are the ones the NDK compiles.
+if(ANDROID)
+  set(UKIYO_ANDROID_CORE
+    src/engine/search.cpp
+    src/engine/browser_zoom.cpp)
+  foreach(t search_test browser_zoom_test)
+    add_executable(${t} tests/${t}.cpp ${UKIYO_ANDROID_CORE})
+    target_include_directories(${t} PRIVATE ${CMAKE_SOURCE_DIR}/src)
+    target_compile_options(${t} PRIVATE ${UKIYO_WARNINGS})
+  endforeach()
+  return()
+endif()
+
 find_package(Python3 COMPONENTS Interpreter REQUIRED)
 find_package(Vulkan REQUIRED)
 
@@ -196,6 +214,7 @@ add_library(ukiyo_core STATIC
   src/engine/trail.cpp
   src/engine/trail_renderer.cpp
   src/engine/search.cpp
+  src/engine/browser_zoom.cpp
   src/engine/texture_mips.cpp
   src/engine/renderer.cpp
   src/engine/rig.cpp
@@ -335,6 +354,17 @@ target_compile_options(alpha_mips_preview PRIVATE ${UKIYO_WARNINGS})
 add_executable(search_test tests/search_test.cpp src/engine/search.cpp)
 target_include_directories(search_test PRIVATE ${CMAKE_SOURCE_DIR}/src)
 target_compile_options(search_test PRIVATE ${UKIYO_WARNINGS})
+
+# The Project browser's thumbnail ladder (docs/FILESYSTEM.md): the size the slider, Ctrl + wheel and the grid share.
+add_executable(browser_zoom_test tests/browser_zoom_test.cpp src/engine/browser_zoom.cpp)
+target_include_directories(browser_zoom_test PRIVATE ${CMAKE_SOURCE_DIR}/src)
+target_compile_options(browser_zoom_test PRIVATE ${UKIYO_WARNINGS})
+
+# The figure in docs/FILESYSTEM.md: the zoom ladder, and glob queries run against a real asset list.
+add_executable(browser_qol_preview tools/browser_qol_preview.cpp src/engine/browser_zoom.cpp src/engine/search.cpp)
+target_include_directories(browser_qol_preview PRIVATE ${CMAKE_SOURCE_DIR}/src ${CMAKE_SOURCE_DIR}/third_party)
+target_link_libraries(browser_qol_preview PRIVATE glm::glm)
+target_compile_options(browser_qol_preview PRIVATE ${UKIYO_WARNINGS})
 
 # ---- Input system (docs/INPUT.md) ------------------------------------------
 # The runtime and the .inputactions asset format are plain C++ (glm + nlohmann), with no GLFW, Vulkan or window, so the

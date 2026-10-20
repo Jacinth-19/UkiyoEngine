@@ -22,6 +22,7 @@
 #include <functional>
 #include "scene_gizmo.h"
 #include "engine_session.h"
+#include "engine/browser_zoom.h"
 #include "engine/terrain.h"
 #include <map>
 #include <set>
@@ -57,6 +58,7 @@ class QMenu;
 class QStackedWidget;
 class QDoubleSpinBox;
 class QFileSystemModel;
+class QSortFilterProxyModel;
 class QLineEdit;
 class QListView;
 class QListWidget;
@@ -552,12 +554,15 @@ private:
     // Project browser: folder tree, thumbnail grid and details pane.
     QString browserDir_;
     QFileSystemModel* fsModel_ = nullptr;      // files and folders, for the grid
+    QSortFilterProxyModel* fsFilter_ = nullptr;  // the grid's view of the model, filtered by the search query and kind
     QFileSystemModel* fsDirs_ = nullptr;       // folders only, for the tree
     QTreeView* fsTree_ = nullptr;
     QListView* fsList_ = nullptr;
     QLabel* fsPath_ = nullptr;
     QLineEdit* fsSearch_ = nullptr;
-    QSlider* fsSize_ = nullptr;
+    QSlider* fsSize_ = nullptr;                // thumbnail size, 32-224 in steps of 16 (engine/browser_zoom.h)
+    QTimer* fsSizeSave_ = nullptr;             // writes the size to the preferences once the wheel and the slider stop
+    int browserThumb_ = ukiyo::kThumbDefault;  // the size the grid is drawing at, snapped to the ladder
     QToolButton* browserFilterBtn_ = nullptr;
     QStackedWidget* browserViews_ = nullptr;   // icon/list grid or details tree
     QTreeView* fsDetail_ = nullptr;
@@ -581,7 +586,12 @@ private:
     void browserDrop(QWidget* viewport, const QPoint& pos, const QStringList& paths);
     bool browserKey(QAbstractItemView* view, int key, bool perform);
     QString browserPathAt(QAbstractItemView* view, const QModelIndex& index) const;
+    QModelIndex browserIndex(const QString& path) const;   // the grid's index for a file, mapped through the filter
     void refreshBrowser();
+    // Thumbnail zoom: one place applies the size to the views, so the slider and Ctrl + wheel cannot disagree.
+    void applyThumbSize(int px);
+    void zoomBrowserThumb(int notches);
+    void saveBrowserThumb();
     assetops::Result createBrowserFolder(const QString& parentDir, const QString& name);
     assetops::Result renameBrowserItem(const QString& path, const QString& newName);
     assetops::Result removeBrowserItem(const QString& path);

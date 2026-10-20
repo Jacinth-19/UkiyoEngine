@@ -42,8 +42,8 @@ Plus the offline tools, which are part of the build rather than a separate scrip
 | Screen-space contact shadows (GH-118045): a 32 × 32 shadow map with 20 cm of bias (top left), the depth-buffer march alone (top right) and both (bottom left), each with a 2× crop of the same contact. The pass darkens 86 % of the contact band and touches 0.43 % of the lit pixels ([docs/CONTACT_SHADOWS.md](docs/CONTACT_SHADOWS.md)). | The launcher's splash, painted in C++ by the program itself — the woodblock artwork, the lockup in the open sky, and the determinate bar. |
 | ![Alpha mipmaps](docs/alpha-mips.png) | ![Virtual geometry](docs/vgeom-levels.png) |
 | Alpha-coverage-preserving mipmaps (GH-104289): one fixed mip level per column, the plain box filter on the top row and the preserved chain below it. Coverage holds at 0.37 instead of collapsing to 0.007, so the cut-out does not dissolve ([docs/ALPHA_MIPS.md](docs/ALPHA_MIPS.md)). | The 131 072-triangle Terrain Lab tile built into a virtual-geometry cluster tree, cut at 1 px and 8 px ([docs/VGEOM.md](docs/VGEOM.md)). |
-| ![Grass scatter](docs/grass-scatter-preview.png) | ![Splash](docs/splash-capture.png) |
-| Grass scatter over the terrain, drawn by `grass_scatter_preview` from the same bands the engine uses ([docs/GRASS.md](docs/GRASS.md)). | The launcher's splash, painted in C++ by the program itself — the woodblock artwork, the lockup in the open sky, and the determinate bar. |
+| ![Grass scatter](docs/grass-scatter-preview.png) | ![Project browser zoom and glob search](docs/browser-qol.png) |
+| Grass scatter over the terrain, drawn by `grass_scatter_preview` from the same bands the engine uses ([docs/GRASS.md](docs/GRASS.md)). | The Project browser's two new gestures (GH-119103): six of the thirteen thumbnail stops drawn at their real pixel size, and eight glob queries run through the engine's matcher against the asset list above them — 23 matches, computed by `browser_qol_preview` ([docs/FILESYSTEM.md](docs/FILESYSTEM.md)). |
 
 The hub is the first thing anyone sees, so it is checked like a screen and not like a build artifact: CI captures its
 three pages offscreen with `ukiyo_hub --screenshots renders` and commits them to `docs/hub/`. The images below are the
@@ -164,8 +164,12 @@ Vulkan backend and an OpenGL backend; `--backend gl` selects the latter.
 * **Audio** through miniaudio; **networking** over UDP with snapshots and interpolation.
 * **Virtual file system** with a pak format (`tools/ukiyo_pak.cpp`), so a shipped project is one folder.
 * **Asset search** as engine code: Godot's fuzzy ranking (word starts, file names and whole-token hits ahead of
-  scattered letters, with the matched runs returned for highlighting) and a glob grammar with classes, groups and
-  escapes, so `*.ukshader` and `{Lit,Toon}.ukshader` do what they read like. See [docs/SEARCH.md](docs/SEARCH.md).
+  scattered letters, with the matched runs returned for highlighting) and a glob grammar with classes, groups,
+  `**/` and escapes, so `*.ukshader`, `{Lit,Toon}.ukshader` and `sword *.vrm` do what they read like. The Project
+  browser's search box speaks that grammar — a word is a substring, a token with wildcards is a glob, every token has to
+  match — and **Ctrl + the wheel zooms its thumbnails** 32–224 px in steps of 16, saved on a 1.5 s debounce. Both rules
+  are engine code, tested on Linux, Windows and the Android NDK.
+  See [docs/SEARCH.md](docs/SEARCH.md) and [docs/FILESYSTEM.md](docs/FILESYSTEM.md).
 
 ## The editor
 
@@ -317,6 +321,7 @@ own glslang package is generated with a broken SPIRV-Tools path; everything else
 | [docs/ALPHA_MIPS.md](docs/ALPHA_MIPS.md) | alpha-coverage-preserving mipmaps: the measurement, the search, and the chain upload |
 | [docs/TRAIL.md](docs/TRAIL.md) | trail ribbons: sections, the width curve and gradient, the alignment and tiling modes, the test |
 | [docs/SEARCH.md](docs/SEARCH.md) | fuzzy asset ranking and the glob grammar, and why the ranking is deliberately not "contains" |
+| [docs/FILESYSTEM.md](docs/FILESYSTEM.md) | the browser's wheel zoom (the 32–224 ladder) and glob search, and the Android/Windows/Linux CI matrix |
 
 ## Credits
 

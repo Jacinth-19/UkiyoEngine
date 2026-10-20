@@ -7,16 +7,17 @@ Two ways to find an asset, and they answer different questions.
 * **Glob** — *"I know the shape."* `*.ukshader`, `assets/**/*.png`, `{Lit,Toon}.ukshader`, `[a-c]?.txt`.
 
 Both are `src/engine/search.h` — engine code, not an editor one-off, so the hub, the Project browser and any future
-asset picker share one implementation and one test. The Project browser's filter box is the first caller; it needs a
-flat results model of its own (the browser lists a filesystem tree, and a ranked search is not a tree), which is a
-UI change rather than an engine one and is the next step for that panel. The fuzzy ranking is Godot 4.8's `FuzzySearch` (the algorithm behind
-the new FileSystem dock search, part of GH-117107's neighbourhood); the glob grammar is the `String::matchn` family
-extended with the braces that path patterns want.
+asset picker share one implementation and one test. The Project browser's filter box is the first caller, through
+`matchesNameTokens` and a `QSortFilterProxyModel` (docs/FILESYSTEM.md): a query is split into words, a word looks like a
+substring and a word with wildcards looks like a glob, and every word has to match. The fuzzy ranking is Godot 4.8's
+`FuzzySearch` (the algorithm behind the new FileSystem dock search, part of GH-117107's neighbourhood); the glob grammar
+is the `String::matchn` family extended with the braces that path patterns want and with `**/`, which stands for no
+directory at all as it does in every shell.
 
 ```
 src/engine/search.h      FuzzySearch, FuzzyResult, FuzzyRange, globMatch, globSearch, looksLikeGlob
 src/engine/search.cpp    the ranking, the scoring constants, the glob matcher
-tests/search_test.cpp    123 checks, run in CI on Linux and Windows
+tests/search_test.cpp    151 checks, run in CI on Linux, Windows and the Android NDK
 ```
 
 ## 1. Why the ranking is not "contains"
@@ -67,6 +68,7 @@ still a match, and a sort must never place a match below a non-match.
 | Pattern | Matches |
 | --- | --- |
 | `*` | everything, **including `/`** — typing `*.png` lists every image in the project, not only the open folder's |
+| `**/` | no directory at all, or any number of them: `**/idle.png` matches `idle.png` and `Anims/idle.png` |
 | `?` | one character |
 | `[a-c]`, `[!a-c]`, `[^0-9]`, `[]]` | a set, a negated set, a range, a literal `]` first |
 | `{a,b}`, `{a,{b,c}}` | either alternative, nested |
@@ -83,7 +85,7 @@ listing that flickers empty on that keystroke is worse than one that shows nothi
 The Project browser is Qt; the hub is Qt; a game's own asset picker is neither. Putting the ranking in `src/engine`
 means:
 
-* it is **tested without a window** — 123 checks in `tests/search_test.cpp` cover ranking order, the miss budget, the
+* it is **tested without a window** — 151 checks in `tests/search_test.cpp` cover ranking order, the miss budget, the
   highlight ranges, every glob construct, malformed patterns, case sensitivity, and four thousand paths in a list;
 * a UI's filter box becomes a thin adapter — text in, indices out, the model rebuilt from the hits — rather than the
   only copy of the algorithm;

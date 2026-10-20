@@ -353,6 +353,61 @@ static void testScale() {
     checkEq(static_cast<int>(many.size()), 4000, "10e: four path segments");
 }
 
+// 11. The Project browser's query rule (GH-119103): per-token substring or glob, every token required.
+static void testNameTokens() {
+    const auto m = [](const char* name, const char* query) { return matchesNameTokens(name, query); };
+
+    check(m("Hero.vrm", "hero"), "11a: a plain word is a substring");
+    check(m("Hero.vrm", "HERO"), "11b: and it is case-insensitive");
+    check(!m("Hero.vrm", "villain"), "11c: a word the name does not contain does not match");
+
+    check(m("Sword.png", "*.png"), "11d: a token with a star is read as a glob");
+    check(!m("Sword.png", "*.vrm"), "11e: and the glob has to match the whole name");
+    check(m("Sword.png", "sword *.png"), "11f: a word and a glob together both have to match");
+    check(!m("Sword.png", "sword *.vrm"), "11g: one failing token is a failing query");
+
+    check(m("Brass Sword Idle.ukscene", "sword idle"), "11h: two words in either order, anywhere in the name");
+    check(!m("Brass Sword Idle.ukscene", "sword run"), "11i: a second word that is absent fails the query");
+
+    check(m("hero.vrm", "  hero  "), "11j: leading, trailing and repeated spaces are ignored");
+    check(m("hero.vrm", ""), "11k: an empty query matches everything");
+    check(m("hero.vrm", "   "), "11l: a spaces-only query matches everything too");
+
+    check(m("ring_01.png", "ring_[0-9][0-9].png"), "11m: character classes work");
+    check(m("Icon.PNG", "[Ii]con.[Pp][Nn][Gg]"), "11n: a class with both cases");
+    check(m("a.b", "a.b"), "11o: a dot in a plain token is a literal dot, not a wildcard");
+    check(m("axb", "a.b") == false, "11p: so a.b does not match axb");
+
+    // The whole-listing use: filter a directory with one query.
+    const std::vector<std::string> names{"Hero.vrm", "Brass Sword.vrm", "Sword Idle.ukscene", "Sword.png",
+                                         "readme.txt"};
+    int kept = 0;
+    for (const auto& n : names)
+        if (matchesNameTokens(n, "sword")) ++kept;
+    checkEq(kept, 3, "11q: sword keeps the three sword assets and drops the rest");
+    kept = 0;
+    for (const auto& n : names)
+        if (matchesNameTokens(n, "*.vrm")) ++kept;
+    checkEq(kept, 2, "11r: *.vrm keeps exactly the two models");
+    kept = 0;
+    for (const auto& n : names)
+        if (matchesNameTokens(n, "sword *.vrm")) ++kept;
+    checkEq(kept, 1, "11s: sword *.vrm keeps the one sword model and drops the sword image");
+}
+
+// The "zero or more directories" half of "**/": a pattern written against a path also finds the file at the top.
+static void testDoubleStarDirectories() {
+    check(globMatch("**/idle.png", "idle.png"), "10a: **/ matches no directory at all");
+    check(globMatch("**/idle.png", "Anims/idle.png"), "10b: and one directory");
+    check(globMatch("**/idle.png", "Anims/Idle/idle.png"), "10c: and several");
+    check(!globMatch("**/idle.png", "Anims/run.png"), "10d: while still requiring the file name");
+    check(globMatch("anim/**/*.png", "anim/idle.png"), "10e: a double star in the middle may stand for nothing");
+    check(globMatch("anim/**/*.png", "anim/walk/idle.png"), "10f: and for a folder");
+    check(!globMatch("anim/**/*.png", "anims/idle.png"), "10g: the literal part either side still has to match");
+    check(globMatch("**/*.vrm", "Swords/Blade.vrm"), "10h: a browser query of **/*.vrm finds a nested model");
+    check(globMatch("**/*.vrm", "Blade.vrm"), "10i: including one at the top of the folder");
+}
+
 int main() {
     testExactAndPrefix();
     testSubsequence();
@@ -364,6 +419,8 @@ int main() {
     testGlobAdvanced();
     testGlobSearch();
     testScale();
+    testNameTokens();
+    testDoubleStarDirectories();
     std::printf("search: %d checks, %d failure(s)\n", checks, failures);
     return failures == 0 ? 0 : 1;
 }

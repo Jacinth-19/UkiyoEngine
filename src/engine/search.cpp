@@ -261,7 +261,9 @@ private:
     // One step from (pattern index, text index): either the whole pattern is consumed (done), a wildcard consumes text
     // and is retried, or a literal consumes one character of both.
     bool step(int pi, int ti, std::string_view text, std::vector<std::pair<int, int>>* stack) {
-        // Collapse runs of '*': "**" over "***" is one wildcard, and a path pattern can say either.
+        // Collapse runs of '*': "**" over "***" is one wildcard, and a path pattern can say either. Whether the run was
+        // the double star is remembered, because "**/" also stands for *no* directories at all.
+        const bool doubleStar = pi + 1 < static_cast<int>(p_.size()) && p_[pi] == '*' && p_[pi + 1] == '*';
         while (pi < static_cast<int>(p_.size()) && p_[pi] == '*' && pi + 1 < static_cast<int>(p_.size()) &&
                p_[pi + 1] == '*')
             ++pi;
@@ -269,6 +271,10 @@ private:
         const char c = p_[pi];
 
         if (c == '*') {
+            // "**/" is "any number of directories, including none", so a pattern written against a path also matches a
+            // file at the top of the tree: "**/idle.png" matches both "idle.png" and "Anims/Idle/idle.png".
+            if (doubleStar && pi + 1 < static_cast<int>(p_.size()) && p_[pi + 1] == '/')
+                stack->push_back({pi + 2, ti});
             // Greedy would backtrack quadratically on a long path; pushing "stay here, consume one more" keeps it
             // linear in the number of (pattern, text) pairs.
             for (int k = static_cast<int>(text.size()); k >= ti; --k) stack->push_back({pi + 1, k});
@@ -369,6 +375,38 @@ private:
 
 bool globMatch(std::string_view pattern, std::string_view text, bool caseInsensitive) {
     return Glob(pattern, caseInsensitive).match(text);
+}
+
+bool matchesNameTokens(std::string_view name, std::string_view query, bool caseInsensitive) {
+    const auto isSpace = [](char c) { return c == ' ' || c == '\t' || c == '\n' || c == '\r'; };
+    size_t i = 0;
+    bool any = false;
+    while (i < query.size()) {
+        while (i < query.size() && isSpace(query[i])) ++i;
+        const size_t start = i;
+        while (i < query.size() && !isSpace(query[i])) ++i;
+        if (i == start) break;
+        any = true;
+        const std::string_view token = query.substr(start, i - start);
+        bool hit = false;
+        if (looksLikeGlob(token)) {
+            hit = globMatch(token, name, caseInsensitive);
+        } else if (token.size() <= name.size()) {
+            const std::string_view hay = name;
+            for (size_t at = 0; at + token.size() <= hay.size() && !hit; ++at) {
+                bool same = true;
+                for (size_t k = 0; k < token.size() && same; ++k) {
+                    const char a = caseInsensitive ? lower(token[k]) : token[k];
+                    const char b = caseInsensitive ? lower(hay[at + k]) : hay[at + k];
+                    same = a == b;
+                }
+                hit = same;
+            }
+        }
+        if (!hit) return false;
+    }
+    (void)any;
+    return true;   // an empty (or spaces-only) query has no tokens, and none of them failed
 }
 
 std::vector<int> globSearch(const std::vector<std::string>& items, std::string_view pattern, bool caseInsensitive) {

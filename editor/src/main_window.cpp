@@ -28,7 +28,9 @@
 #include "anim_file.h"
 #include "anim_panel.h"
 #include "engine/anim.h"
+#include "engine/browser_zoom.h"
 #include "engine/cull.h"
+#include "engine/search.h"
 #include "engine/terrain.h"
 
 #include <QTemporaryDir>
@@ -51,6 +53,8 @@
 #include <glm/gtc/matrix_transform.hpp>
 #include <functional>
 #include <memory>
+#include <string>
+#include <string_view>
 #include <atomic>
 #include <cmath>
 #include <functional>
@@ -113,6 +117,7 @@
 #include <QFileInfo>
 #include <QDirIterator>
 #include <QFileSystemModel>
+#include <QSortFilterProxyModel>
 #include <QFileSystemWatcher>
 #include <QFormLayout>
 #include <QFrame>
@@ -239,6 +244,100 @@ public:
             return QStringLiteral("Kind");
         return QFileSystemModel::headerData(section, orientation, role);
     }
+};
+
+// The Project browser's filter. Godot 4.8's glob search (GH-119103) is a different rule from the model's own wildcard
+// list: a query is split into words, a word without wildcards is a substring, a word with them is a glob matched against
+// the whole name, and every word has to match. It also has to see the path inside the current folder, so a query can
+// name the folder ("props *.png"). The grammar itself lives in engine/search (tested there); this class is the model
+// adapter that feeds it QString paths and keeps the kind button's extension lists in one place.
+class BrowserFilterModel : public QSortFilterProxyModel {
+public:
+    explicit BrowserFilterModel(QObject* parent = nullptr) : QSortFilterProxyModel(parent) {}
+
+    // The search box's text, as typed. Empty shows everything the kind allows.
+    void setQuery(const QString& text) {
+        const std::string next = text.toUtf8().toStdString();
+        if (next == query_) return;
+        query_ = next;
+        invalidateFilter();
+    }
+    // 0 all, 1 models, 2 textures, 3 audio, 4 folders: the same list the filter button has offered all along.
+    void setKind(int kind) {
+        if (kind == kind_) return;
+        kind_ = kind;
+        invalidateFilter();
+    }
+    // The folder the browser is showing: queries match a path relative to it, so "sword" also finds a file inside a
+    // folder called Swords, and "props/*.png" is a pattern rather than a file name.
+    void setRootFolder(const QString& path) {
+        const QString next = QDir::cleanPath(path);
+        if (next == root_) return;
+        root_ = next;
+        invalidateFilter();
+    }
+
+    static bool extensionAllowed(int kind, const QString& suffix) {
+        static const QStringList modelExt{"vrm", "glb", "gltf"};
+        static const QStringList textureExt{"png", "jpg", "jpeg", "bmp", "tga", "webp", "gif", "tif", "tiff"};
+        static const QStringList audioExt{"wav", "mp3", "ogg", "flac", "opus", "m4a"};
+        switch (kind) {
+        case 1: return modelExt.contains(suffix);
+        case 2: return textureExt.contains(suffix);
+        case 3: return audioExt.contains(suffix);
+        default: return true;
+        }
+    }
+
+protected:
+    bool filterAcceptsRow(int row, const QModelIndex& parent) const override {
+        auto* fs = qobject_cast<QFileSystemModel*>(sourceModel());
+        if (!fs) return true;
+        const QModelIndex index = fs->index(row, 0, parent);
+        if (!index.isValid()) return true;
+        const QString path = fs->filePath(index);
+        // The folder the browser is showing is never filtered away: a view whose root row is hidden would show nothing
+        // at all, and a query like "*.vrm" would make the browser look empty rather than filtered.
+        if (!root_.isEmpty() && QDir::cleanPath(path) == root_) return true;
+        const bool isDir = fs->isDir(index);
+        if (kind_ == 4 && !isDir) return false;                     // Folders: folders only
+        if ((kind_ >= 1 && kind_ <= 3) && isDir) return false;      // a type filter is about files
+        if (!isDir && !extensionAllowed(kind_, QFileInfo(path).suffix().toLower())) return false;
+        if (query_.empty()) return true;
+        const QString rel = root_.isEmpty() ? fs->fileName(index) : QDir(root_).relativeFilePath(path);
+        const QByteArray utf8 = rel.toUtf8();
+        return ukiyo::matchesNameTokens(std::string_view(utf8.constData(), static_cast<size_t>(utf8.size())), query_);
+    }
+
+private:
+    std::string query_;   // UTF-8, the form the engine's matcher reads
+    QString root_;
+    int kind_ = 0;
+};
+
+// Ctrl + the wheel over the browser zooms the thumbnails instead of scrolling (GH-119103). There is no modifier on the
+// event that a QListView would act on, so the filter answers the wheel before the view does and leaves every other
+// wheel to it: a plain scroll still scrolls, and Shift + wheel still scrolls sideways.
+class WheelZoomFilter : public QObject {
+public:
+    WheelZoomFilter(QObject* parent, std::function<void(int)> onNotches)
+        : QObject(parent), onNotches_(std::move(onNotches)) {}
+
+protected:
+    bool eventFilter(QObject* watched, QEvent* e) override {
+        if (e->type() != QEvent::Wheel) return QObject::eventFilter(watched, e);
+        auto* we = static_cast<QWheelEvent*>(e);
+        if (!(we->modifiers() & (Qt::ControlModifier | Qt::MetaModifier))) return QObject::eventFilter(watched, e);
+        const QPoint delta = we->angleDelta();
+        const int d = delta.y() != 0 ? delta.y() : delta.x();
+        if (d == 0) return QObject::eventFilter(watched, e);   // a trackpad's pixel scroll with no angle: not a notch
+        onNotches_(d > 0 ? 1 : -1);
+        we->accept();
+        return true;
+    }
+
+private:
+    std::function<void(int)> onNotches_;
 };
 
 // Key commands on a view: F2 and Delete in the Project browser, Ctrl+C in the console. `handle(key, perform)` answers for the key and,
@@ -1343,6 +1442,13 @@ QWidget* MainWindow::buildProjectBrowser() {
     fsModel_->setIconProvider(&assetIconProvider());
     fsModel_->setRootPath(assets);
 
+    // The grid and the details view look through the search filter, which speaks the engine's query grammar. The tree
+    // keeps the folder model: it is navigation, not a place to search.
+    auto* filter = new BrowserFilterModel(this);
+    filter->setSourceModel(fsModel_);
+    filter->setRootFolder(assets);
+    fsFilter_ = filter;
+
     fsTree_ = new QTreeView;
     fsTree_->setObjectName("projectTree");
     fsTree_->setModel(fsDirs_);
@@ -1354,7 +1460,7 @@ QWidget* MainWindow::buildProjectBrowser() {
     fsList_ = new QListView;
     fsList_->setObjectName("projectGrid");
     fsList_->setDragEnabled(true);
-    fsList_->setModel(fsModel_);
+    fsList_->setModel(fsFilter_);
     fsList_->setViewMode(QListView::IconMode);
     fsList_->setResizeMode(QListView::Adjust);
     fsList_->setMovement(QListView::Static);
@@ -1369,8 +1475,8 @@ QWidget* MainWindow::buildProjectBrowser() {
     fsDetail_ = new QTreeView;
     fsDetail_->setDragEnabled(true);
     fsDetail_->setObjectName("projectDetails");
-    fsDetail_->setModel(fsModel_);
-    fsDetail_->setRootIndex(fsModel_->index(assets));
+    fsDetail_->setModel(fsFilter_);
+    fsDetail_->setRootIndex(fsFilter_->mapFromSource(fsModel_->index(assets)));
 
     // A .ukmat thumbnail is drawn with its shader, so editing a shader repaints the grid. The
     // thumbnail cache sees the new shader time on the next paint.
@@ -1387,8 +1493,9 @@ QWidget* MainWindow::buildProjectBrowser() {
     watchShaders();
     connect(shaderWatch, &QFileSystemWatcher::fileChanged, this, [this, shaderWatch, watchShaders](const QString&) {
         watchShaders();   // editors that replace a file drop the old watch
-        // QFileSystemModel keeps its decorations, so the visible rows are told they changed.
-        const QModelIndex root = fsList_->rootIndex();
+        // QFileSystemModel keeps its decorations, so the visible rows are told they changed. The grid's root is a
+        // filter index, so the source folder is said by name.
+        const QModelIndex root = fsModel_->index(browserDir_);
         const int n = fsModel_->rowCount(root);
         if (n > 0) emit fsModel_->dataChanged(fsModel_->index(0, 0, root), fsModel_->index(n - 1, 0, root),
                                               {Qt::DecorationRole});
@@ -1432,14 +1539,16 @@ QWidget* MainWindow::buildProjectBrowser() {
     fsPath_ = new QLabel;
     fsPath_->setObjectName("breadcrumb");
     fsSearch_ = new QLineEdit;
-    fsSearch_->setPlaceholderText("Search assets");
+    fsSearch_->setPlaceholderText(QStringLiteral("Search assets, *.vrm, Sword*"));
     fsSearch_->setClearButtonEnabled(true);
     fsSearch_->setFixedWidth(170);
     fsSize_ = new QSlider(Qt::Horizontal);
-    fsSize_->setRange(48, 192);
-    fsSize_->setValue(editor::prefs::integer(QStringLiteral("browser/thumb"), 96));
+    fsSize_->setRange(ukiyo::kThumbMin, ukiyo::kThumbMax);
+    fsSize_->setSingleStep(ukiyo::kThumbStep);
+    fsSize_->setPageStep(ukiyo::kThumbStep * 2);
+    fsSize_->setValue(ukiyo::thumbSliderValue(editor::prefs::integer(QStringLiteral("browser/thumb"), ukiyo::kThumbDefault)));
     fsSize_->setFixedWidth(90);
-    fsSize_->setToolTip("Thumbnail size");
+    fsSize_->setToolTip(QStringLiteral("Thumbnail size (Ctrl + wheel over the browser)"));
     browserFilterBtn_ = new QToolButton;
     browserFilterBtn_->setObjectName("toolButton");
     browserFilterBtn_->setIcon(uiIcon("filter_list"));
@@ -1531,6 +1640,7 @@ QWidget* MainWindow::buildProjectBrowser() {
     materialInspector_ = new MaterialInspector;
     // A finished live render (material sphere or 3D model) redraws that file's icon and details.
     connect(&assets::previewHub(), &assets::PreviewHub::ready, this, [this](const QString& path) {
+        // A source-model index: the filter forwards the signal, and a proxy index here would name the wrong row.
         const QModelIndex idx = fsModel_->index(path);
         if (idx.isValid()) emit fsModel_->dataChanged(idx, idx, {Qt::DecorationRole});
         fsList_->viewport()->update();
@@ -1586,12 +1696,17 @@ QWidget* MainWindow::buildProjectBrowser() {
             view->viewport(), [this](QWidget* w, const QPoint& p, const QStringList& paths) { browserDrop(w, p, paths); }));
     }
     connect(fsSearch_, &QLineEdit::textChanged, this, &MainWindow::updateBrowserFilter);
-    connect(fsSize_, &QSlider::valueChanged, this, [this](int v) {
-        fsList_->setIconSize(QSize(v, v));
-        fsList_->setGridSize(QSize(v + 24, v + 44));
-    });
-    fsList_->setIconSize(QSize(fsSize_->value(), fsSize_->value()));
-    fsList_->setGridSize(QSize(fsSize_->value() + 24, fsSize_->value() + 44));
+    // One handler for both ways of changing the size: the slider and the wheel. It applies the size, keeps the slider
+    // on the ladder, and asks for the preference to be written once the hand stops.
+    connect(fsSize_, &QSlider::valueChanged, this, &MainWindow::applyThumbSize);
+    fsSizeSave_ = new QTimer(this);
+    fsSizeSave_->setSingleShot(true);
+    fsSizeSave_->setInterval(1500);
+    connect(fsSizeSave_, &QTimer::timeout, this, &MainWindow::saveBrowserThumb);
+    // Ctrl + wheel over the grid: nine notches from 32 to 224, the same ladder the slider has.
+    fsList_->viewport()->installEventFilter(new WheelZoomFilter(
+        fsList_->viewport(), [this](int notches) { zoomBrowserThumb(notches); }));
+    applyThumbSize(fsSize_->value());
 
     navigateTo(assets);
     setBrowserView(editor::prefs::integer(QStringLiteral("browser/view"), 0));
@@ -5101,8 +5216,10 @@ void MainWindow::resetProjectSettings() {
 
 void MainWindow::navigateTo(const QString& dir) {
     browserDir_ = QDir::cleanPath(dir);
-    fsList_->setRootIndex(fsModel_->index(browserDir_));
-    fsDetail_->setRootIndex(fsModel_->index(browserDir_));
+    if (!fsFilter_) return;
+    static_cast<BrowserFilterModel*>(fsFilter_)->setRootFolder(browserDir_);
+    fsList_->setRootIndex(fsFilter_->mapFromSource(fsModel_->index(browserDir_)));
+    fsDetail_->setRootIndex(fsFilter_->mapFromSource(fsModel_->index(browserDir_)));
     const QModelIndex treeIndex = fsDirs_->index(browserDir_);
     fsTree_->setCurrentIndex(treeIndex);
     fsTree_->scrollTo(treeIndex);
@@ -5113,32 +5230,21 @@ void MainWindow::navigateTo(const QString& dir) {
     updateBrowserDetails(QModelIndex());
 }
 
+// The search box and the kind button feed the filter model, which applies the engine's query rule (a word is a
+// substring, a word with wildcards is a glob, every word has to match) and the type lists. Nothing is pushed into the
+// file-system model any more: it lists the folder, and the filter decides what the browser shows.
 void MainWindow::updateBrowserFilter() {
-    const QString text = fsSearch_->text().trimmed();
-    const QString match = text.isEmpty() ? QStringLiteral("*") : "*" + text + "*";
-    static const QStringList modelExt{"vrm", "glb", "gltf"};
-    static const QStringList textureExt{"png", "jpg", "jpeg", "bmp", "tga", "webp", "gif", "tif", "tiff"};
-    static const QStringList audioExt{"wav", "mp3", "ogg", "flac", "opus", "m4a"};
-
-    QDir::Filters filters = QDir::AllEntries | QDir::NoDotAndDotDot;
-    QStringList patterns;
-    auto byExtension = [&](const QStringList& exts) {
-        for (const QString& e : exts) patterns << match + "." + e;
-    };
-    switch (browserKind_) {
-    case 1: byExtension(modelExt); break;
-    case 2: byExtension(textureExt); break;
-    case 3: byExtension(audioExt); break;
-    case 4:
-        filters = QDir::AllDirs | QDir::NoDotAndDotDot;
-        patterns << match;
-        break;
-    default: patterns << match; break;
+    auto* filter = static_cast<BrowserFilterModel*>(fsFilter_);
+    if (filter) {
+        filter->setKind(browserKind_);
+        filter->setQuery(fsSearch_->text().trimmed());
     }
-    if (editor::prefs::boolean(QStringLiteral("browser/hidden"), false)) filters |= QDir::Hidden;
-    fsModel_->setFilter(filters);
-    fsModel_->setNameFilterDisables(false);
-    fsModel_->setNameFilters(patterns);
+    if (fsModel_) {
+        QDir::Filters filters = QDir::AllEntries | QDir::NoDotAndDotDot;
+        if (editor::prefs::boolean(QStringLiteral("browser/hidden"), false)) filters |= QDir::Hidden;
+        // setFilter reloads the model, which would collapse the tree on every keystroke; only change it when it differs.
+        if (fsModel_->filter() != filters) fsModel_->setFilter(filters);
+    }
 }
 
 void MainWindow::updateBrowserDetails(const QModelIndex& index) {
@@ -5150,7 +5256,7 @@ void MainWindow::updateBrowserDetails(const QModelIndex& index) {
         detailDeps_->clear();
         return;
     }
-    const QString path = fsModel_->filePath(index);
+    const QString path = fsModel_->filePath(fsFilter_ ? fsFilter_->mapToSource(index) : index);
     const QFileInfo info(path);
     detailPreview_->setPixmap(assets::fileIcon(info).pixmap(QSize(220, 220)));
     detailTitle_->setText(info.fileName());
@@ -5195,7 +5301,15 @@ void MainWindow::openAnimDialog() {
 
 QString MainWindow::browserPathAt(QAbstractItemView* view, const QModelIndex& index) const {
     if (!index.isValid()) return QString();
-    return view == fsTree_ ? fsDirs_->filePath(index) : fsModel_->filePath(index);
+    if (view == fsTree_) return fsDirs_->filePath(index);
+    return fsModel_->filePath(fsFilter_ ? fsFilter_->mapToSource(index) : index);
+}
+
+// The grid's index for a path, mapped through the search filter. Invalid when the filter hides the file, which is the
+// right answer for revealing something the current query excludes.
+QModelIndex MainWindow::browserIndex(const QString& path) const {
+    if (!fsModel_ || !fsFilter_) return QModelIndex();
+    return fsFilter_->mapFromSource(fsModel_->index(path));
 }
 
 void MainWindow::refreshBrowser() {
@@ -5374,7 +5488,7 @@ void MainWindow::browserContextMenu(QAbstractItemView* view, const QPoint& pos) 
             menu.addAction(uiIcon("folder_open"), "Open Folder", this, [this, path] { navigateTo(path); });
         } else {
             menu.addAction(uiIcon("open_with"), "Open", this, [this, view, path] {
-                if (view != fsTree_) onBrowserActivated(fsModel_->index(path));
+                if (view != fsTree_) onBrowserActivated(browserIndex(path));
             });
         }
         menu.addSeparator();
@@ -5402,8 +5516,9 @@ void MainWindow::browserContextMenu(QAbstractItemView* view, const QPoint& pos) 
 }
 
 void MainWindow::onBrowserActivated(const QModelIndex& index) {
-    const QString path = fsModel_->filePath(index);
-    if (fsModel_->isDir(index)) {
+    const QModelIndex source = fsFilter_ ? fsFilter_->mapToSource(index) : index;
+    const QString path = fsModel_->filePath(source);
+    if (fsModel_->isDir(source)) {
         navigateTo(path);
         return;
     }
@@ -5548,7 +5663,7 @@ void MainWindow::openConsoleSource(const QString& path) {
             projectDock_->raise();
         }
         navigateTo(info.absolutePath());
-        const QModelIndex idx = fsModel_->index(info.absoluteFilePath());
+        const QModelIndex idx = browserIndex(info.absoluteFilePath());
         if (idx.isValid()) {
             fsList_->setCurrentIndex(idx);
             fsList_->scrollTo(idx);
@@ -7113,14 +7228,17 @@ void MainWindow::setBrowserView(int view) {
     if (browserViews_) browserViews_->setCurrentIndex(browserView_ == 2 ? 1 : 0);
     if (browserViewGroup_ && browserViewGroup_->button(browserView_)) browserViewGroup_->button(browserView_)->setChecked(true);
 
-    if (browserView_ == 1) {
-        fsList_->setViewMode(QListView::ListMode);
-        fsList_->setGridSize(QSize());
-        fsList_->setIconSize(QSize(20, 20));
-    } else {
-        fsList_->setViewMode(QListView::IconMode);
-        fsList_->setIconSize(QSize(fsSize_->value(), fsSize_->value()));
-        fsList_->setGridSize(QSize(fsSize_->value() + 24, fsSize_->value() + 44));
+    if (fsList_) {
+        const int px = browserThumb_;
+        if (browserView_ == 1) {
+            fsList_->setViewMode(QListView::ListMode);
+            fsList_->setGridSize(QSize());
+        } else {
+            fsList_->setViewMode(QListView::IconMode);
+            fsList_->setGridSize(QSize(ukiyo::thumbGridWidth(px), ukiyo::thumbGridHeight(px)));
+        }
+        const int icon = ukiyo::thumbIconForView(browserView_, px);
+        fsList_->setIconSize(QSize(icon, icon));
     }
     if (fsSize_) fsSize_->setEnabled(browserView_ != 2);
 
@@ -7131,11 +7249,39 @@ void MainWindow::setBrowserView(int view) {
     }
 }
 
+// The one place a thumbnail size is applied. The slider and Ctrl + wheel both call it, so the grid, the list rows, the
+// slider's own position and the saved preference can only ever say the same number.
+void MainWindow::applyThumbSize(int px) {
+    const int v = ukiyo::thumbClamp(px);
+    const bool changed = v != browserThumb_;
+    browserThumb_ = v;
+    if (fsSize_ && fsSize_->value() != v) {
+        const QSignalBlocker block(fsSize_);   // the slider reports its own move; this is the snapped answer
+        fsSize_->setValue(v);
+    }
+    if (fsList_) {
+        const int icon = ukiyo::thumbIconForView(browserView_, v);
+        fsList_->setIconSize(QSize(icon, icon));
+        if (browserView_ != 1) fsList_->setGridSize(QSize(ukiyo::thumbGridWidth(v), ukiyo::thumbGridHeight(v)));
+    }
+    // Godot writes the setting on a 1.5 s timer rather than on every notch: a scroll of nine notches is one write.
+    if (changed && fsSizeSave_) fsSizeSave_->start();   // start() restarts a running single-shot timer
+}
+
+void MainWindow::zoomBrowserThumb(int notches) {
+    if (!fsSize_ || !ukiyo::thumbWheelZooms(browserView_)) return;
+    applyThumbSize(ukiyo::thumbStep(browserThumb_, notches));
+}
+
+void MainWindow::saveBrowserThumb() {
+    editor::prefs::set(QStringLiteral("browser/thumb"), browserThumb_);
+}
+
 void MainWindow::applyPreferences() {
     const int view = editor::prefs::integer(QStringLiteral("browser/view"), 0);
     if (view != browserView_) setBrowserView(view);
-    const int thumb = editor::prefs::integer(QStringLiteral("browser/thumb"), 96);
-    if (fsSize_->value() != thumb) fsSize_->setValue(thumb);
+    const int thumb = editor::prefs::integer(QStringLiteral("browser/thumb"), ukiyo::kThumbDefault);
+    if (browserThumb_ != ukiyo::thumbClamp(thumb)) applyThumbSize(thumb);
     updateBrowserFilter();
 }
 
@@ -8508,6 +8654,121 @@ int MainWindow::runSelfTest() {
         check(removeBrowserItem(renamedDir).ok && !QFileInfo::exists(renamedDir),
               "Delete in the browser moves the folder to the trash");
         settle();
+
+        // Thumbnail zoom (GH-119103). The wheel events are real QWheelEvents sent to the viewport, so the filter and the
+        // ladder are both under test, not a shortcut that calls the handler directly.
+        {
+            const int savedThumb = fsSize_->value();
+            const int savedView = browserView_;
+            setBrowserView(0);
+            fsSize_->setValue(80);
+            check(browserThumb_ == 80 && fsList_->iconSize() == QSize(80, 80),
+                  "the size slider sets the icon size", QString::number(fsList_->iconSize().width()));
+            check(fsList_->gridSize() == QSize(104, 124), "and the grid around it",
+                  QStringLiteral("%1 x %2").arg(fsList_->gridSize().width()).arg(fsList_->gridSize().height()));
+
+            auto wheel = [this](int dy, Qt::KeyboardModifiers mods) {
+                const QPoint local(8, 8);
+                QWheelEvent e(QPointF(local), QPointF(fsList_->viewport()->mapToGlobal(local)), QPoint(), QPoint(0, dy),
+                              Qt::NoButton, mods, Qt::NoScrollPhase, false);
+                QCoreApplication::sendEvent(fsList_->viewport(), &e);
+                return browserThumb_;
+            };
+            check(wheel(120, Qt::ControlModifier) == 96, "Ctrl + wheel up grows the thumbnails one stop");
+            check(wheel(-120, Qt::ControlModifier) == 80, "Ctrl + wheel down shrinks them one stop");
+            check(wheel(120, Qt::NoModifier) == 80, "a plain wheel scrolls the grid and does not zoom");
+            check(wheel(120, Qt::ShiftModifier) == 80, "Shift + wheel does not zoom either");
+            for (int i = 0; i < 20; ++i) wheel(120, Qt::ControlModifier);
+            check(browserThumb_ == ukiyo::kThumbMax, "zooming past the top stops at 224", QString::number(browserThumb_));
+            for (int i = 0; i < 30; ++i) wheel(-120, Qt::ControlModifier);
+            check(browserThumb_ == ukiyo::kThumbMin, "and zooming past the bottom stops at 32",
+                  QString::number(browserThumb_));
+            fsSize_->setValue(ukiyo::kThumbDefault);
+            check(fsList_->gridSize() == QSize(120, 140), "the default 96 px grid is the one the browser always had");
+            setBrowserView(1);
+            check(fsList_->iconSize() == QSize(20, 20), "list view keeps its 20 px row icon at the default size",
+                  QString::number(fsList_->iconSize().width()));
+            fsSize_->setValue(160);
+            check(fsList_->iconSize().width() > 20 && fsList_->iconSize().width() <= 48,
+                  "and list rows grow with the zoom, within bounds", QString::number(fsList_->iconSize().width()));
+            setBrowserView(2);
+            const int before = browserThumb_;
+            wheel(120, Qt::ControlModifier);
+            check(browserThumb_ == before, "the details view keeps the wheel for scrolling");
+            setBrowserView(savedView);
+            fsSize_->setValue(savedThumb);
+            settle();
+        }
+
+        // Glob search (GH-119103), on a folder of five files made here.
+        {
+            const QString globDir = projectRoot_ + QStringLiteral("/assets/zz_selftest_glob");
+            QDir(globDir).removeRecursively();   // a previous run that stopped early leaves the folder behind
+            createBrowserFolder(projectRoot_ + QStringLiteral("/assets"), QStringLiteral("zz_selftest_glob"));
+            const QStringList made{"Hero.vrm", "Brass Sword.vrm", "Sword Idle.ukscene", "Sword.png", "readme.txt"};
+            bool wrote = true;
+            for (const QString& name : made) {
+                QFile f(globDir + QLatin1Char('/') + name);
+                wrote = wrote && f.open(QIODevice::WriteOnly) && f.write("x") == 1;
+            }
+            settle();
+            const QString savedQuery = fsSearch_->text();
+            const int savedKind = browserKind_;
+            browserKind_ = 0;
+            updateBrowserFilter();
+            navigateTo(globDir);
+            settle();
+            auto visible = [this] {
+                QStringList out;
+                const QAbstractItemModel* m = fsList_->model();
+                const QModelIndex root = fsList_->rootIndex();
+                for (int r = 0; r < m->rowCount(root); ++r)
+                    out << m->index(r, 0, root).data(Qt::DisplayRole).toString();
+                out.sort();
+                return out;
+            };
+            check(wrote && visible().size() == made.size(), "the test folder holds five files",
+                  QString::number(visible().size()));
+            fsSearch_->setText(QStringLiteral("sword"));
+            settle();
+            check(visible() == QStringList{"Brass Sword.vrm", "Sword Idle.ukscene", "Sword.png"},
+                  "a word keeps every name that contains it", visible().join(QStringLiteral(", ")));
+            fsSearch_->setText(QStringLiteral("*.vrm"));
+            settle();
+            check(visible() == QStringList{"Brass Sword.vrm", "Hero.vrm"}, "a glob keeps one type of file",
+                  visible().join(QStringLiteral(", ")));
+            fsSearch_->setText(QStringLiteral("sword *.vrm"));
+            settle();
+            check(visible() == QStringList{"Brass Sword.vrm"}, "a word and a glob narrow each other",
+                  visible().join(QStringLiteral(", ")));
+            fsSearch_->setText(QStringLiteral("s?ord.png"));
+            settle();
+            check(visible() == QStringList{"Sword.png"}, "a single-character wildcard works", visible().join(QStringLiteral(", ")));
+            fsSearch_->setText(QStringLiteral("Sword*{vrm,png}"));
+            settle();
+            check(visible() == QStringList{"Sword.png"}, "a brace set picks between endings",
+                  visible().join(QStringLiteral(", ")));
+            fsSearch_->setText(QStringLiteral("hero.vrm"));
+            settle();
+            check(visible() == QStringList{"Hero.vrm"}, "a dot is a literal, not a wildcard", visible().join(QStringLiteral(", ")));
+            fsSearch_->setText(QStringLiteral("nomatch*"));
+            settle();
+            check(visible().isEmpty(), "a query nothing matches shows an empty grid");
+            fsSearch_->setText(savedQuery);
+            browserKind_ = 2;
+            updateBrowserFilter();
+            fsSearch_->setText(QStringLiteral("*.vrm"));
+            settle();
+            check(visible() == QStringList{"Brass Sword.vrm", "Hero.vrm"},
+                  "the type button and a glob agree with each other", visible().join(QStringLiteral(", ")));
+            browserKind_ = savedKind;
+            updateBrowserFilter();
+            fsSearch_->setText(savedQuery);
+            settle();
+            removeBrowserItem(globDir);
+            navigateTo(projectRoot_ + QStringLiteral("/assets"));
+            settle();
+        }
     }
 
     // --- 11g. Console: search, level filter, collapsed repeats, source lines, copy -------------
