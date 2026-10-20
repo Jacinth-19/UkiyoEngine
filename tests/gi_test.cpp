@@ -310,6 +310,99 @@ int main() {
         checkNear(double(v), 1.0, 1e-6, "6c: a constant signal converges to itself");
     }
 
+    // 7. The denoiser. shaders/gi_denoise.frag is an à-trous filter weighted by depth and normal; these reproduce its
+    //    kernel on a small grid and check the three properties the image depends on.
+    {
+        const int N = 9;
+        struct Buf {
+            std::vector<float> depth;
+            std::vector<glm::vec3> normal, gi;
+            Buf(int n) : depth(size_t(n) * size_t(n), 10.0f), normal(size_t(n) * size_t(n), glm::vec3(0, 1, 0)),
+                         gi(size_t(n) * size_t(n), glm::vec3(0.0f)) {}
+            size_t at(int x, int y) const { return size_t(y) * size_t(N) + size_t(x); }
+        };
+        const float kernel[5] = {1.0f / 16.0f, 4.0f / 16.0f, 6.0f / 16.0f, 4.0f / 16.0f, 1.0f / 16.0f};
+        auto filter = [&](const Buf& src, int stride) {
+            Buf dst(N);
+            // The geometry is the input, not something the filter produces: the second iteration has to see the same
+            // depths and normals the first one did, or it will happily blur across an edge it can no longer see.
+            dst.depth = src.depth;
+            dst.normal = src.normal;
+            for (int y = 0; y < N; ++y) {
+                for (int x = 0; x < N; ++x) {
+                    const float dz = src.depth[src.at(x, y)];
+                    if (dz <= 0.0f) { dst.gi[src.at(x, y)] = glm::vec3(0.0f); continue; }
+                    const glm::vec3 n0 = src.normal[src.at(x, y)];
+                    glm::vec3 acc = src.gi[src.at(x, y)] * kernel[2] * kernel[2];
+                    float wsum = kernel[2] * kernel[2];
+                    for (int dy = -2; dy <= 2; ++dy) {
+                        for (int dx = -2; dx <= 2; ++dx) {
+                            if (dx == 0 && dy == 0) continue;
+                            const int sx = x + dx * stride, sy = y + dy * stride;
+                            if (sx < 0 || sy < 0 || sx >= N || sy >= N) continue;
+                            const float d = src.depth[src.at(sx, sy)];
+                            if (d <= 0.0f) continue;
+                            const float dd = std::fabs(dz - d) / std::max(1e-4f, std::min(dz, d));
+                            const float wd = std::exp(-dd / 0.02f);
+                            const float wn = std::pow(std::max(0.0f, glm::dot(n0, src.normal[src.at(sx, sy)])), 16.0f);
+                            const float w = kernel[dx + 2] * kernel[dy + 2] * wd * wn;
+                            acc += src.gi[src.at(sx, sy)] * w;
+                            wsum += w;
+                        }
+                    }
+                    dst.gi[src.at(x, y)] = acc / std::max(wsum, 1e-5f);
+                }
+            }
+            return dst;
+        };
+
+        // 7a: a constant field survives the filter exactly — a denoiser that dims a flat surface is a bias, not a filter.
+        {
+            Buf b(N);
+            for (size_t i = 0; i < b.gi.size(); ++i) b.gi[i] = glm::vec3(0.31f, 0.22f, 0.17f);
+            const Buf out = filter(filter(b, 1), 2);
+            const glm::vec3 c = out.gi[b.at(4, 4)];
+            checkNear(double(glm::length(c - glm::vec3(0.31f, 0.22f, 0.17f))), 0.0, 1e-6,
+                      "7a: a constant field passes the denoiser unchanged");
+        }
+        // 7b: noise is reduced. A checkerboard of +/- 0.1 is the worst case a single sample can produce; the filter
+        //     must cut its amplitude by more than half, which is the variance the pass buys.
+        {
+            Buf b(N);
+            for (int y = 0; y < N; ++y)
+                for (int x = 0; x < N; ++x) b.gi[b.at(x, y)] = glm::vec3(((x + y) & 1) ? 0.1f : -0.1f);
+            const Buf out = filter(filter(b, 1), 2);
+            double before = 0.0, after = 0.0;
+            int n = 0;
+            for (int y = 2; y < N - 2; ++y)
+                for (int x = 2; x < N - 2; ++x) {
+                    before += std::fabs(double(b.gi[b.at(x, y)].x));
+                    after += std::fabs(double(out.gi[b.at(x, y)].x));
+                    ++n;
+                }
+            std::printf("      (checkerboard amplitude %.4f -> %.4f)\n", before / n, after / n);
+            checkTrue(after / n < 0.5 * (before / n), "7b: the denoiser removes most of a single-sample checkerboard");
+        }
+        // 7c: it does not cross a silhouette. A step in depth and normal between the two halves of the grid must keep
+        //     the bright half's light out of the dark half; blurring across it is the one thing a denoiser must not do.
+        {
+            Buf b(N);
+            for (int y = 0; y < N; ++y)
+                for (int x = 0; x < N; ++x) {
+                    const bool nearSide = x < N / 2;
+                    b.depth[b.at(x, y)] = nearSide ? 5.0f : 30.0f;
+                    b.normal[b.at(x, y)] = nearSide ? glm::vec3(0, 1, 0) : glm::vec3(0, 0, 1);
+                    b.gi[b.at(x, y)] = nearSide ? glm::vec3(1.0f) : glm::vec3(0.0f);
+                }
+            const Buf out = filter(filter(b, 1), 2);
+            const float dark = out.gi[b.at(N / 2 + 1, N / 2)].x;
+            const float lit = out.gi[b.at(N / 2 - 2, N / 2)].x;
+            std::printf("      (across the silhouette: far side %.4f, near side %.4f)\n", dark, lit);
+            checkTrue(dark < 0.02f, "7c: the denoiser does not bleed light across a depth-and-normal edge");
+            checkTrue(lit > 0.98f, "7d: the lit side keeps its own light");
+        }
+    }
+
     std::printf("\n%d checks, %d failure(s)\n", gChecks, gFailures);
     return gFailures == 0 ? 0 : 1;
 }

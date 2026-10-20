@@ -211,6 +211,10 @@ void Renderer::buildPipelines() {
                      rhi::Blend::None, {F::RGBA16F}, false);
     pGiAccum_ = make("fullscreen", "gi_accum", {S::Post}, false, rhi::Cull::None, false, false,
                      rhi::Blend::None, {F::RGBA16F}, false);
+    // The denoiser: two à-trous iterations at half resolution. It is the iGPU answer to the reference's DLSS Ray
+    // Reconstruction — an edge-aware filter in place of a network, so it needs no tensor cores.
+    pGiDenoise_ = make("fullscreen", "gi_denoise", {S::Post}, false, rhi::Cull::None, false, false,
+                       rhi::Blend::None, {F::RGBA16F}, false);
     pExpo_ = make("fullscreen", "expo_reduce", {S::Post}, false, rhi::Cull::None, false, false,
                   rhi::Blend::None, {F::RGBA8}, false);
     pPresent_ = make("fullscreen", "present", {S::Post}, false, rhi::Cull::None, false, false,
@@ -315,6 +319,7 @@ void Renderer::rebuildTargets(uint32_t scale) {
     // heightmap at binding 5; the accumulator reads the trace and its own history; the composite is folded into the
     // effects pass, which reads the accumulator at binding 5 on a frame where GI is on.
     gi_ = color(std::max(1u, intW_ / 2), std::max(1u, intH_ / 2), rhi::Format::RGBA16F);
+    giDenoise_ = color(std::max(1u, intW_ / 2), std::max(1u, intH_ / 2), rhi::Format::RGBA16F);
     for (auto& h : giHist_) h = color(std::max(1u, intW_ / 2), std::max(1u, intH_ / 2), rhi::Format::RGBA16F);
     for (auto& e : expo_) {   // 1x1 state, starts at 0.5 = exposure multiplier 1
         rhi::TextureDesc d;
@@ -532,6 +537,16 @@ void Renderer::buildPostSets() {
         setGiAccum_[i]->setTexture(2, giHist_[1 - i].get());
         setGiAccum_[i]->setTexture(4, depth_.get());
         setGiAccum_[i]->setTexture(5, velocity_.get());   // reprojects the history with the engine's motion vectors
+        setGiDenoise_[i] = dev_.createDescriptorSet(rhi::SetType::Post);
+        setGiDenoise_[i]->setTexture(1, giHist_[i].get());
+        setGiDenoise_[i]->setTexture(4, depth_.get());
+        setGiDenoise_[i]->setTexture(5, normal_.get());
+    }
+    {
+        setGiDenoiseB_ = dev_.createDescriptorSet(rhi::SetType::Post);
+        setGiDenoiseB_->setTexture(1, giDenoise_.get());
+        setGiDenoiseB_->setTexture(4, depth_.get());
+        setGiDenoiseB_->setTexture(5, normal_.get());
     }
     giFrame_ = 0;
     giWrite_ = 0;
@@ -1168,8 +1183,19 @@ void Renderer::render(const OrbitCamera& cam, const std::vector<Model*>& models,
              pcWith(giReproj, glm::vec4(weight, 0, 0, 0),
                     glm::vec4(1.0f / float(intW_), 1.0f / float(intH_), 0, 0)),
              int(intW_) / 2, int(intH_) / 2);
+        // Denoise what the accumulator produced, into gi_ (the trace's own target, free until next frame). The
+        // accumulation history itself stays unfiltered, so the filter can never feed its own output back into the
+        // samples it is filtering; only the image the frame displays is denoised.
+        rhi::Texture* giFinal = giHist_[giWrite_].get();
+        if (s.giDenoise) {
+            post(giDenoise_.get(), false, pGiDenoise_.get(), setGiDenoise_[giWrite_].get(),
+                 pcWith(glm::mat4(1.0f), glm::vec4(1.0f, 0.02f, 16.0f, 0.0f)), gw, gh);
+            post(gi_.get(), false, pGiDenoise_.get(), setGiDenoiseB_.get(),
+                 pcWith(glm::mat4(1.0f), glm::vec4(2.0f, 0.02f, 16.0f, 0.0f)), gw, gh);
+            giFinal = gi_.get();
+        }
         // The effects pass composites it: binding 5 carries the accumulated GI, and p3.w its strength.
-        setEffects_->setTexture(5, giHist_[giWrite_].get());
+        setEffects_->setTexture(5, giFinal);
         giComposite = true;
         giWrite_ ^= 1;
         ++giFrame_;

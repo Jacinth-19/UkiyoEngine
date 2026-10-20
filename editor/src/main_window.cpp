@@ -1169,6 +1169,9 @@ QWidget* MainWindow::buildProjectSettings() {
         number(fx, "Traced bounce light (GI)", &settings_.gi, 0.0, 1.0, 0.05);
         number(fx, "GI ray distance (m)", &settings_.giRadius, 2.0, 40.0, 1.0);
         number(fx, "GI rays per half-res pixel", &settings_.giRays, 1, 8, 1);
+        // The denoiser is what makes a low ray count look like a high one: two à-trous passes over the accumulated
+        // GI, in place of the reference's DLSS Ray Reconstruction.
+        check(fx, "GI denoiser (à-trous, iGPU)", &settings_.giDenoise);
         number(fx, "Screen-space reflections", &settings_.ssr, 0.0, 1.0, 0.05);
         number(fx, "Depth-normal outline", &settings_.depthNormalOutline, 0.0, 1.0, 0.05);
         number(fx, "Lens flare", &settings_.flare, 0.0, 1.0, 0.05);
@@ -5730,6 +5733,7 @@ QJsonObject MainWindow::sceneDocument() {
         s["gi"] = double(settings_.gi);
         s["giRadius"] = double(settings_.giRadius);
         s["giRays"] = settings_.giRays;
+        s["giDenoise"] = settings_.giDenoise;
         s["ssr"] = double(settings_.ssr);
         s["depthNormalOutline"] = double(settings_.depthNormalOutline);
         s["flare"] = double(settings_.flare);
@@ -6830,6 +6834,7 @@ bool MainWindow::applySceneDocument(const QJsonObject& root, const QString& sour
     st.gi = std::clamp(float(s.value("gi").toDouble(st.gi)), 0.0f, 1.0f);
     st.giRadius = std::clamp(float(s.value("giRadius").toDouble(st.giRadius)), 2.0f, 40.0f);
     st.giRays = std::clamp(float(s.value("giRays").toDouble(st.giRays)), 1.0f, 8.0f);
+    st.giDenoise = s.value("giDenoise", st.giDenoise).toBool();
     st.ssr = std::clamp(float(s.value("ssr").toDouble(st.ssr)), 0.0f, 1.0f);
     st.depthNormalOutline = std::clamp(float(s.value("depthNormalOutline").toDouble(st.depthNormalOutline)), 0.0f, 1.0f);
     st.flare = std::clamp(float(s.value("flare").toDouble(st.flare)), 0.0f, 1.0f);

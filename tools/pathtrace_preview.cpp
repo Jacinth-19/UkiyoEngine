@@ -533,6 +533,58 @@ void renderRealtime(const Scene& scene, const glm::mat4& view, const glm::mat4& 
         for (auto& t : pool) t.join();
     }
 
+    // The denoiser, mirroring shaders/gi_denoise.frag: two à-trous iterations at stride 1 and 2, each a 5x5 B3
+    // spline weighted by logarithmic depth similarity and normal agreement. `UKIYO_RT_DENOISE=0` turns it off, which
+    // is how the same binary measures what it is worth.
+    const bool denoise = !std::getenv("UKIYO_RT_DENOISE") || std::atoi(std::getenv("UKIYO_RT_DENOISE")) != 0;
+    if (denoise) {
+        std::vector<glm::vec3> src = b.gi, dst(b.gi.size());
+        const float kernel[5] = {1.0f / 16.0f, 4.0f / 16.0f, 6.0f / 16.0f, 4.0f / 16.0f, 1.0f / 16.0f};
+        for (int iter = 0; iter < 2; ++iter) {
+            const int stride = 1 << iter;
+            std::atomic<int> nextRow{0};
+            std::vector<std::thread> pool;
+            for (int th = 0; th < threads; ++th) {
+                pool.emplace_back([&]() {
+                    for (;;) {
+                        const int y = nextRow.fetch_add(1);
+                        if (y >= GH) break;
+                        for (int x = 0; x < GW; ++x) {
+                            const int cx = std::min(W - 1, x * 2), cy = std::min(H - 1, y * 2);
+                            const float d0 = b.depth[size_t(cy) * size_t(W) + size_t(cx)];
+                            const size_t ci = size_t(y) * size_t(GW) + size_t(x);
+                            if (d0 <= 0.0f) { dst[ci] = glm::vec3(0.0f); continue; }
+                            const glm::vec3 n0 = b.normal[size_t(cy) * size_t(W) + size_t(cx)];
+                            glm::vec3 acc = src[ci] * kernel[2] * kernel[2];
+                            float wsum = kernel[2] * kernel[2];
+                            for (int dy = -2; dy <= 2; ++dy) {
+                                for (int dx = -2; dx <= 2; ++dx) {
+                                    if (dx == 0 && dy == 0) continue;
+                                    const int sx = x + dx * stride, sy = y + dy * stride;
+                                    if (sx < 0 || sy < 0 || sx >= GW || sy >= GH) continue;
+                                    const int fx = std::min(W - 1, sx * 2), fy = std::min(H - 1, sy * 2);
+                                    const size_t fi = size_t(fy) * size_t(W) + size_t(fx);
+                                    const float d = b.depth[fi];
+                                    if (d <= 0.0f) continue;
+                                    const float depthDiff = std::fabs(d0 - d) / std::max(1e-4f, std::min(d0, d));
+                                    const float wd = std::exp(-depthDiff / 0.02f);
+                                    const float wn = std::pow(std::max(0.0f, glm::dot(n0, b.normal[fi])), 16.0f);
+                                    const float w = kernel[dx + 2] * kernel[dy + 2] * wd * wn;
+                                    acc += src[size_t(sy) * size_t(GW) + size_t(sx)] * w;
+                                    wsum += w;
+                                }
+                            }
+                            dst[ci] = acc / std::max(wsum, 1e-5f);
+                        }
+                    }
+                });
+            }
+            for (auto& t : pool) t.join();
+            src.swap(dst);
+        }
+        b.gi = src;
+    }
+
     const auto end = std::chrono::steady_clock::now();
     if (std::getenv("UKIYO_RT_DEBUG")) {
         double giSum = 0.0, radSum = 0.0, giMax = 0.0;

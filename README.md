@@ -101,9 +101,11 @@ Vulkan backend and an OpenGL backend; `--backend gl` selects the latter.
   through a screen-space cut, cached beside the model. See [docs/VGEOM.md](docs/VGEOM.md).
 * **Shadows** — three cascades into a 3 × 2048² atlas, slope-scaled bias, PCF.
 * **Traced bounce light** — one diffuse bounce traced against the terrain heightfield at half resolution, accumulated
-  over sixteen frames and composited at full resolution. A fragment shader with no ray-tracing or compute feature, so it
-  runs on any integrated GPU; measured against the CPU path tracer at 0.035 RMSE, adding four fifths of the light the
-  raster leaves out. See [docs/PATHTRACE.md](docs/PATHTRACE.md).
+  over sixteen frames, denoised by two à-trous passes and composited at full resolution. A fragment shader with no
+  ray-tracing or compute feature, so it runs on any integrated GPU; measured against the CPU path tracer at 0.035
+  RMSE, adding four fifths of the light the raster leaves out. The denoiser is the iGPU counterpart of the reference's
+  DLSS Ray Reconstruction: one ray per pixel per frame with it is closer to converged (0.75/255) than eight rays
+  without it (1.42/255). See [docs/PATHTRACE.md](docs/PATHTRACE.md).
 * **Path-traced reference** — `tools/pathtrace_preview` renders the terrain on the CPU with true bounces and exact sun
   shadows, at whatever sample count the machine can afford. No RT cores, no DLSS, no GPU at all: it is the ground truth
   the real-time renderer is judged against, and it produces the same image on a laptop and a workstation.

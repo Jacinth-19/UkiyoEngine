@@ -84,6 +84,9 @@ struct RenderSettings {
     float giRadius = 12.0f;          // how far a bounce ray marches, metres
     float giRays = 8.0f;             // rays per half-resolution pixel per frame, 1..8
     float giHistory = 0.0625f;       // weight of one frame's samples in the accumulation (1/16 is 16 frames)
+    // Two à-trous iterations over the accumulated GI before it is composited. ~50 taps at half resolution; it halves
+    // the variance at one ray per pixel, which is what lets the pass stay cheap on an iGPU. See shaders/gi_denoise.frag.
+    bool giDenoise = true;
     float depthNormalOutline = 0.0f; // depth and normal edge lines, 0..1 (normal pre-pass)
     float flare = 0.0f;              // lens flare around the sun, 0..1 (occluded by geometry)
     float motionBlur = 0.0f;         // motion blur shutter, 0..2. Runs BEFORE TAA, so it also smears TAA history.
@@ -310,9 +313,9 @@ private:
     // Real-time GI (the iGPU path tracer): a half-resolution trace, a temporal accumulator and a composite that the
     // effects pass folds in. The two GI targets and their sets are built with the rest of the resolution-dependent
     // targets; the pass does nothing when no heightfield is set or gi_ is zero.
-    std::unique_ptr<rhi::Texture> gi_, giHist_[2];
-    std::unique_ptr<rhi::Pipeline> pGiTrace_, pGiAccum_;
-    std::unique_ptr<rhi::DescriptorSet> setGiTrace_, setGiAccum_[2], setGiComposite_;
+    std::unique_ptr<rhi::Texture> gi_, giDenoise_, giHist_[2];
+    std::unique_ptr<rhi::Pipeline> pGiTrace_, pGiAccum_, pGiDenoise_;
+    std::unique_ptr<rhi::DescriptorSet> setGiTrace_, setGiAccum_[2], setGiDenoise_[2], setGiDenoiseB_;
     uint32_t giFrame_ = 0;
     uint32_t giWrite_ = 0;
     std::unique_ptr<rhi::Pipeline> pFoliage_;       // foliage batches (foliage.vert / foliage.frag)

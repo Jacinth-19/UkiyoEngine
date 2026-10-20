@@ -232,13 +232,46 @@ iGPU can actually run here.
 | SSR / reflection probes | screen-space reflections, with a depth-and-normal ray march | `shaders/effects.frag` |
 | Lightmaps / light-probe volumes | not used; daylight and a hemisphere ambient are the lighting | — |
 | NiloToon characters inside the path tracer | the toon materials are rasterised, not traced, and characters do not occlude the traced bounce | below |
+| DLSS Ray Reconstruction (denoise + supersample) | an à-trous edge-aware denoiser over the accumulated GI, two iterations, 50 taps at half resolution | §4a |
 
 **Where the reference is stronger, and this document says so.** It traces reflection rays, transmission, refraction and
-NiloToon's translucent cloth; it denoises with a network trained on those signals; and it handles geometry a
-heightfield cannot express. This engine traces one diffuse bounce over terrain only, so a character standing in a
+NiloToon's translucent cloth; its denoiser is trained on those signals rather than hand-written; and it handles
+geometry a heightfield cannot express. This engine traces one diffuse bounce over terrain only, so a character standing in a
 valley does not block the light that reaches it, and a wet rock does not reflect the sky with a traced ray. Those are
 the costs of the requirement: **16 GB of RTX silicon is not something an integrated GPU has**, and the pass here runs
 in a fragment shader with no ray-tracing feature at all.
+
+## 4a. The denoiser
+
+Eight rays a half-resolution pixel is already a compromise; the reference buys quality back with DLSS Ray
+Reconstruction, a network that needs tensor cores. An integrated GPU has none, so the same job is done here the
+classical way — an à-trous (with-holes) edge-aware filter, `shaders/gi_denoise.frag`, run twice at half resolution.
+
+Each iteration is a 5 × 5 B3-spline kernel applied at a stride that doubles, so two passes reach a 17 × 17 footprint
+for 50 taps instead of 289. Every tap is weighted by how similar its surface is to the centre pixel's: a logarithmic
+depth term (a 5 cm step matters far more at 2 m than at 40 m) and a sharpened normal dot product, so the filter never
+bleeds light across a silhouette or lets the shaded side of a ridge borrow from the lit side. It runs on the
+accumulated image and its output is a copy: the accumulation history stays unfiltered, so the filter can never feed
+its own output back into the samples it is filtering.
+
+What it is worth, measured against a converged estimator (8 rays, 64 frames, no filter) on the Terrain Lab view at
+320 × 180, in 255ths of display value:
+
+| Trace budget | No denoiser | Denoised |
+| --- | --- | --- |
+| 1 ray, 1 frame | 1.42 | **0.75** |
+| 2 rays, 4 frames | 0.70 | **0.41** |
+| 8 rays, 64 frames (the reference) | 0.00 | — |
+
+A single ray per half-resolution pixel per frame with the filter is closer to converged than eight rays without it,
+and two rays over four frames lands within 0.41 of 255 — about a sixth of a code value — of the converged image. That
+is the exchange the requirement is about: the pass does a quarter of the tracing for an image that is, on these
+numbers, indistinguishable. The filter costs two half-resolution passes of 25 taps each, which is less than the trace
+it replaces.
+
+`gi_test` holds it to the three properties that matter: a constant field passes through unchanged (no bias), a
+single-sample checkerboard is reduced to 0.2 % of its amplitude (variance), and a depth-and-normal step keeps the
+light on its own side (no bleeding). `UKIYO_RT_DENOISE=0` in `pathtrace_preview` reproduces the table.
 
 ## 6. What the renderer does around it
 
