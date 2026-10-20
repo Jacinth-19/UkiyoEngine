@@ -33,9 +33,13 @@ constexpr uint32_t kIdleSeed = 7;
 } // namespace
 
 bool EngineSession::init(QString* error) {
-    // Point the Vulkan loader at the software driver when the environment has not set one.
+    // Point the Vulkan loader at the software driver when the environment has not set one. That driver is lavapipe,
+    // a Linux package with no Windows equivalent: on Windows the loader finds the installed GPU driver by itself, and
+    // the editor runs with a real device (the headless tests do not use this path).
+#ifndef _WIN32
     if (!std::getenv("VK_ICD_FILENAMES"))
         setenv("VK_ICD_FILENAMES", "/usr/share/vulkan/icd.d/lvp_icd.json", 0);
+#endif
 
     if (!glfwInit()) {
         if (error) *error = "glfwInit failed (is a display available? try xvfb-run)";
