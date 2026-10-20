@@ -12418,8 +12418,8 @@ void MainWindow::fillInputPage(QVBoxLayout* v) {
     QLabel* note = new QLabel(QStringLiteral(
         "Each action binds a control on a device; the table shows a bare key as that key on the keyboard, and any other "
         "control as the path it is. A script asks for an action with ukiyo.actionDown(\"Name\"). Rebind listens for "
-        "the next key you press in this window and writes it, and there is no undo beyond pressing Esc. Bindings apply "
-        "the next time play starts."));
+        "the next key you press in this window and writes it; Esc cancels before a key arrives, which is the only undo "
+        "there is. Bindings apply the next time play starts."));
     note->setWordWrap(true);
     f->addRow(note);
 
@@ -12557,6 +12557,13 @@ void MainWindow::fillInputPage(QVBoxLayout* v) {
             status->setStyleSheet(redStatus());
             status->setText(QStringLiteral("Select an action first."));
             return;
+        }
+        // Arming a second row without pressing a key for the first: the old filter would stay on the application,
+        // swallowing keys for a row nobody is listening to.
+        if (capture->filter) {
+            qApp->removeEventFilter(capture->filter);
+            capture->filter->deleteLater();
+            capture->filter = nullptr;
         }
         capture->previous = table->item(row, 1) ? table->item(row, 1)->text().toStdString() : std::string();
         capture->row = row;
