@@ -113,6 +113,9 @@ set(ENABLE_ALL_WARNINGS OFF CACHE BOOL "Jolt: all warnings")
 set(USE_ASSERTS OFF CACHE BOOL "Jolt: keep asserts in Release")
 set(PROFILER_IN_DEBUG_AND_RELEASE OFF CACHE BOOL "Jolt: profiler in Debug and Release")
 set(DEBUG_RENDERER_IN_DEBUG_AND_RELEASE OFF CACHE BOOL "Jolt: debug renderer in Debug and Release")
+# Jolt defaults to the static MSVC runtime (/MT). This build uses the dynamic one (/MD), and Qt only comes that way, so
+# a /MT Jolt cannot be linked into the editor at all.
+set(USE_STATIC_MSVC_RUNTIME_LIBRARY OFF CACHE BOOL "Jolt: static MSVC runtime")
 # Jolt compiles its Vulkan compute shaders with dxc, looked up beside glslc. Without both, build Jolt
 # CPU-only. The engine uses Jolt on the CPU, so nothing is lost. An explicit -DJPH_USE_VK=ON still wins;
 # it is then a warning, because the Vulkan build needs dxc.
