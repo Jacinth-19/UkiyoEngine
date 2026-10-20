@@ -41,7 +41,11 @@ static std::string num(double value) {
 
 static fs::path tempRoot() {
     static int counter = 0;
-    const fs::path base = fs::temp_directory_path() / "ukiyo_project_test";
+    // Beside the engine rather than in the system temporary directory: the templates link the engine's own assets, and
+    // a project on another volume cannot be described by a relative path. Windows CI checks the engine out on D: and
+    // keeps TEMP on C:, so a project in TEMP made every "the path is relative" check fail for a reason that has
+    // nothing to do with the code under test. build/ is where a build already writes, and it is ignored by git.
+    const fs::path base = fs::path(UKIYO_ROOT) / "build" / "project_test";
     std::error_code ec;
     fs::create_directories(base, ec);
     return base / ("case" + std::to_string(++counter));

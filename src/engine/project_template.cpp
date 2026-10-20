@@ -68,6 +68,17 @@ std::string trimmed(const std::string& text) {
     return text.substr(first, last - first + 1);
 }
 
+// A path made relative to `root`, or the path itself when that is not possible. Two things make it impossible: the
+// two paths are on different volumes (Windows CI checks the engine out on D: and keeps TEMP on C:), and the standard
+// library reports that by returning an empty path — MSVC does so without setting the error code. Treating only `ec`
+// as failure wrote an empty string into every scene the templates generate, which read as "no asset".
+fs::path relativeTo(const fs::path& p, const fs::path& root) {
+    std::error_code ec;
+    const fs::path r = fs::relative(p, root, ec);
+    if (ec || r.empty()) return p;
+    return r;
+}
+
 // Rounds to four decimals so generated files stay readable (0.3, not 0.30000001192092896).
 double tidy(double value) { return std::round(value * 10000.0) / 10000.0; }
 
@@ -126,12 +137,8 @@ ojson layerJson(const ukiyo::TerrainLayer& layer, const fs::path& root) {
     o["tile"] = tidy(layer.tileMetres);
     auto map = [&](const char* key, const std::string& path) {
         if (path.empty()) return;
-        std::error_code ec;
         fs::path p(path);
-        if (p.is_absolute()) {
-            const fs::path r = fs::relative(p, root, ec);
-            if (!ec) p = r;
-        }
+        if (p.is_absolute()) p = relativeTo(p, root);
         o[key] = p.generic_string();
     };
     map("diffuseMap", layer.diffuseFile);
@@ -230,11 +237,7 @@ bool layerMaps(const std::string& engineRoot, const char* stem, const fs::path& 
     const fs::path normal = dir / (std::string(stem) + "_normal.png");
     const fs::path ao = dir / (std::string(stem) + "_ao.png");
     if (!fs::exists(albedo) || !fs::exists(normal)) return false;
-    std::error_code ec;
-    auto relative = [&](const fs::path& p) {
-        const fs::path r = fs::relative(p, root, ec);
-        return (ec ? p : r).generic_string();
-    };
+    auto relative = [&](const fs::path& p) { return relativeTo(p, root).generic_string(); };
     layer->diffuseFile = relative(albedo);
     layer->normalFile = relative(normal);
     if (fs::exists(ao)) layer->aoFile = relative(ao);
@@ -288,11 +291,7 @@ ojson terrainJson(const std::string& heightmapRelative, const std::string& engin
     terrain.detail.macro = 0.28f;
     if (!engineRoot.empty()) {
         const fs::path detail = fs::path(engineRoot) / "editor" / "res" / "terrain" / "plant_detail.png";
-        if (fs::exists(detail)) {
-            std::error_code ec;
-            const fs::path r = fs::relative(detail, root, ec);
-            terrain.detail.file = (ec ? detail : r).generic_string();
-        }
+        if (fs::exists(detail)) terrain.detail.file = relativeTo(detail, root).generic_string();
     }
 
     ojson o;
@@ -306,12 +305,8 @@ ojson terrainJson(const std::string& heightmapRelative, const std::string& engin
     if (!terrain.detail.file.empty() || terrain.detail.strength > 0.0f) {
         ojson d;
         if (!terrain.detail.file.empty()) {
-            std::error_code ec;
             fs::path p(terrain.detail.file);
-            if (p.is_absolute()) {
-                const fs::path r = fs::relative(p, root, ec);
-                if (!ec) p = r;
-            }
+            if (p.is_absolute()) p = relativeTo(p, root);
             d["map"] = p.generic_string();
         }
         d["metres"] = tidy(terrain.detail.metres);
@@ -412,10 +407,7 @@ ojson sceneFor(const std::string& templateId, const std::string& engineRoot, con
         for (const char* candidate : candidates) {
             const fs::path asset = fs::path(engineRoot) / candidate;
             if (engineRoot.empty() || !fs::exists(asset)) continue;
-            std::error_code ec;
-            fs::path relative = fs::relative(asset, root, ec);
-            if (ec) relative = asset;
-            const std::string path = relative.generic_string();
+            const std::string path = relativeTo(asset, root).generic_string();
             scene["model"] = path;
             ojson model;
             model["path"] = path;
