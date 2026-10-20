@@ -78,6 +78,11 @@ struct RenderSettings {
     glm::vec3 fogColor{0.62f, 0.72f, 0.86f};
     float fogSun = 0.0f;             // sun in-scatter into the fog, 0..1 (needs fogDensity > 0)
     float ssao = 0.0f;               // ambient occlusion strength, 0..1 (normal pre-pass)
+    // Multi-bounce ambient occlusion (GH-115426): the AO term restored by the light that bounces between the surfaces
+    // doing the occluding, weighted by each surface's albedo. Off leaves the plain single-bounce multiply; it has no
+    // effect while `ssao` is 0. Needs the albedo the normal pre-pass writes, and falls back to single-bounce on
+    // geometry that pre-pass does not cover (terrain, foliage, grass, graph materials).
+    bool multiBounceAO = true;
     float ssr = 0.0f;                // screen-space reflections, 0..1 (normal pre-pass)
     // Real-time diffuse GI (the iGPU path tracer): half-resolution traced bounce light, temporally accumulated and
     // composited at full resolution. 0 = off, 1 = one bounce at full strength. Needs a heightfield (setHeightfield) and
@@ -349,6 +354,8 @@ private:
     std::unique_ptr<rhi::Texture> velocity_;       // RGBA16F motion vectors in UV units (TAA, motion blur)
     std::unique_ptr<rhi::Texture> refr_;           // half-size RGBA16F: scene colour (rgb) and view depth (a), for water
     std::unique_ptr<rhi::Texture> normal_;         // RGBA8 view-space normals; alpha 1 = opaque surface
+    std::unique_ptr<rhi::Texture> albedo_;         // RGBA8 linear base colour for multi-bounce AO; alpha 1 = present
+    std::unique_ptr<rhi::Texture> noAlbedo_;       // 1x1 transparent, bound at Post 6 when multi-bounce AO is off
     std::unique_ptr<rhi::Texture> fxHdr_;          // HDR after the effects pass: input to TAA, bloom, tonemap
     std::array<std::unique_ptr<rhi::Texture>, 2> expo_;   // 1x1 auto-exposure state; expo_[0] is read by tonemap
     std::unique_ptr<rhi::Texture> lut_;             // 256x16 grading strip; identity until a LUT is loaded

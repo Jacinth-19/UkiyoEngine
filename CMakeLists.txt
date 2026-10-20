@@ -294,6 +294,18 @@ target_include_directories(trail_preview PRIVATE ${CMAKE_SOURCE_DIR}/src ${CMAKE
 target_link_libraries(trail_preview PRIVATE glm::glm)
 target_compile_options(trail_preview PRIVATE ${UKIYO_WARNINGS})
 
+# Multi-bounce ambient occlusion (docs/AO.md): the curve effects.frag evaluates, and its properties, on the CPU.
+add_executable(ao_test tests/ao_test.cpp)
+target_include_directories(ao_test PRIVATE ${CMAKE_SOURCE_DIR}/src ${CMAKE_SOURCE_DIR}/third_party)
+target_link_libraries(ao_test PRIVATE glm::glm)
+target_compile_options(ao_test PRIVATE ${UKIYO_WARNINGS})
+
+# The figure in docs/AO.md: a corner shaded four ways, including a two-bounce path trace as the reference.
+add_executable(ao_preview tools/ao_preview.cpp)
+target_include_directories(ao_preview PRIVATE ${CMAKE_SOURCE_DIR}/src ${CMAKE_SOURCE_DIR}/third_party)
+target_link_libraries(ao_preview PRIVATE glm::glm)
+target_compile_options(ao_preview PRIVATE ${UKIYO_WARNINGS})
+
 # Fuzzy asset search and glob matching (docs/SEARCH.md): the engine half of the editor's Project filter. Pure C++17.
 add_executable(search_test tests/search_test.cpp src/engine/search.cpp)
 target_include_directories(search_test PRIVATE ${CMAKE_SOURCE_DIR}/src)

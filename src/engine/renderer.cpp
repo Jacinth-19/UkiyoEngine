@@ -99,6 +99,8 @@ Renderer::Renderer(rhi::Device& device) : dev_(device) {
     dd.width = 1;
     dd.height = 1;
     dd.format = rhi::Format::RGBA8;
+    const uint8_t transparent[4] = {0, 0, 0, 0};
+    noAlbedo_ = dev_.createTexture(dd, transparent);
     const uint8_t white[4] = {255, 255, 255, 255};
     dummyTex_ = dev_.createTexture(dd, white);
 
@@ -200,8 +202,9 @@ void Renderer::buildPipelines() {
                  rhi::Blend::None, {F::RGBA16F}, false);
     pVelocity_ = make("velocity", "velocity", {S::Frame, S::Material, S::Skin, S::Motion}, true,
                       rhi::Cull::Back, true, false, rhi::Blend::None, {F::RGBA16F}, true);
+    // The normal pass writes two targets: view-space normals, and the base colour the multi-bounce AO fit needs.
     pNormal_ = make("normal", "normal", {S::Frame, S::Material, S::Skin}, true,
-                    rhi::Cull::Back, true, false, rhi::Blend::None, {F::RGBA8}, true);
+                    rhi::Cull::Back, true, false, rhi::Blend::None, {F::RGBA8, F::RGBA8}, true);
     pEffects_ = make("fullscreen", "effects", {S::Post}, false, rhi::Cull::None, false, false,
                      rhi::Blend::None, {F::RGBA16F}, false);
     // Real-time GI: the trace pass needs the Frame set (camera basis, ambient colours, projection) *and* the Post set
@@ -314,6 +317,7 @@ void Renderer::rebuildTargets(uint32_t scale) {
     velocity_ = color(intW_, intH_, rhi::Format::RGBA16F);
     refr_ = color(std::max(1u, intW_ / 2), std::max(1u, intH_ / 2), rhi::Format::RGBA16F);
     normal_ = color(intW_, intH_, rhi::Format::RGBA8);
+    albedo_ = color(intW_, intH_, rhi::Format::RGBA8);
     fxHdr_ = color(intW_, intH_, rhi::Format::RGBA16F);
     // GI targets at half resolution. The trace reads the previous frame's raster, the depth and the normals, and the
     // heightmap at binding 5; the accumulator reads the trace and its own history; the composite is folded into the
@@ -525,6 +529,9 @@ void Renderer::buildPostSets() {
     // GI is composited at binding 5. The effects pass binds it every frame it runs; when GI is off the slot still has
     // to hold a valid image, because a sampled binding cannot be left empty.
     setEffects_->setTexture(5, blueNoise_.get());
+    // Binding 6 is the albedo for the multi-bounce AO fit. It is rebound per frame to either the G-buffer target or a
+    // 1x1 transparent texture, which is how the shader is told the approximation is off (alpha 0 = no albedo).
+    setEffects_->setTexture(6, noAlbedo_.get());
     setGiTrace_ = dev_.createDescriptorSet(rhi::SetType::Post);
     // Unit 1 is the Frame set's shadow atlas on the shared GL texture-unit space; 2 is the heightmap (bound per frame,
     // because the terrain under the camera can change), 3 the raster, 4 depth, 5 normals.
@@ -1137,7 +1144,7 @@ void Renderer::render(const OrbitCamera& cam, const std::vector<Model*>& models,
                               || s.depthEdgeRim > 0.0f || s.gi > 0.0f;
     if (needNormals) {
         rhi::PassDesc np;
-        np.colors = {normal_.get()};
+        np.colors = {normal_.get(), albedo_.get()};
         np.depth = depth_.get();
         np.clearColor = true;
         np.clearValue = glm::vec4(0.5f, 0.5f, 0.5f, 0.0f);
@@ -1227,6 +1234,9 @@ void Renderer::render(const OrbitCamera& cam, const std::vector<Model*>& models,
     } else {
         giFrame_ = 0;
     }
+    // Binding 6: the albedo the multi-bounce AO fit reads. Off, or unavailable this frame, the slot holds a 1x1
+    // transparent texture and effects.frag falls back to single-bounce AO.
+    setEffects_->setTexture(6, s.multiBounceAO && s.ssao > 0.0f ? albedo_.get() : noAlbedo_.get());
 
     // 2c. Screen-space effects on the HDR frame (shaders/effects.frag): motion blur, SSAO, depth-normal
     // outline, SSR, fog with sun in-scatter, lens flare. Runs before TAA, bloom and tonemap, which read

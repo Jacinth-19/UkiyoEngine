@@ -1,6 +1,7 @@
 // Screen-space effects on the HDR frame, run before TAA, bloom and tonemap.
 // Inputs: uHdr scene HDR; uNormal view-space normals (alpha 1 = surface; written only when a normal
-// effect is on); uVel motion vectors in UV units (written only when motion blur is on); uDepth scene depth.
+// effect is on); uVel motion vectors in UV units (written only when motion blur is on); uDepth scene depth;
+// uAlbedo base colour for multi-bounce AO (alpha 0 = no albedo, e.g. terrain).
 // Push constants packed into the model matrix, p0 and p1:
 //   model[0] = (P00, P11, P22, P32)   eye distance = P32 / (d + P22)
 //   model[1] = (fog colour rgb, fog density per metre)
@@ -18,6 +19,7 @@ TEX(0, 2) uniform sampler2D uNormal;
 TEX(0, 3) uniform sampler2D uVel;
 TEX(0, 4) uniform sampler2D uDepth;
 TEX(0, 5) uniform sampler2D uGi;       // half-resolution traced GI, read only when p2.x > 0
+TEX(0, 6) uniform sampler2D uAlbedo;   // linear base colour (alpha 1 = present) for the multi-bounce AO approximation
 layout(location = 0) in vec2 vUV;
 layout(location = 0) out vec4 outColor;
 
@@ -120,7 +122,23 @@ void main() {
 
     if (surface && hasN && pc.model[3].w > 0.0) {
         float occ = ssao(vUV, P, N, pc.p1.x);
-        col *= 1.0 - clamp(occ * pc.model[3].w * 1.5, 0.0, 1.0);
+        float ao = 1.0 - clamp(occ * pc.model[3].w * 1.5, 0.0, 1.0);
+        // Multi-bounce AO (GH-115426): a corner is filled by light bouncing off the surfaces that occlude it, so the
+        // visibility to apply is a cubic in AO whose coefficients come from the surface albedo. Godot applies the fit
+        // to ambient light in the forward pass; this pass composes the whole frame, so the result is clamped to [ao, 1]
+        // — restore light, never add more than unoccluded. Where this pass did not get an albedo (terrain, foliage,
+        // grass, graph materials) the single-bounce factor is used unchanged.
+        vec4 alb = texture(uAlbedo, vUV);
+        vec3 vis = vec3(ao);
+        if (alb.a > 0.5) {
+            vec3 base = clamp(alb.rgb, 0.0, 1.0);
+            vec3 ca = 2.0404 * base - 0.3324;
+            vec3 cb = -4.7951 * base + 0.6417;
+            vec3 cc = 2.7552 * base + 0.6903;
+            vis = max(vec3(ao), ((vec3(ao) * ca + cb) * vec3(ao) + cc) * vec3(ao));
+            vis = clamp(vis, vec3(ao), vec3(1.0));
+        }
+        col *= vis;
     }
     if (surface && hasN && pc.p0.y > 0.0) {
         float edge = clamp(depthNormalEdge(vUV, d, N, px), 0.0, 1.0);

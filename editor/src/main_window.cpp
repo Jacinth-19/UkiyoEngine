@@ -1165,6 +1165,9 @@ QWidget* MainWindow::buildProjectSettings() {
         number(fx, "Fog density (per metre)", &settings_.fogDensity, 0.0, 0.1, 0.001);
         number(fx, "Fog sun in-scatter", &settings_.fogSun, 0.0, 1.0, 0.05);
         number(fx, "Ambient occlusion", &settings_.ssao, 0.0, 1.0, 0.05);
+        // Multi-bounce AO: restores the light that bounces between the surfaces doing the occluding, weighted by each
+        // surface's albedo, so a corner of a coloured room no longer reads as grey.
+        check(fx, "Ambient occlusion: multi-bounce (albedo-weighted)", &settings_.multiBounceAO);
         // The iGPU path tracer: traced diffuse bounce light. Needs a terrain heightfield and the normal pre-pass,
         // which it turns on itself.
         number(fx, "Traced bounce light (GI)", &settings_.gi, 0.0, 1.0, 0.05);
@@ -5731,6 +5734,7 @@ QJsonObject MainWindow::sceneDocument() {
         s["fogDensity"] = double(settings_.fogDensity);
         s["fogSun"] = double(settings_.fogSun);
         s["ssao"] = double(settings_.ssao);
+        s["multiBounceAO"] = settings_.multiBounceAO;
         s["gi"] = double(settings_.gi);
         s["giRadius"] = double(settings_.giRadius);
         s["giRays"] = settings_.giRays;
@@ -6832,6 +6836,7 @@ bool MainWindow::applySceneDocument(const QJsonObject& root, const QString& sour
     st.fogDensity = std::clamp(float(s.value("fogDensity").toDouble(st.fogDensity)), 0.0f, 0.1f);
     st.fogSun = std::clamp(float(s.value("fogSun").toDouble(st.fogSun)), 0.0f, 1.0f);
     st.ssao = std::clamp(float(s.value("ssao").toDouble(st.ssao)), 0.0f, 1.0f);
+    st.multiBounceAO = s.value("multiBounceAO", st.multiBounceAO).toBool();
     st.gi = std::clamp(float(s.value("gi").toDouble(st.gi)), 0.0f, 1.0f);
     st.giRadius = std::clamp(float(s.value("giRadius").toDouble(st.giRadius)), 2.0f, 40.0f);
     st.giRays = std::clamp(float(s.value("giRays").toDouble(st.giRays)), 1.0f, 8.0f);

@@ -34,10 +34,12 @@ Plus the offline tools, which are part of the build rather than a separate scrip
 | --- | --- |
 | ![Terrain](docs/terrain-hero.png) | ![Path traced](docs/pathtrace-terrain.png) |
 | The Terrain Lab tile with the vendored ground textures and grass, rendered offline by `terrain_preview` ([docs/TERRAIN.md](docs/TERRAIN.md)). | The scene through a CPU path tracer — one cosine bounce, ray-marched sun shadows, the engine's own layer weights and textures, and the ground truth the real-time renderer is measured against ([docs/PATHTRACE.md](docs/PATHTRACE.md)). |
-| ![Traced bounce light](docs/gi-realtime.png) | ![Trails](docs/trail-preview.png) |
-| The same scene through the **real-time estimator** that runs in the renderer: one traced bounce at half resolution, accumulated over sixteen frames and composited at full resolution. RMSE 0.035 against a 64-sample tracer, explaining 43 % of the error the raster leaves ([docs/PATHTRACE.md](docs/PATHTRACE.md)). | Trail ribbons built by the engine's CPU code and shaded by a software rasteriser, so the figure needs no GPU: an additive sword sweep, the three UV mappings, and a ground ribbon that does not billboard ([docs/TRAIL.md](docs/TRAIL.md)). |
-| ![Motion matching](docs/motion-demo.png) | ![Splash](docs/splash-capture.png) |
-| Ten seconds of motion matching: the route, the footprints and four poses from the run. Walk, run and idle are chosen by the matcher from a database of 490 000 poses ([docs/MOTION.md](docs/MOTION.md)). | The launcher's splash, painted in C++ by the program itself — the woodblock artwork, the lockup in the open sky, and the determinate bar. |
+| ![Traced bounce light](docs/gi-realtime.png) | ![Multi-bounce AO](docs/ao-preview.png) |
+| The same scene through the **real-time estimator** that runs in the renderer: one traced bounce at half resolution, accumulated over sixteen frames and composited at full resolution. RMSE 0.035 against a 64-sample tracer, explaining 43 % of the error the raster leaves ([docs/PATHTRACE.md](docs/PATHTRACE.md)). | Multi-bounce ambient occlusion: a corner of three planes under single-bounce AO (top right) and the albedo-weighted fit this engine now applies (bottom left), against a two-bounce tracer (bottom right). Luminance error falls from 0.241 to 0.189 ([docs/AO.md](docs/AO.md)). |
+| ![Trails](docs/trail-preview.png) | ![Motion matching](docs/motion-demo.png) |
+| Trail ribbons built by the engine's CPU code and shaded by a software rasteriser, so the figure needs no GPU: an additive sword sweep, the three UV mappings, and a ground ribbon that does not billboard ([docs/TRAIL.md](docs/TRAIL.md)). | Ten seconds of motion matching: the route, the footprints and four poses from the run. Walk, run and idle are chosen by the matcher from a database of 490 000 poses ([docs/MOTION.md](docs/MOTION.md)). |
+| ![Splash](docs/splash-capture.png) | ![Virtual geometry](docs/vgeom-levels.png) |
+| The launcher's splash, painted in C++ by the program itself — the woodblock artwork, the lockup in the open sky, and the determinate bar. | The 131 072-triangle Terrain Lab tile built into a virtual-geometry cluster tree, cut at 1 px and 8 px ([docs/VGEOM.md](docs/VGEOM.md)). |
 
 The hub is the first thing anyone sees, so it is checked like a screen and not like a build artifact: CI captures its
 three pages offscreen with `ukiyo_hub --screenshots renders` and commits them to `docs/hub/`. The images below are the
@@ -122,6 +124,11 @@ Vulkan backend and an OpenGL backend; `--backend gl` selects the latter.
   character's forward from the toes, both of which the corpus proved necessary. **Foot locking** pins the contact foot
   with a two-bone solve, cutting a 0.6 m/s stride mismatch from 21 mm to 1 mm of slide per frame. See
   [docs/MOTION.md](docs/MOTION.md).
+* **Multi-bounce ambient occlusion** (Godot 4.8's GH-115426): the AO term is a cubic in the occlusion whose
+  coefficients come from the surface albedo, so a corner of a coloured room keeps its colour and its light instead of
+  going grey and black. The albedo rides in the normal pre-pass's second target; the fit is applied in the screen-space
+  pass, clamped so a post-processed frame can only have light restored, never added
+  ([docs/AO.md](docs/AO.md), 21 % closer to a two-bounce tracer in the figure).
 * **Trails** in Godot 4.8's `Trail3D` shape: a ribbon of quads accumulated as an object moves, limited by lifetime or
   path length, shaped by a width curve and a colour gradient, billboarded or pinned to a ground plane, with stretch,
   tiling and pinned UVs. The geometry is plain CPU code (`src/engine/trail.cpp`) so the test measures it without a GPU;
@@ -291,6 +298,7 @@ own glslang package is generated with a broken SPIRV-Tools path; everything else
 | [docs/MOTION.md](docs/MOTION.md) | the feature vector, the KD-tree, the controller, the retarget |
 | [docs/PATHTRACE.md](docs/PATHTRACE.md) | the CPU reference tracer, the traced-bounce estimator, and the iGPU argument |
 | [docs/INPUT.md](docs/INPUT.md) | action maps, the `.inputactions` format, the Unity semantics kept, the CI test |
+| [docs/AO.md](docs/AO.md) | the multi-bounce AO fit, where the albedo comes from, and why the post pass clamps it |
 | [docs/TRAIL.md](docs/TRAIL.md) | trail ribbons: sections, the width curve and gradient, the alignment and tiling modes, the test |
 | [docs/SEARCH.md](docs/SEARCH.md) | fuzzy asset ranking and the glob grammar, and why the ranking is deliberately not "contains" |
 
