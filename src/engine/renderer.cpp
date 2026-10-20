@@ -574,10 +574,17 @@ glm::vec2 haltonJitter(uint32_t frame) {
 
 } // namespace
 
+void Renderer::setTrails(const std::vector<const Trail*>& alpha, const std::vector<const Trail*>& additive)
+{
+    trailAlpha_ = alpha;
+    trailAdditive_ = additive;
+}
+
 void Renderer::render(const OrbitCamera& cam, const std::vector<Model*>& models,
                       float time, uint32_t frameIndex, const RenderSettings& s) {
     drawCalls_ = 0;
     triangles_ = 0;
+    trailTriangles_ = 0;
     vgeomStats_ = VGeomStats{};
     // Smear input: each model's hips displacement since the last render call (world units). The hips
     // carry the animated motion; the root only moves when the app moves the model.
@@ -842,6 +849,22 @@ void Renderer::render(const OrbitCamera& cam, const std::vector<Model*>& models,
                      graphMaterials_.at(r.prim)->set(), glm::vec4(0.0f));
     };
 
+    // Trails (item 27): one indexed draw for the alpha list and one for the additive list, over the geometry the CPU
+    // already built. Created on first use so a scene with no trails pays nothing; both target the HDR colourbuffer
+    // with the scene depth attached, which is the pass this is called from.
+    auto drawTrails = [&]() {
+        if (trailAlpha_.empty() && trailAdditive_.empty()) return;
+        if (!trailAlphaRenderer_)
+            trailAlphaRenderer_ = std::make_unique<TrailRenderer>(dev_, rhi::Format::RGBA16F, true, TrailBlend::Alpha);
+        if (!trailAdditiveRenderer_)
+            trailAdditiveRenderer_ = std::make_unique<TrailRenderer>(dev_, rhi::Format::RGBA16F, true, TrailBlend::Additive);
+        const uint32_t alphaTris = trailAlphaRenderer_->draw(dev_, *frameSet_, eye, trailAlpha_);
+        if (alphaTris > 0) { ++drawCalls_; triangles_ += alphaTris; }
+        const uint32_t addTris = trailAdditiveRenderer_->draw(dev_, *frameSet_, eye, trailAdditive_);
+        if (addTris > 0) { ++drawCalls_; triangles_ += addTris; }
+        trailTriangles_ = alphaTris + addTris;
+    };
+
     // 2. Scene: sky, infinite grid, toon materials, outlines, then blended materials.
     {
         rhi::PassDesc hp;
@@ -938,6 +961,7 @@ void Renderer::render(const OrbitCamera& cam, const std::vector<Model*>& models,
         for (const Rec& r : mmdEdges)
             bindAndDraw(r, pMmdEdge_.get(), frameSet_.get(), glm::vec4(0.0f, s.outlineScale, 0.0f, 0.0f));
         if (!hasWater) drawBlended();
+        drawTrails();
         dev_.endPass();
     }
 
@@ -986,6 +1010,7 @@ void Renderer::render(const OrbitCamera& cam, const std::vector<Model*>& models,
             dev_.beginPass(bp);
             dev_.setViewport(0, 0, intW_, intH_);
             drawBlended();
+            drawTrails();
             dev_.endPass();
         }
         if (underWater) {

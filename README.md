@@ -32,10 +32,10 @@ Plus the offline tools, which are part of the build rather than a separate scrip
 
 | | |
 | --- | --- |
-| ![Terrain](docs/terrain-hero.png) | ![Virtual geometry](docs/vgeom-levels.png) |
-| The Terrain Lab tile with the vendored ground textures and grass, rendered offline by `terrain_preview` ([docs/TERRAIN.md](docs/TERRAIN.md)). | The same 131 072-triangle tile built into a virtual-geometry cluster tree, cut at 1 px and 8 px ([docs/VGEOM.md](docs/VGEOM.md)). |
-| ![Path traced](docs/pathtrace-terrain.png) | ![Traced bounce light](docs/gi-realtime.png) |
-| The scene through a CPU path tracer — one cosine bounce, ray-marched sun shadows, the engine's own layer weights and textures. The ground truth the real-time renderer is measured against, on any machine ([docs/PATHTRACE.md](docs/PATHTRACE.md)). | The same scene through the **real-time estimator** that runs in the renderer: one traced bounce at half resolution, accumulated over sixteen frames and composited at full resolution. RMSE 0.035 against a 64-sample tracer, explaining 43 % of the error the raster leaves ([docs/PATHTRACE.md](docs/PATHTRACE.md)). |
+| ![Terrain](docs/terrain-hero.png) | ![Path traced](docs/pathtrace-terrain.png) |
+| The Terrain Lab tile with the vendored ground textures and grass, rendered offline by `terrain_preview` ([docs/TERRAIN.md](docs/TERRAIN.md)). | The scene through a CPU path tracer — one cosine bounce, ray-marched sun shadows, the engine's own layer weights and textures, and the ground truth the real-time renderer is measured against ([docs/PATHTRACE.md](docs/PATHTRACE.md)). |
+| ![Traced bounce light](docs/gi-realtime.png) | ![Trails](docs/trail-preview.png) |
+| The same scene through the **real-time estimator** that runs in the renderer: one traced bounce at half resolution, accumulated over sixteen frames and composited at full resolution. RMSE 0.035 against a 64-sample tracer, explaining 43 % of the error the raster leaves ([docs/PATHTRACE.md](docs/PATHTRACE.md)). | Trail ribbons built by the engine's CPU code and shaded by a software rasteriser, so the figure needs no GPU: an additive sword sweep, the three UV mappings, and a ground ribbon that does not billboard ([docs/TRAIL.md](docs/TRAIL.md)). |
 | ![Motion matching](docs/motion-demo.png) | ![Splash](docs/splash-capture.png) |
 | Ten seconds of motion matching: the route, the footprints and four poses from the run. Walk, run and idle are chosen by the matcher from a database of 490 000 poses ([docs/MOTION.md](docs/MOTION.md)). | The launcher's splash, painted in C++ by the program itself — the woodblock artwork, the lockup in the open sky, and the determinate bar. |
 
@@ -122,6 +122,10 @@ Vulkan backend and an OpenGL backend; `--backend gl` selects the latter.
   character's forward from the toes, both of which the corpus proved necessary. **Foot locking** pins the contact foot
   with a two-bone solve, cutting a 0.6 m/s stride mismatch from 21 mm to 1 mm of slide per frame. See
   [docs/MOTION.md](docs/MOTION.md).
+* **Trails** in Godot 4.8's `Trail3D` shape: a ribbon of quads accumulated as an object moves, limited by lifetime or
+  path length, shaped by a width curve and a colour gradient, billboarded or pinned to a ground plane, with stretch,
+  tiling and pinned UVs. The geometry is plain CPU code (`src/engine/trail.cpp`) so the test measures it without a GPU;
+  the renderer uploads it as one indexed draw per blend mode. See [docs/TRAIL.md](docs/TRAIL.md).
 * Two-bone and FABRIK arm IK, hand-on-waist constraints, spring bones, hit reactions and sway.
 
 ### Systems
@@ -138,6 +142,9 @@ Vulkan backend and an OpenGL backend; `--backend gl` selects the latter.
   rather than a simplified subset. See [docs/INPUT.md](docs/INPUT.md).
 * **Audio** through miniaudio; **networking** over UDP with snapshots and interpolation.
 * **Virtual file system** with a pak format (`tools/ukiyo_pak.cpp`), so a shipped project is one folder.
+* **Asset search** as engine code: Godot's fuzzy ranking (word starts, file names and whole-token hits ahead of
+  scattered letters, with the matched runs returned for highlighting) and a glob grammar with classes, groups and
+  escapes, so `*.ukshader` and `{Lit,Toon}.ukshader` do what they read like. See [docs/SEARCH.md](docs/SEARCH.md).
 
 ## The editor
 
@@ -284,6 +291,8 @@ own glslang package is generated with a broken SPIRV-Tools path; everything else
 | [docs/MOTION.md](docs/MOTION.md) | the feature vector, the KD-tree, the controller, the retarget |
 | [docs/PATHTRACE.md](docs/PATHTRACE.md) | the CPU reference tracer, the traced-bounce estimator, and the iGPU argument |
 | [docs/INPUT.md](docs/INPUT.md) | action maps, the `.inputactions` format, the Unity semantics kept, the CI test |
+| [docs/TRAIL.md](docs/TRAIL.md) | trail ribbons: sections, the width curve and gradient, the alignment and tiling modes, the test |
+| [docs/SEARCH.md](docs/SEARCH.md) | fuzzy asset ranking and the glob grammar, and why the ranking is deliberately not "contains" |
 
 ## Credits
 

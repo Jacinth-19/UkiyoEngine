@@ -88,6 +88,22 @@ jobs:
         run: |
           set -o pipefail
           ./build/gi_test 2>&1 | tee /tmp/ukiyo-test-gi_test.log
+      # Trails: the ribbon geometry Godot 4.8 shipped as Trail3D, built by the engine's own CPU code (docs/TRAIL.md).
+      # The strip, its width curve, its gradient, the tiling modes and the trimming rules are measured, not asserted.
+      - name: Run Trail Test
+        run: |
+          set -o pipefail
+          ./build/trail_test 2>&1 | tee /tmp/ukiyo-test-trail_test.log
+      # Fuzzy asset search and glob matching: the ranking that makes three keystrokes enough in the Project browser
+      # (docs/SEARCH.md). Pure C++, no window.
+      - name: Run Search Test
+        run: |
+          set -o pipefail
+          ./build/search_test 2>&1 | tee /tmp/ukiyo-test-search_test.log
+      # The figure in docs/TRAIL.md, from the same ribbon triangles the renderer uploads. Writing it also checks that
+      # the tool still runs after a change to Trail, not merely that it compiles.
+      - name: Render the trail figure
+        run: mkdir -p renders && ./build/trail_preview renders/trail-preview.png 1600 900
       # The input runtime, its asset format and its actions, driven from synthetic devices: no window, no GPU, no GLFW.
       # It checks press/hold/tap/multitap, 1D and 2D composites, processors, control schemes, rebinding, and that the
       # .inputactions file the engine writes loads back byte-for-byte. docs/INPUT.md.
@@ -326,7 +342,7 @@ jobs:
       - name: Run the portable tests
         run: |
           $failed = @()
-          foreach ($t in @("systems_test", "network_test", "project_test", "vgeom_test", "motion_test", "gi_test", "input_test")) {
+          foreach ($t in @("systems_test", "network_test", "project_test", "vgeom_test", "motion_test", "gi_test", "input_test", "trail_test", "search_test")) {
             Write-Host "::group::$t"
             $out = & "./build/$t.exe" 2>&1
             $code = $LASTEXITCODE

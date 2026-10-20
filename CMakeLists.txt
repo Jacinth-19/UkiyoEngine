@@ -193,6 +193,9 @@ add_library(ukiyo_core STATIC
   third_party/meshoptimizer/allocator.cpp
   src/engine/material_preview.cpp
   src/engine/particle_renderer.cpp
+  src/engine/trail.cpp
+  src/engine/trail_renderer.cpp
+  src/engine/search.cpp
   src/engine/renderer.cpp
   src/engine/rig.cpp
   src/third_party_impl.cpp
@@ -277,6 +280,24 @@ add_executable(gi_test tests/gi_test.cpp)
 target_include_directories(gi_test PRIVATE ${CMAKE_SOURCE_DIR}/src ${CMAKE_SOURCE_DIR}/third_party)
 target_link_libraries(gi_test PRIVATE glm::glm)
 target_compile_options(gi_test PRIVATE ${UKIYO_WARNINGS})
+
+# Trails (docs/TRAIL.md). The ribbon is CPU code with no device, so the width curve, the gradient, the trimming rules
+# and the wound triangles are checked on any machine, including CI.
+add_executable(trail_test tests/trail_test.cpp src/engine/trail.cpp)
+target_include_directories(trail_test PRIVATE ${CMAKE_SOURCE_DIR}/src ${CMAKE_SOURCE_DIR}/third_party)
+target_link_libraries(trail_test PRIVATE glm::glm)
+target_compile_options(trail_test PRIVATE ${UKIYO_WARNINGS})
+
+# The figure in docs/TRAIL.md, rasterised on the CPU from the same ribbon triangles the renderer uploads.
+add_executable(trail_preview tools/trail_preview.cpp src/engine/trail.cpp)
+target_include_directories(trail_preview PRIVATE ${CMAKE_SOURCE_DIR}/src ${CMAKE_SOURCE_DIR}/third_party)
+target_link_libraries(trail_preview PRIVATE glm::glm)
+target_compile_options(trail_preview PRIVATE ${UKIYO_WARNINGS})
+
+# Fuzzy asset search and glob matching (docs/SEARCH.md): the engine half of the editor's Project filter. Pure C++17.
+add_executable(search_test tests/search_test.cpp src/engine/search.cpp)
+target_include_directories(search_test PRIVATE ${CMAKE_SOURCE_DIR}/src)
+target_compile_options(search_test PRIVATE ${UKIYO_WARNINGS})
 
 # ---- Input system (docs/INPUT.md) ------------------------------------------
 # The runtime and the .inputactions asset format are plain C++ (glm + nlohmann), with no GLFW, Vulkan or window, so the

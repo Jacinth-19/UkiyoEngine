@@ -17,6 +17,8 @@
 #include "engine/gpu_types.h"
 #include "engine/graph_material.h"
 #include "engine/model.h"
+#include "engine/trail.h"
+#include "engine/trail_renderer.h"
 #include "engine/water.h"
 #include "rhi/rhi.h"
 
@@ -215,6 +217,13 @@ public:
     void render(const OrbitCamera& cam, const std::vector<Model*>& models,
                 float time, uint32_t frameIndex, const RenderSettings& settings);
 
+    // Trails to draw this frame. The renderer keeps the pointers only for the duration of render(): the caller owns
+    // the Trail objects, and they must outlive the call. Alpha trails are drawn after the blended materials so they
+    // composite over them; additive trails (sword arcs, light streaks) are drawn after those. Each list is one draw.
+    void setTrails(const std::vector<const Trail*>& alpha, const std::vector<const Trail*>& additive = {});
+    // Triangles the trail draw produced in the last render().
+    uint32_t lastTrailTriangles() const { return trailTriangles_; }
+
     // Mesh draw calls issued by the last render(), across the shadow and scene passes.
     uint32_t lastDrawCalls() const { return drawCalls_; }
     uint32_t lastTriangles() const { return triangles_; }
@@ -277,6 +286,13 @@ private:
     std::unique_ptr<rhi::Texture> makeLutTexture(const uint8_t* rgba, uint32_t size = 16) const;   // size N: N*N x N strip
 
     rhi::Device& dev_;
+    // Trails for the current frame, and the two pipelines that draw them (created on first use).
+    std::vector<const Trail*> trailAlpha_;
+    std::vector<const Trail*> trailAdditive_;
+    std::unique_ptr<TrailRenderer> trailAlphaRenderer_;
+    std::unique_ptr<TrailRenderer> trailAdditiveRenderer_;
+    uint32_t trailTriangles_ = 0;
+
     uint32_t drawCalls_ = 0;
     uint32_t triangles_ = 0;     // triangles in the mesh draws of the last frame
     VGeomStats vgeomStats_{};
