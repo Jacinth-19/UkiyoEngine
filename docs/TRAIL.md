@@ -24,7 +24,7 @@ shape the strip.*
 
 ```
 src/engine/trail.h            TrailSettings, TrailGradient, TrailWidthCurve, Trail, TrailVertex
-src/engine/trail.cpp          emit/update/trim, tangents, and buildRibbon's two overloads
+src/engine/trail.cpp          advance/update/trim, tangents, and buildRibbon's two overloads
 src/engine/trail_renderer.h   TrailRenderer: one pipeline, one vertex buffer, one draw
 src/engine/trail_renderer.cpp upload + blend + soft edge
 shaders/trail.vert            world-space strip, no camera work
@@ -43,7 +43,7 @@ drives it deterministically and a replay produces the same ribbon twice.
 | `TrailSettings` | the look: limit mode and its value, `minSectionLength`, width, width curve, gradient, alignment, tiling, `pinUv`, `maxSections`, `localUp` |
 | `TrailGradient` | colour stops by `t` (0 at the tail, 1 at the emitter), linearly interpolated. Its **alpha is the fade** |
 | `TrailWidthCurve` | piecewise-linear points `(t, multiplier)`, sampled into `halfWidth = 0.5 · width · curve(t)` |
-| `Trail` | the sections, `emit`, `update`, `clear`, `buildRibbon` |
+| `Trail` | the sections, `advance`, `update`, `clear`, `buildRibbon` |
 | `TrailVertex` | position, `uv`, colour — the three things `shaders/trail.vert` reads |
 | `TrailRenderer` | pipeline, buffers, one indexed draw per blend mode |
 
@@ -57,7 +57,7 @@ presets in the reference were doing anyway.
 ukiyo::Trail trail(settings);              // billboard, lifetime, tile
 
 // once per frame, after the object has moved:
-trail.emit(objectWorldPosition);
+trail.advance(objectWorldPosition);
 trail.update(dt);
 
 std::vector<const ukiyo::Trail*> trails{&trail};
@@ -65,7 +65,7 @@ renderer.setTrails(trails /* alpha */, {} /* additive */);
 renderer.render(cam, models, time, frameIndex, settings);
 ```
 
-`emit` does two things. When the head has moved at least `minSectionLength`, it appends a **section** and the ribbon
+`advance` does two things. When the head has moved at least `minSectionLength`, it appends a **section** and the ribbon
 grows by one quad. When it has not, it *moves the newest point* instead, so the ribbon always reaches the object rather
 than lagging a frame behind. That second half is what makes a slow object still look attached: without it the strip
 would end short of the emitter until the next section was due.
@@ -134,7 +134,7 @@ implementation:
 
 | Group | What it pins |
 | --- | --- |
-| 1 | the first emit lays the head; a move shorter than `minSectionLength` moves it instead of adding a section; two sections are a ribbon |
+| 1 | the first advance lays the head; a move shorter than `minSectionLength` moves it instead of adding a section; two sections are a ribbon |
 | 2 | two vertices per section and six indices per pair, the array overload builds the same strip, and a buffer that is too small is refused rather than overrun |
 | 3 | width at both ends of every quad against the width curve, measured from the geometry |
 | 4 | the quad's side is perpendicular to the view ray at every vertex, from any camera |

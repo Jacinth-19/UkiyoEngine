@@ -44,7 +44,7 @@ void checkNear(double got, double want, double tol, const std::string& what) {
 // A trail marched along +x in `step` metre sections, `count` sections in all, emitted from the origin.
 Trail alongX(int count, float step, const TrailSettings& s = TrailSettings()) {
     Trail t(s);
-    for (int i = 0; i < count; ++i) t.emit(glm::vec3(step * float(i), 0.0f, 0.0f));
+    for (int i = 0; i < count; ++i) t.advance(glm::vec3(step * float(i), 0.0f, 0.0f));
     return t;
 }
 
@@ -63,19 +63,19 @@ bool allFinite(const std::vector<TrailVertex>& v) {
 int main() {
     std::printf("trails: the geometry of a ribbon (mirrors the engine's Trail)\n\n");
 
-    // 1. Sections. The first emit lays the head; until the emitter has moved minSectionLength the head moves and no
+    // 1. Sections. The first advance lays the head; until the emitter has moved minSectionLength the head moves and no
     //    section is added, which is what keeps a slow object from piling up coincident points.
     {
         TrailSettings s;
         s.minSectionLength = 0.2f;
         Trail t(s);
         checkTrue(t.sectionCount() == 0 && !t.hasGeometry(), "1a: a new trail has nothing");
-        checkTrue(t.emit(glm::vec3(0.0f)), "1b: the first emit lays the head");
+        checkTrue(t.advance(glm::vec3(0.0f)), "1b: the first advance lays the head");
         checkTrue(t.sectionCount() == 1 && !t.hasGeometry(), "1c: one section is not a ribbon");
-        checkTrue(!t.emit(glm::vec3(0.1f, 0.0f, 0.0f)), "1d: a short move does not add a section");
+        checkTrue(!t.advance(glm::vec3(0.1f, 0.0f, 0.0f)), "1d: a short move does not add a section");
         checkTrue(t.sectionCount() == 1, "1e: the head moved instead");
         checkNear(double(t.sectionPosition(0).x), 0.1, 1e-5, "1f: the head is where the emitter is");
-        checkTrue(t.emit(glm::vec3(0.3f, 0.0f, 0.0f)), "1g: a move past minSectionLength adds one");
+        checkTrue(t.advance(glm::vec3(0.3f, 0.0f, 0.0f)), "1g: a move past minSectionLength adds one");
         checkTrue(t.sectionCount() == 2 && t.hasGeometry(), "1h: two sections make a ribbon");
         checkNear(double(t.length()), 0.2, 1e-5, "1i: length is the distance walked");
     }
@@ -206,7 +206,7 @@ int main() {
         std::vector<TrailVertex> before, after;
         pinned.buildRibbon(glm::vec3(0.0f, 5.0f, 10.0f), &before, &idx);
         const float uOfSecondSection = before[2].uv.x;
-        pinned.emit(glm::vec3(4.0f, 0.0f, 0.0f));
+        pinned.advance(glm::vec3(4.0f, 0.0f, 0.0f));
         pinned.buildRibbon(glm::vec3(0.0f, 5.0f, 10.0f), &after, &idx);
         checkNear(double(after[2].uv.x), double(uOfSecondSection), 1e-5, "6g: a pinned section keeps its u");
         checkTrue(after[2].uv.x < after[8].uv.x, "6h: the pins are ordered along the path");
@@ -239,7 +239,7 @@ int main() {
         t.update(0.6f);
         checkTrue(t.sectionCount() >= 2, "8b: the ribbon keeps its last pair");
         checkTrue(t.sectionCount() < 6, "8c: expired sections are dropped");
-        t.emit(glm::vec3(20.0f, 0.0f, 0.0f));
+        t.advance(glm::vec3(20.0f, 0.0f, 0.0f));
         checkNear(double(t.sectionAge(t.sectionCount() - 1)), 0.0, 1e-5, "8d: a new section starts at age zero");
         t.clear();
         checkTrue(t.sectionCount() == 0 && !t.hasGeometry(), "8e: clear empties the trail");
@@ -278,18 +278,18 @@ int main() {
         TrailSettings s;
         s.minSectionLength = 0.1f;
         Trail still(s);
-        still.emit(glm::vec3(1.0f, 2.0f, 3.0f));
-        still.emit(glm::vec3(1.0f, 2.0f, 3.0f));
-        still.emit(glm::vec3(1.0f, 2.0f, 3.0f));
+        still.advance(glm::vec3(1.0f, 2.0f, 3.0f));
+        still.advance(glm::vec3(1.0f, 2.0f, 3.0f));
+        still.advance(glm::vec3(1.0f, 2.0f, 3.0f));
         std::vector<TrailVertex> v;
         std::vector<uint32_t> idx;
         checkTrue(still.buildRibbon(glm::vec3(0.0f, 0.0f, 5.0f), &v, &idx) == 0,
                   "11a: a stationary emitter draws nothing");
 
         Trail back(s);
-        back.emit(glm::vec3(0.0f));
-        back.emit(glm::vec3(1.0f, 0.0f, 0.0f));
-        back.emit(glm::vec3(0.0f, 0.0f, 0.0f));   // doubles back over the first section
+        back.advance(glm::vec3(0.0f));
+        back.advance(glm::vec3(1.0f, 0.0f, 0.0f));
+        back.advance(glm::vec3(0.0f, 0.0f, 0.0f));   // doubles back over the first section
         back.buildRibbon(glm::vec3(0.0f, 0.0f, 5.0f), &v, &idx);
         checkTrue(allFinite(v) && !v.empty(), "11b: a trail that doubles back is still finite");
 

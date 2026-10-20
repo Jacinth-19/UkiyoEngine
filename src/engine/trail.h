@@ -110,7 +110,11 @@ public:
     // The emitter's position this frame. Adds a section once the head has moved `minSectionLength` from the last
     // point; short of that it moves the newest point, so the ribbon always reaches the object. Returns true when a
     // section was added (which is what a burst effect keys off).
-    bool emit(const glm::vec3& head);
+    //
+    // Named `advance` rather than `emit` because Qt defines `emit` as a keyword macro, and this header is included by
+    // the editor's render thread. A Qt keyword is a compile error in a class declaration, so the method is named for
+    // what it does to the emitter instead of what it does to the scene.
+    bool advance(const glm::vec3& head);
     // Ages the sections by dt and drops the ones the limit removed. Points are never trimmed below two: a single
     // point has no ribbon, and an emitter that stops should leave a trail that fades rather than a pop.
     void update(float dt);

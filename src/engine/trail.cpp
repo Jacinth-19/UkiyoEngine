@@ -103,7 +103,7 @@ void Trail::reset(const glm::vec3& head) {
     points_.push_back(s);
 }
 
-bool Trail::emit(const glm::vec3& head) {
+bool Trail::advance(const glm::vec3& head) {
     if (points_.empty()) {
         reset(head);
         return true;

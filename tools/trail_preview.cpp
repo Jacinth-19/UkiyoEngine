@@ -251,7 +251,7 @@ void blit(Image& dst, const Image& src, int x0, int y0) {
 
 // ---- the panels' scenes --------------------------------------------------------------------
 
-// A sword arc: an emitter on a circle sweeping through 140 degrees, billboarded, additive.
+// A sword arc: an emitter on a circle sweeping through 200 degrees, billboarded, additive.
 Trail swordArc() {
     TrailSettings s;
     s.limit = TrailLimit::Lifetime;
@@ -275,7 +275,7 @@ Trail swordArc() {
     for (int i = 0; i <= steps; ++i) {
         const float u = float(i) / float(steps);
         const float a = glm::radians(-100.0f + 200.0f * u);
-        t.emit(glm::vec3(std::cos(a) * 1.15f, 1.15f + std::sin(a) * 1.15f, 0.18f * std::sin(u * 3.14159f)));
+        t.advance(glm::vec3(std::cos(a) * 1.15f, 1.15f + std::sin(a) * 1.15f, 0.18f * std::sin(u * 3.14159f)));
         t.update(1.0f / 60.0f);
     }
     return t;
@@ -302,7 +302,7 @@ Trail dustTrail() {
         const float u = float(i) / float(steps);
         const float x = -2.4f + 4.8f * u;
         const float z = 0.60f * std::sin(u * 5.2f) + 0.20f * std::sin(u * 11.0f);
-        t.emit(glm::vec3(x, 0.02f, z));
+        t.advance(glm::vec3(x, 0.02f, z));
         t.update(1.0f / 60.0f);
     }
     return t;
@@ -322,11 +322,11 @@ Trail tilingRibbon(TrailTiling mode, bool pinUv, float row) {
     s.widthCurve.setPoints({{0.0f, 0.8f}, {1.0f, 1.0f}});
     s.gradient.setStops({{0.0f, glm::vec4(0.30f, 0.62f, 0.72f, 0.35f)}, {1.0f, glm::vec4(0.62f, 0.90f, 0.95f, 1.0f)}});
     Trail t(s);
-    // 0.18 m a step, so every emit clears minSectionLength and lays a section down.
+    // 0.18 m a step, so every advance clears minSectionLength and lays a section down.
     const int steps = 24;
     for (int i = 0; i <= steps; ++i) {
         const float u = float(i) / float(steps);
-        t.emit(glm::vec3(-2.2f + 4.4f * u, 0.0f, row));
+        t.advance(glm::vec3(-2.2f + 4.4f * u, 0.0f, row));
         t.update(1.0f / 60.0f);
     }
     return t;
