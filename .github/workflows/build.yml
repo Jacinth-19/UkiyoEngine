@@ -306,7 +306,13 @@ jobs:
             Write-Host "::endgroup::"
             if ($code -ne 0) {
               Write-Host "::error::$t failed with exit code $code"
-              $out | Select-Object -Last 14 | ForEach-Object { Write-Host "::error::  $_" }
+              # The failing assertions first, then the summary line, then the tail: a test can print hundreds of PASS
+              # lines, and the interesting ones are never the last.
+              $fails = $out | Select-String -Pattern "FAIL|ERROR|error:" | Select-Object -First 10
+              if ($fails) { $fails | ForEach-Object { Write-Host "::error::  $($_.Line)" } }
+              $summary = $out | Select-String -Pattern "passed|failed|checks" | Select-Object -Last 2
+              if ($summary) { $summary | ForEach-Object { Write-Host "::error::  $($_.Line)" } }
+              $out | Select-Object -Last 4 | ForEach-Object { Write-Host "::error::  $_" }
               $failed += $t
             }
           }
