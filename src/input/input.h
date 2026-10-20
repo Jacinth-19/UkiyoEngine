@@ -72,6 +72,11 @@ bool deviceKindFromPath(const std::string& path, DeviceKind* out);
 // .inputactions format speak Unity control names, so this is the one place the two spellings meet.
 bool controlNameFromPortableKey(const std::string& portable, std::string* out);
 
+// The other direction, for writing a captured control back into a project setting: "leftShift" -> "LeftShift",
+// "space" -> "Space", "f1" -> "F1". The inverse picks one spelling where controlNameFromPortableKey accepts several
+// ("Return", not "Enter"), so a rebind produces stable text. Returns "" for a control with no keyboard spelling.
+std::string portableKeyFromControlName(const std::string& control);
+
 // One physical (or virtual) device. Devices are created by State::addDevice and are stable for its lifetime.
 class Device {
 public:
@@ -294,9 +299,10 @@ public:
     void copyMapsFrom(const State& other);
 
     // Interactive rebinding (Unity's PerformInteractiveRebinding): the next control pressed on any enabled device
-    // whose kind matches the binding's device becomes the binding's path. Returns false if nothing was pressed.
-    // `onRebind` fires with the new path when it happens.
-    void startRebind(ActionMap& map, Action& action, size_t bindingIndex);
+    // whose kind matches the binding's device becomes the binding's path, and `onRebind` fires with it. `anyDevice`
+    // drops the kind restriction, which is what an overlay wants: pressing a gamepad button while rebinding a
+    // keyboard binding is a rebind to that button, not a non-event. (docs/INPUT.md §7)
+    void startRebind(ActionMap& map, Action& action, size_t bindingIndex, bool anyDevice = false);
     void cancelRebind();
     bool rebinding() const { return rebind_.active; }
     std::function<void(const std::string&)> onRebind;
@@ -325,6 +331,7 @@ private:
         ActionMap* map = nullptr;
         Action* action = nullptr;
         size_t index = 0;
+        bool anyDevice = false;                // capture from every device kind, not just the binding's own
         std::map<std::string, float> before;   // control name -> value at the moment rebinding started
         std::vector<std::pair<Device*, std::string>> snapshot;   // every control, to detect a new press
     } rebind_;

@@ -35,6 +35,7 @@
 #include "foldout.h"
 #include "inspector_ui.h"
 #include "prefs_dialog.h"
+#include "input/rebind.h"
 #include "prefab_file.h"
 #include "systems_json.h"
 #include "scene_file.h"
@@ -9992,9 +9993,53 @@ int MainWindow::runSelfTest() {
             check(inputStatus->text().contains(QStringLiteral("single key")), "Input: a key combination is rejected");
             inputTable->item(r, 1)->setText(QStringLiteral("q"));
             bool dashSaved = false;
+            // A cell that is a key is written back as a keyboard control path, so a project setting and a runtime
+            // binding name the same thing. The table shows it as the key again.
             for (const engine::InputAction& a : projSettings_.inputActions)
-                if (a.name == "Dash" && a.key == "Q") dashSaved = true;
-            check(dashSaved && inputStatus->text().isEmpty(), "Input: a valid action is saved with its key in portable form");
+                if (a.name == "Dash" && a.key == "<Keyboard>/q") dashSaved = true;
+            check(dashSaved && inputStatus->text().isEmpty(), "Input: a valid action is saved as the control path for its key");
+            check(inputTable->item(r, 1)->text() == QStringLiteral("Q"), "Input: the table shows the key, not the path");
+            inputTable->item(r, 1)->setText(QStringLiteral("<Gamepad>/buttonSouth"));
+            bool padSaved = false;
+            for (const engine::InputAction& a : projSettings_.inputActions)
+                if (a.name == "Dash" && a.key == "<Gamepad>/buttonSouth") padSaved = true;
+            check(padSaved, "Input: a control path is accepted and stored as written");
+            inputTable->item(r, 1)->setText(QStringLiteral("<Gamepad>/nonsense"));
+            check(inputStatus->text().contains(QStringLiteral("not a control")), "Input: a path to a control that does not exist is refused");
+            inputTable->item(r, 1)->setText(QStringLiteral("q"));
+
+            // Rebind: the page takes the next key event, writes the row and saves. A synthetic QKeyEvent goes through
+            // the application's event filter exactly as a real one would.
+            auto* rebindButton = page->findChild<QPushButton*>(QStringLiteral("inputRebind"));
+            inputTable->setCurrentCell(r, 0);
+            check(rebindButton != nullptr, "Input: the page has a Rebind button");
+            if (rebindButton) {
+                rebindButton->click();
+                check(inputStatus->text().contains(QStringLiteral("Listening for")), "Input: Rebind waits for a key");
+                QKeyEvent press(QEvent::KeyPress, Qt::Key_J, Qt::NoModifier);
+                QApplication::sendEvent(inputTable, &press);
+                check(inputTable->item(r, 1) && inputTable->item(r, 1)->text() == QStringLiteral("J"),
+                      "Input: the key that was pressed fills the row");
+                bool rebound = false;
+                for (const engine::InputAction& a : projSettings_.inputActions)
+                    if (a.name == "Dash" && a.key == "<Keyboard>/j") rebound = true;
+                check(rebound && inputStatus->text().contains(QStringLiteral("Bound")),
+                      "Input: a rebound key is saved as its control path");
+                check(fileHas(settingsFile, QStringLiteral("\"key\": \"<Keyboard>/j\"")),
+                      "Input: the rebound key reaches ProjectSettings.json");
+                // A second action on the same key is called out before it is saved. The second action is made here so
+                // the check does not depend on which actions the project happens to ship with.
+                inputAdd->click();
+                const int copy = inputTable->rowCount() - 1;
+                inputTable->item(copy, 0)->setText(QStringLiteral("Copy"));
+                inputTable->item(copy, 1)->setText(QStringLiteral("J"));
+                inputTable->setCurrentCell(r, 0);
+                rebindButton->click();
+                QKeyEvent again(QEvent::KeyPress, Qt::Key_J, Qt::NoModifier);
+                QApplication::sendEvent(inputTable, &again);
+                check(inputStatus->text().contains(QStringLiteral("already used by Copy")),
+                      "Input: a key another action already uses is reported");
+            }
 
             product->setText(QStringLiteral("Test Name"));
             product->editingFinished();
@@ -12308,17 +12353,79 @@ bool MainWindow::eventFilter(QObject* watched, QEvent* e) {
     return QMainWindow::eventFilter(watched, e);
 }
 
+namespace {
+
+// While a rebind is armed, the application's key events are the capture. Play mode is fed by the Game view's key
+// events (World::setKeyHeld), not by a poller, so a page that wants to hear a key has to take the same events. It
+// swallows them, so the table does not also start editing a cell on the letter that was pressed.
+class RebindKeyFilter : public QObject {
+public:
+    std::function<void(QKeyEvent* event)> onKey;
+    bool eventFilter(QObject* watched, QEvent* event) override {
+        if (!onKey) return QObject::eventFilter(watched, event);
+        // A key pressed to bind something must not also run the menu action it is a shortcut for: accepting the
+        // override is how Qt is told the key is spoken for.
+        if (event->type() == QEvent::ShortcutOverride) {
+            event->accept();
+            return true;
+        }
+        if (event->type() == QEvent::KeyPress) {
+            onKey(static_cast<QKeyEvent*>(event));
+            return true;
+        }
+        return QObject::eventFilter(watched, event);
+    }
+};
+
+// A Qt key event as the engine's portable key text. Qt spells the numpad "Num+" and the engine spells the same key
+// "NumPlus", so those are translated here; everything else Qt already writes the way the engine reads it (Del, Ins,
+// PgUp, Esc, Shift, and punctuation as the character it prints).
+QString portableKeyForQt(int key, Qt::KeyboardModifiers mods) {
+    if (mods & Qt::KeypadModifier) {
+        if (key >= Qt::Key_0 && key <= Qt::Key_9) return QStringLiteral("Num%1").arg(key - Qt::Key_0);
+        switch (key) {
+        case Qt::Key_Plus: return QStringLiteral("NumPlus");
+        case Qt::Key_Minus: return QStringLiteral("NumMinus");
+        case Qt::Key_Asterisk: return QStringLiteral("NumMultiply");
+        case Qt::Key_Slash: return QStringLiteral("NumDivide");
+        case Qt::Key_Period: return QStringLiteral("NumPeriod");
+        default: break;
+        }
+    }
+    return QKeySequence(key).toString(QKeySequence::PortableText);
+}
+
+// Unity's keyboard control name -> the key this editor's tables work in. "<Keyboard>/space" -> "Space"; a path on
+// another device has no portable spelling, which is what tells the table to keep the path instead of a key.
+QString portableKeyForPath(const std::string& path) {
+    if (path.empty()) return QString();
+    ukiyo::input::DeviceKind kind;
+    if (!ukiyo::input::deviceKindFromPath(path, &kind) || kind != ukiyo::input::DeviceKind::Keyboard) return QString();
+    return QString::fromStdString(
+        ukiyo::input::portableKeyFromControlName(ukiyo::input::controlNameFromPath(path)));
+}
+
+// The path a table cell describes, assuming the keyboard when the text is just a key: the project setting is a key,
+// and the runtime binding is a path, so this is the one-way bridge between them.
+std::string pathForPortableKey(const QString& key) {
+    return "<Keyboard>/" + key.toStdString();
+}
+
+} // namespace
+
 void MainWindow::fillInputPage(QVBoxLayout* v) {
     QFormLayout* f = addSection(v, QStringLiteral("Input"));
     QLabel* note = new QLabel(QStringLiteral(
-        "Each action names a key. A script asks for an action with ukiyo.actionDown(\"Name\"). "
-        "Keys pressed in the Game view reach the script during play. Changes apply the next time play starts."));
+        "Each action binds a control on a device; the table shows a bare key as that key on the keyboard, and any other "
+        "control as the path it is. A script asks for an action with ukiyo.actionDown(\"Name\"). Rebind listens for "
+        "the next key you press in this window and writes it, and there is no undo beyond pressing Esc. Bindings apply "
+        "the next time play starts."));
     note->setWordWrap(true);
     f->addRow(note);
 
     QTableWidget* table = new QTableWidget(0, 2);
     table->setObjectName(QStringLiteral("inputActionTable"));
-    table->setHorizontalHeaderLabels({QStringLiteral("Action"), QStringLiteral("Key")});
+    table->setHorizontalHeaderLabels({QStringLiteral("Action"), QStringLiteral("Binding")});
     table->horizontalHeader()->setStretchLastSection(true);
     table->verticalHeader()->setVisible(false);
     table->setSelectionBehavior(QAbstractItemView::SelectRows);
@@ -12335,40 +12442,197 @@ void MainWindow::fillInputPage(QVBoxLayout* v) {
             const int r = table->rowCount();
             table->insertRow(r);
             table->setItem(r, 0, new QTableWidgetItem(QString::fromStdString(a.name)));
-            table->setItem(r, 1, new QTableWidgetItem(QString::fromStdString(a.key)));
+            // A gamepad binding is not a key and stays as the path it is; a keyboard one is shown as the key, which
+            // is what a person types.
+            const QString portable = portableKeyForPath(a.key);
+            table->setItem(r, 1, new QTableWidgetItem(portable.isEmpty() ? QString::fromStdString(a.key) : portable));
         }
     };
     refill();
 
     // Checks every row. A bad row shows a message and nothing is saved until it is fixed.
-    auto commit = [this, table, status] {
+    auto commit = [this, table, status](bool keepStatus = false) {
+        // The cells are rewritten as they are accepted (a typed "q" reads "Q"), and that must not come back as another
+        // edit. The blocker covers the writes; the call that is running is already past the signal.
+        QSignalBlocker block(table);
         std::vector<engine::InputAction> actions;
         QStringList names;
         for (int r = 0; r < table->rowCount(); ++r) {
             const QString name = cellText(table, r, 0);
-            const QString keyText = cellText(table, r, 1);
-            if (name.isEmpty() && keyText.isEmpty()) continue;   // a new row that is still empty
+            const QString binding = cellText(table, r, 1);
+            if (name.isEmpty() && binding.isEmpty()) continue;   // a new row that is still empty
             QString problem;
             if (name.isEmpty()) problem = QStringLiteral("Row %1 needs an action name.").arg(r + 1);
             else if (names.contains(name)) problem = QStringLiteral("\"%1\" is listed twice.").arg(name);
-            else if (keyText.isEmpty()) problem = QStringLiteral("\"%1\" needs a key.").arg(name);
+            else if (binding.isEmpty()) problem = QStringLiteral("\"%1\" needs a key.").arg(name);
             if (!problem.isEmpty()) {
                 status->setText(problem);
                 return;
             }
-            const QString key = QKeySequence::fromString(keyText, QKeySequence::PortableText).toString(QKeySequence::PortableText);
-            if (key.isEmpty() || key.contains(QLatin1Char('+'))) {
-                status->setText(QStringLiteral("\"%1\" is not a single key. Use names such as W, Space, Left or Shift.").arg(keyText));
-                return;
+            // A control path (a gamepad button, a mouse button) is stored as written and checked against the devices
+            // and control names the engine knows; anything else is a key, and has to be exactly one.
+            std::string stored;
+            if (binding.startsWith(QLatin1Char('<'))) {
+                ukiyo::input::DeviceKind kind;
+                if (!ukiyo::input::deviceKindFromPath(binding.toStdString(), &kind)) {
+                    status->setText(QStringLiteral("\"%1\" does not name a device. Use <Keyboard>/space or <Gamepad>/buttonSouth.").arg(binding));
+                    return;
+                }
+                const std::string control = ukiyo::input::controlNameFromPath(binding.toStdString());
+                const auto& known = kind == ukiyo::input::DeviceKind::Keyboard ? ukiyo::input::keyboardControls()
+                                   : kind == ukiyo::input::DeviceKind::Mouse  ? ukiyo::input::mouseControls()
+                                                                             : ukiyo::input::gamepadControls();
+                if (std::find(known.begin(), known.end(), control) == known.end()) {
+                    status->setText(QStringLiteral("\"%1\" is not a control on that device.").arg(binding));
+                    return;
+                }
+                stored = binding.toStdString();
+            } else {
+                const QString key = QKeySequence::fromString(binding, QKeySequence::PortableText)
+                                        .toString(QKeySequence::PortableText);
+                if (key.isEmpty() || key.contains(QLatin1Char('+'))) {
+                    status->setText(QStringLiteral("\"%1\" is not a single key. Use names such as W, Space, Left or Shift, "
+                                                   "or a control path such as <Gamepad>/buttonSouth.").arg(binding));
+                    return;
+                }
+                std::string control;
+                if (!ukiyo::input::controlNameFromPortableKey(key.toStdString(), &control)) {
+                    status->setText(QStringLiteral("\"%1\" is not a key the engine knows.").arg(binding));
+                    return;
+                }
+                stored = pathForPortableKey(key);
+                if (table->item(r, 1) && table->item(r, 1)->text() != key) table->item(r, 1)->setText(key);
             }
             names << name;
-            actions.push_back({name.toStdString(), key.toStdString()});
+            actions.push_back({name.toStdString(), stored});
         }
-        status->clear();
         projSettings_.inputActions = actions;
+        if (!keepStatus) status->setText(QString());
         saveProjectSettingsFile();
     };
     connect(table, &QTableWidget::cellChanged, this, [commit](int, int) { commit(); });
+
+    // The capture: a row being listened for (-1: none) and the binding it had, so Escape can put it back. The key
+    // itself arrives through the filter below and goes to the render thread, where the live world's input state is.
+    struct Capture {
+        int row = -1;
+        std::string previous;
+        RebindKeyFilter* filter = nullptr;
+    };
+    auto capture = std::make_shared<Capture>();
+
+    auto endCapture = [this, table, status, capture](bool restore) {
+        if (capture->row < 0) return;
+        const int r = capture->row;
+        capture->row = -1;
+        if (capture->filter) {
+            qApp->removeEventFilter(capture->filter);
+            capture->filter->deleteLater();
+            capture->filter = nullptr;
+        }
+        runOnWorker([this] { if (worker_) worker_->cancelRebind(); });
+        if (restore) {
+            if (r < table->rowCount() && table->item(r, 1)) {
+                QSignalBlocker block(table);
+                table->item(r, 1)->setText(QString::fromStdString(capture->previous));
+            }
+            status->setStyleSheet(QStringLiteral(""));
+            status->setText(QStringLiteral("Rebind canceled."));
+        }
+        // A capture that bound a key leaves its own message up: the reason it ended is the interesting part.
+    };
+
+    auto finishCapture = [this, table, status, capture, endCapture, commit](int row, const std::string& path) {
+        // Two actions on one control is a bug that is invisible until someone presses it, so the dialog says so
+        // before it saves.
+        const QString shown = portableKeyForPath(path);
+        {
+            QSignalBlocker block(table);
+            if (row >= 0 && row < table->rowCount() && table->item(row, 1))
+                table->item(row, 1)->setText(shown.isEmpty() ? QString::fromStdString(path) : shown);
+        }
+        QStringList clashes;
+        for (int i = 0; i < table->rowCount(); ++i) {
+            if (i == row) continue;
+            const QString other = cellText(table, i, 1);
+            if (other.isEmpty()) continue;
+            const std::string otherPath = other.startsWith(QLatin1Char('<')) ? other.toStdString()
+                                                                             : pathForPortableKey(other);
+            if (otherPath == path) clashes << cellText(table, i, 0);
+        }
+        const QString name = QString::fromStdString(ukiyo::input::controlDisplayName(path));
+        if (clashes.isEmpty()) {
+            status->setStyleSheet(QStringLiteral(""));
+            status->setText(QStringLiteral("Bound %1.").arg(name));
+        } else {
+            status->setStyleSheet(redStatus());
+            status->setText(QStringLiteral("%1 is already used by %2.").arg(name, clashes.join(QStringLiteral(", "))));
+        }
+        endCapture(false);
+        // The cell was written under a signal blocker, so the save is explicit: this is the one edit the table did not
+        // make itself. The status keeps what the capture said, unless the row turned out to be invalid.
+        commit(true);
+    };
+
+    auto beginCapture = [this, table, status, capture, finishCapture, endCapture](int row) {
+        if (row < 0 || row >= table->rowCount()) {
+            status->setStyleSheet(redStatus());
+            status->setText(QStringLiteral("Select an action first."));
+            return;
+        }
+        capture->previous = table->item(row, 1) ? table->item(row, 1)->text().toStdString() : std::string();
+        capture->row = row;
+        table->selectRow(row);
+        const QString action = cellText(table, row, 0);
+        // Playing, the capture is handed to the engine, on the running world: that is the path a game uses, and it
+        // rebinds the live binding as well as the file. Stopped, there is no world to hand it to, so the page takes the
+        // key itself; what it writes is what the next Play reads.
+        if (worker_ && worker_->playing()) {
+            QString error;
+            runOnWorker([&] { error = worker_->beginRebind(action); });
+            if (!error.isEmpty()) {
+                capture->row = -1;
+                status->setStyleSheet(redStatus());
+                status->setText(error);
+                return;
+            }
+        }
+        status->setStyleSheet(QStringLiteral(""));
+        status->setText(QStringLiteral("Listening for %1 — press a key. Esc cancels.").arg(action));
+
+        auto* filter = new RebindKeyFilter;
+        filter->onKey = [this, table, status, capture, finishCapture, endCapture](QKeyEvent* key) {
+            if (capture->row < 0) return;
+            // Escape cancels here rather than through a QShortcut: this filter swallows the key events that a
+            // shortcut would need.
+            if (key->key() == Qt::Key_Escape) {
+                endCapture(true);
+                return;
+            }
+            // A modifier on its own is a bindable control (Shift, Ctrl), which is what a person expects from a key
+            // rebind: Qt reports it as the key with no text.
+            const QString portable = portableKeyForQt(key->key(), key->modifiers());
+            if (portable.isEmpty() || portable.contains(QLatin1Char('+'))) {
+                status->setText(QStringLiteral("Press a single key, or Esc to cancel."));
+                return;
+            }
+            const int row = capture->row;
+            std::string control;
+            if (!ukiyo::input::controlNameFromPortableKey(portable.toStdString(), &control)) {
+                status->setText(QStringLiteral("%1 is not a key this engine can bind. Try another.").arg(portable));
+                return;
+            }
+            // While playing the engine hears the key too, through the same door the Game view uses, so the running
+            // game's binding changes on the spot. Stopped, the key only reaches this page.
+            QString path;
+            if (worker_ && worker_->playing()) runOnWorker([&] { path = worker_->rebindKey(portable); });
+            finishCapture(row, path.isEmpty() ? pathForPortableKey(portable) : path.toStdString());
+        };
+        // On the application, not on the window: an event filter sees only the events sent to the object it is
+        // installed on, and a key press is delivered to whichever control has focus inside the settings window.
+        qApp->installEventFilter(filter);
+        capture->filter = filter;
+    };
 
     QPushButton* add = new QPushButton(QStringLiteral("Add Action"));
     add->setObjectName(QStringLiteral("inputAdd"));
@@ -12390,12 +12654,35 @@ void MainWindow::fillInputPage(QVBoxLayout* v) {
         for (int r : rows) table->removeRow(r);
         commit();
     });
+    QPushButton* rebind = new QPushButton(uiIcon("keyboard"), QStringLiteral("Rebind"));
+    rebind->setObjectName(QStringLiteral("inputRebind"));
+    rebind->setToolTip(QStringLiteral("Listen for the next key and bind it to the selected action. Esc cancels."));
+    connect(rebind, &QPushButton::clicked, this, [table, beginCapture] { beginCapture(table->currentRow()); });
+    QPushButton* resetBinding = new QPushButton(QStringLiteral("Clear Binding"));
+    resetBinding->setObjectName(QStringLiteral("inputResetBinding"));
+    connect(resetBinding, &QPushButton::clicked, this, [table, status] {
+        const int r = table->currentRow();
+        if (r < 0 || r >= table->rowCount()) return;
+        if (table->item(r, 1)) table->item(r, 1)->setText(QString());
+        status->setStyleSheet(redStatus());
+        status->setText(QStringLiteral("\"%1\" needs a key.").arg(cellText(table, r, 0)));
+    });
     QWidget* buttons = new QWidget;
     QHBoxLayout* h = new QHBoxLayout(buttons);
     h->setContentsMargins(0, 0, 0, 0);
     h->addWidget(add);
     h->addWidget(remove);
+    h->addWidget(rebind);
+    h->addWidget(resetBinding);
     h->addStretch(1);
+
+    // The settings window is rebuilt per project; a capture it started must not outlive it.
+    QObject::connect(table, &QObject::destroyed, this, [this, capture] {
+        if (capture->row >= 0) {
+            capture->row = -1;
+            if (worker_) runOnWorker([this] { if (worker_) worker_->cancelRebind(); });
+        }
+    });
 
     f->addRow(table);
     f->addRow(buttons);

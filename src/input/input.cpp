@@ -1,6 +1,7 @@
 #include "input/input.h"
 
 #include <algorithm>
+#include <cctype>
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
@@ -96,6 +97,12 @@ bool controlNameFromPortableKey(const std::string& portable, std::string* out) {
         {"Semicolon", "semicolon"}, {"Comma", "comma"}, {"Period", "period"}, {"Slash", "slash"},
         {"Backslash", "backslash"}, {"BracketLeft", "leftBracket"}, {"BracketRight", "rightBracket"},
         {"Minus", "minus"}, {"Equal", "equals"}, {"Plus", "numpadPlus"},
+        // The numpad, spelled the way Qt's PortableText writes it, so a project file stays readable and the editor's
+        // table shows the numpad the way the rest of it shows keys.
+        {"Num0", "numpad0"}, {"Num1", "numpad1"}, {"Num2", "numpad2"}, {"Num3", "numpad3"}, {"Num4", "numpad4"},
+        {"Num5", "numpad5"}, {"Num6", "numpad6"}, {"Num7", "numpad7"}, {"Num8", "numpad8"}, {"Num9", "numpad9"},
+        {"NumMinus", "numpadMinus"}, {"NumPlus", "numpadPlus"}, {"NumMultiply", "numpadMultiply"},
+        {"NumDivide", "numpadDivide"}, {"NumPeriod", "numpadPeriod"},
     };
     for (const auto& entry : kTable) {
         if (portable == entry.first) {
@@ -111,6 +118,48 @@ bool controlNameFromPortableKey(const std::string& portable, std::string* out) {
         }
     }
     return false;
+}
+
+std::string portableKeyFromControlName(const std::string& control) {
+    // The canonical spelling for every control that is not a letter, a digit or a punctuation key. Where the forward
+    // table accepts several spellings, this picks the one Qt's PortableText produces, so a rebound key and a
+    // hand-typed one are the same string.
+    static const std::pair<const char*, const char*> kTable[] = {
+        {"space", "Space"}, {"enter", "Return"}, {"escape", "Esc"}, {"tab", "Tab"}, {"backspace", "Backspace"},
+        {"delete", "Del"}, {"insert", "Ins"}, {"home", "Home"}, {"end", "End"}, {"pageUp", "PgUp"},
+        {"pageDown", "PgDown"}, {"upArrow", "Up"}, {"downArrow", "Down"}, {"leftArrow", "Left"},
+        {"rightArrow", "Right"}, {"leftShift", "Shift"}, {"rightShift", "RightShift"}, {"leftCtrl", "Ctrl"},
+        {"rightCtrl", "RightCtrl"}, {"leftAlt", "Alt"}, {"rightAlt", "RightAlt"}, {"leftMeta", "Meta"},
+        {"rightMeta", "RightMeta"}, {"capsLock", "CapsLock"}, {"numLock", "NumLock"}, {"printScreen", "Print"},
+        {"pause", "Pause"}, {"scrollLock", "ScrollLock"},
+        {"backquote", "Backquote"}, {"quote", "Quote"}, {"semicolon", "Semicolon"}, {"comma", "Comma"},
+        {"period", "Period"}, {"slash", "Slash"}, {"backslash", "Backslash"}, {"leftBracket", "BracketLeft"},
+        {"rightBracket", "BracketRight"}, {"minus", "Minus"}, {"equals", "Equal"},
+        {"numpad0", "Num0"}, {"numpad1", "Num1"}, {"numpad2", "Num2"}, {"numpad3", "Num3"}, {"numpad4", "Num4"},
+        {"numpad5", "Num5"}, {"numpad6", "Num6"}, {"numpad7", "Num7"}, {"numpad8", "Num8"}, {"numpad9", "Num9"},
+        {"numpadEnter", "Enter"}, {"numpadPlus", "Plus"}, {"numpadMinus", "NumMinus"},
+        {"numpadMultiply", "NumMultiply"}, {"numpadDivide", "NumDivide"}, {"numpadPeriod", "NumPeriod"},
+    };
+    // A portable spelling is only useful if it reads back as the same control, so every candidate is checked against
+    // the forward table before it is returned.
+    const auto verified = [&](const std::string& candidate) {
+        std::string back;
+        return !candidate.empty() && controlNameFromPortableKey(candidate, &back) && back == control ? candidate
+                                                                                                  : std::string();
+    };
+    for (const auto& entry : kTable)
+        if (control == entry.first) return verified(entry.second);
+    if (control.size() == 1 && control[0] >= 'a' && control[0] <= 'z')
+        return verified(std::string(1, char(control[0] - 'a' + 'A')));
+    if (control.size() == 1 && control[0] >= '0' && control[0] <= '9') return verified(control);
+    if (control.size() >= 2 && control[0] == 'f' && std::isdigit(static_cast<unsigned char>(control[1]))) {
+        const int n = std::atoi(control.c_str() + 1);
+        if (n >= 1 && n <= 12) return verified("F" + std::to_string(n));
+    }
+    // Nothing matched, or a spelling that does not survive the trip back: every control that reaches here comes from
+    // an asset, and storing "<Keyboard>/numpadMinus" is better than storing text that reads as a different key. The
+    // caller decides whether that is a problem; the overlay stores the path instead.
+    return std::string();
 }
 
 // ---------------------------------------------------------------- control names
@@ -550,13 +599,14 @@ bool State::readPath(const std::string& path, glm::vec2* out) {
     return true;
 }
 
-void State::startRebind(ActionMap& map, Action& action, size_t bindingIndex) {
+void State::startRebind(ActionMap& map, Action& action, size_t bindingIndex, bool anyDevice) {
     if (bindingIndex >= action.bindings.size()) return;
     rebind_ = Rebind{};
     rebind_.active = true;
     rebind_.map = &map;
     rebind_.action = &action;
     rebind_.index = bindingIndex;
+    rebind_.anyDevice = anyDevice;
     // Snapshot every control so "the next new press" is unambiguous even if something is already held.
     for (Device* d : devices_) {
         if (!d->enabled) continue;
@@ -596,11 +646,12 @@ void State::update(float dt) {
         }
     // 2. The backend writes this frame's values.
     if (poll_) poll_(*this);
-    // 3. Interactive rebinding looks for a control that went from released to held this frame.
+    // 3. Interactive rebinding looks for a control that went from released to held since the capture started.
     if (rebind_.active && rebind_.action && rebind_.index < rebind_.action->bindings.size()) {
         const Binding& target = rebind_.action->bindings[rebind_.index];
         for (auto& [d, name] : rebind_.snapshot) {
-            if (!d->enabled || !d->connected || !sameKind(target, d)) continue;
+            if (!d->enabled || !d->connected) continue;
+            if (!rebind_.anyDevice && !sameKind(target, d)) continue;
             Control* c = d->find(name);
             if (!c) continue;
             const float now = std::max(std::fabs(c->x), glm::length(c->xy));
@@ -610,6 +661,9 @@ void State::update(float dt) {
             const float threshold = c->type == ControlType::Button ? 0.5f : 0.5f;
             if (now >= threshold && was < threshold) {
                 std::string path = "<" + std::string(deviceName(d->kind())) + ">/" + name;
+                // The edge is measured against the snapshot taken when the capture started, not against the previous
+                // frame's latch, so a control pressed between two updates - which is how the editor's Game view
+                // delivers a key - is a normal capture.
                 Binding& mutableBinding = rebind_.action->bindings[rebind_.index];
                 mutableBinding.path = path;
                 mutableBinding.isComposite = false;

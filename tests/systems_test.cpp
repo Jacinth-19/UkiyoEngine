@@ -31,6 +31,7 @@
 #include "engine/terrain.h"
 #include "engine/terrain_layers.h"
 #include "engine/water.h"
+#include "input/rebind.h"
 
 #include "meshoptimizer.h"
 #include "systems/anim_state.h"
@@ -473,6 +474,70 @@ static double pumpRms(AudioEngine& a, uint32_t frames) {
     double sum = 0.0;
     for (float s : buf) sum += double(s) * s;
     return std::sqrt(sum / double(buf.size()));
+}
+
+// Rebinding from the top of the stack (docs/INPUT.md §7, §9a): an action map built from project settings, a rebind
+// that writes a gamepad path into it, and the value a script reads afterwards.
+static void testWorldRebind() {
+    ukiyo::World w;
+    w.setInputActions({{"Jump", "Space"}, {"Fire", "<Mouse>/leftButton"}, {"Dash", "<Gamepad>/buttonSouth"}});
+    check(w.actionDown("Jump") == false, "rebind: Jump starts released");
+    // The settings page stores paths, so the world has to read them: the pad binding is live, not a comment in a file.
+    ukiyo::input::Action* dash = w.input().map("Gameplay") ? w.input().map("Gameplay")->find("Dash") : nullptr;
+    check(dash && dash->bindings.size() == 1 && dash->bindings[0].path == "<Gamepad>/buttonSouth",
+          "rebind: a gamepad path from project settings reaches the world");
+    check(!w.input().map("Gameplay")->find("Nonsense"), "rebind: an action that was not asked for does not exist");
+
+    ukiyo::input::State& state = w.input();
+    ukiyo::input::ActionMap* gameplay = state.map("Gameplay");
+    check(gameplay != nullptr, "rebind: the Gameplay map exists");
+    if (!gameplay) return;
+    ukiyo::input::Action* jump = gameplay->find("Jump");
+    check(jump && jump->bindings.size() == 1 && jump->bindings[0].path == "<Keyboard>/space",
+          "rebind: a project key becomes a keyboard control path");
+
+    // The capture runs on the world's own state, and the editor delivers a key the moment Qt sees it: the world's
+    // update is what turns that into a capture. setKeyHeld updates the world itself, so the press is seen there.
+    int capturedCount = 0;
+    std::string captured;
+    state.onRebindCapture = [&](const std::string& path) { captured = path; ++capturedCount; };
+    state.onRebind = [&](const std::string& path) { captured = path; };
+    state.startRebind(*gameplay, *jump, 0, true);
+    check(state.rebinding(), "rebind: a capture starts on the live map");
+    w.setKeyHeld("J", true);   // the editor's own path: a key event becomes a held control, then one update
+    check(captured == "<Keyboard>/j" && capturedCount == 1, "rebind: a press between updates is captured", captured);
+    check(jump->bindings[0].path == "<Keyboard>/j", "rebind: the action reads J once the write lands");
+    check(w.actionDown("Jump"), "rebind: a script sees the new key as held");
+    w.setKeyHeld("J", false);
+    w.setKeyHeld("Space", true);
+    check(!w.actionDown("Jump"), "rebind: the old key no longer fires");
+    w.setKeyHeld("Space", false);
+
+    // A capture that started after the key went down never sees an edge: that is the honest answer, and the editor's
+    // dialog avoids it by starting the capture on the frame the row is armed, not after the press.
+    state.onRebindCapture = nullptr;
+    state.onRebind = [&](const std::string& path) { captured = path; };
+    captured.clear();
+    w.setKeyHeld("H", true);
+    state.startRebind(*gameplay, *jump, 0, true);   // the snapshot now has H held, so it is not a new press
+    check(state.rebinding(), "rebind: a second capture starts");
+    w.input().update(1.0f / 60.0f);
+    check(captured.empty() && jump->bindings[0].path == "<Keyboard>/j",
+          "rebind: a key already held when the capture starts is not captured");
+    state.cancelRebind();
+    w.setKeyHeld("H", false);
+
+    // The same through the operation, with the conflict list the editor's dialog shows.
+    ukiyo::input::RebindOperation op;
+    check(op.start(state, "Gameplay", "Jump"), "rebind: the operation starts on the live map");
+    w.setKeyHeld("K", true);
+    check(op.status() == ukiyo::input::RebindOperation::Status::Applied, "rebind: the operation reports the capture");
+    check(op.path() == "<Keyboard>/k", "rebind: and holds the path", op.path());
+    check(ukiyo::input::controlDisplayName(op.path()) == "K", "rebind: which reads as the key");
+    check(op.conflicts().empty(), "rebind: K is free");
+    op.revert();
+    check(jump->bindings[0].path == "<Keyboard>/j", "rebind: revert puts the previous key back");
+    w.setKeyHeld("K", false);
 }
 
 static void testAudio() {
@@ -1790,6 +1855,7 @@ int main() {
     testPhysics();
     testActions();
     testWorldInput();
+    testWorldRebind();
     testNavigation();
     testAudio();
     testAnimState();

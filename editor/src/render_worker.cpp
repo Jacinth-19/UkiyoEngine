@@ -2,6 +2,8 @@
 
 #include "anim_file.h"
 
+#include "input/rebind.h"
+
 #include <glm/gtc/quaternion.hpp>
 #include <QElapsedTimer>
 
@@ -184,6 +186,51 @@ void RenderWorker::renderFrame(const RenderRequest& req) {
 
 void RenderWorker::reportScene() {
     if (session_.hasSceneNotes()) emit sceneChanged();
+}
+
+QString RenderWorker::beginRebind(const QString& action) {
+    // Play mode is where the world (and its Gameplay map) exists. Outside it there is nothing to listen to, and the
+    // editor's Input page takes the key itself instead.
+    if (!session_.playing()) return QStringLiteral("press Play to listen for a key");
+    ukiyo::input::State& state = session_.world().input();
+    ukiyo::input::ActionMap* map = state.map("Gameplay");
+    if (!map) return QStringLiteral("there are no input actions to rebind yet");
+    ukiyo::input::Action* target = map->find(action.toStdString());
+    if (!target) return QStringLiteral("\"%1\" is not a Gameplay action").arg(action);
+    if (target->bindings.empty()) return QStringLiteral("\"%1\" has no binding to replace").arg(action);
+    // A map left disabled by a paused game would capture the press and then swallow it, which reads as a rebind that
+    // did nothing.
+    state.enableMap("Gameplay");
+    rebindOp_ = std::make_unique<ukiyo::input::RebindOperation>();
+    rebindOp_->onApplied = [this](const std::string& path) { rebindCaptured_ = path; };
+    // Every device, not just the binding's own kind: a person pressing a pad button wants that button, and the binding
+    // is a path that can name any device.
+    if (!rebindOp_->start(state, "Gameplay", action.toStdString(), 0, true)) {
+        rebindOp_.reset();
+        return QStringLiteral("\"%1\" refused the capture").arg(action);
+    }
+    return QString();
+}
+
+QString RenderWorker::rebindKey(const QString& key) {
+    if (!session_.playing()) return QString();
+    rebindCaptured_.clear();
+    // The same door the Game view uses: a key event becomes a held keyboard control, and the world's own zero-length
+    // update - which setKeyHeld runs - turns that into a capture and writes the binding. The release follows at once,
+    // so binding a key does not leave the game with that key down.
+    session_.setKeyHeld(key, true);
+    const QString captured = QString::fromStdString(rebindCaptured_);
+    session_.setKeyHeld(key, false);
+    rebindCaptured_.clear();
+    return captured;
+}
+
+void RenderWorker::cancelRebind() {
+    rebindCaptured_.clear();
+    if (!rebindOp_) return;
+    // The operation uninstalls its own handlers; nothing of this worker stays on the live state.
+    rebindOp_->cancel();
+    rebindOp_.reset();
 }
 
 void RenderWorker::shutdown() {

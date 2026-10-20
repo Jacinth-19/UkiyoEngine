@@ -81,7 +81,7 @@ void normalize(ProjectSettings& s) {
     s.velocitySolverSteps = clampTo(s.velocitySolverSteps, 1, 32);
     s.positionSolverSteps = clampTo(s.positionSolverSteps, 1, 32);
 
-    // Input: an action needs a name and a key. Duplicate names keep the first entry.
+    // Input: an action needs a name and a binding (a key or a control path). Duplicate names keep the first entry.
     std::vector<InputAction> actions;
     std::set<std::string> actionNames;
     for (const InputAction& a : s.inputActions) {

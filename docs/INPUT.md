@@ -21,7 +21,7 @@ src/input/input_asset.h    .inputactions read/write
 src/input/input_asset.cpp  the JSON reader and writer
 src/input/input_glfw.h     the backend: install(state, window), pushScroll
 src/input/input_glfw.cpp   keyboard, mouse and gamepad polling
-tests/input_test.cpp       the 187 checks CI runs
+tests/input_test.cpp       the 234 checks CI runs
 assets/input/viewer.inputactions  the standalone viewer's bindings, loaded at runtime
 ```
 
@@ -223,20 +223,57 @@ different from Unity. Both are noted here rather than guessed at in code.
 
 ## 7. Rebinding
 
+The capture is `State::startRebind`, and `RebindOperation` (rebind.h) is the session a UI drives:
+
 ```cpp
-input.startRebind(*map, *action, 0);          // binding 0 of Jump
-input.onRebind = [](const std::string& path) { save(path); };
-input.onRebindCanceled = [] { showPrompt(false); };
-input.cancelRebind();
+ukiyo::input::RebindOperation op;
+op.onApplied  = [](const std::string& path) { save(path); };   // "<Gamepad>/buttonSouth"
+op.onCanceled = [] { showPrompt(false); };
+op.start(input, "Gameplay", "Jump");        // binding 0, any device, no timeout
+// ... every frame, after input.update(dt):
+op.tick(dt);                                // timeout, and the deferred callback restore
 ```
 
-The next control to cross 0.5 on an enabled device of the binding's kind becomes the binding's path and the binding's
-name. A gamepad button cannot capture a keyboard binding. Controls already held when rebinding starts do not count —
-only a new press does, which is what makes "press the key you want" behave. The binding is saved as
-`<Device>/<control>`, so the result round-trips through the asset.
+The next control to cross 0.5 on an enabled device becomes the binding's path and the binding's name. Controls already
+held when the capture starts do not count — the press point is measured against a snapshot taken at `startRebind`, not
+against the previous frame, so a control pressed between two updates is still a capture. That matters outside a game
+loop: the editor's Game view writes a key the moment Qt sees it, and the update that follows has to see it as new.
+
+By default only a device of the binding's own kind can capture it, so a gamepad button cannot land on a keyboard
+binding. `startRebind(map, action, index, /*anyDevice=*/true)` lifts that, and `RebindOperation::start` defaults to it:
+an overlay that says "press any control" means any control, and a path already names its device.
+
+`RebindOperation` adds what an overlay needs around the capture:
+
+| Member | What it is |
+| --- | --- |
+| `status()` | `Idle`, `Waiting`, `Applied`, `Canceled`, `TimedOut` |
+| `path()`, `display()` | the captured `"<Keyboard>/space"`, and `"Space"` for a person to read |
+| `previousPath()`, `revert()` | what the binding was, and the undo that puts it back |
+| `conflicts()` | every other action in every map bound to the captured path, as `{map, action, path}` |
+| `elapsed()`, `running()` | how long the wait has run, and whether it still is |
+| `cancel()`, `finish()` | stop waiting; detach without changing the result |
+
+`start` returns false when the map, the action or the binding index does not exist, so a dialog can say why instead of
+showing a spinner that never ends. A timeout above 0 in `start` moves the status to `TimedOut` after that many seconds
+of `tick`.
 
 The target is a `(map, action, binding index)`, not a path: rebinding a composite part replaces that part, and the
-composite parent stays.
+composite parent stays. The result is written as `<Device>/<control>`, so it round-trips through the asset and through
+`ProjectSettings.json`.
+
+The control names are Unity's, both ways: `controlNameFromPortableKey` turns a project file's `"LeftShift"` into the
+control `leftShift`, and `portableKeyFromControlName` turns a captured control back into the spelling a settings file
+uses — verified by a round trip, so a name this engine does not have comes back empty rather than wrong.
+`controlDisplayName` is the third form, the one a person reads: `<Keyboard>/space` is "Space", `<Gamepad>/dpad/up` is
+"D-pad Up", `<Gamepad>/buttonSouth` is "South".
+
+Where the editor binds it (Project Settings → Input): the Action/Binding table is the project's actions. **Rebind**
+makes the next key pressed in the settings window the row's binding, and Esc puts the old one back. While the game is
+playing the key is also fed to the running world through the same door the Game view uses, so the live binding changes
+on the spot; stopped, the page writes the same path to the file that the next Play reads. Either way the cell shows a
+keyboard control as the key (`Q`) and any other control as its path (`<Gamepad>/buttonSouth`), the path is validated
+against the device's control list, and a control another action already uses is called out before the row is saved.
 
 ## 8. Backend and wiring
 
@@ -259,7 +296,7 @@ Where it is used:
 | --- | --- |
 | `src/systems/world.cpp` | Builds a real `Gameplay` action map from the project's actions (name + portable key). `setKeyHeld` writes the keyboard device, `actionDown` reads the action, `input()` exposes the whole state to game code. Input runs on unscaled time, so a paused game can still read a menu key. The key text may be Qt's (`Shift`, `Esc`, `PgUp`) or a Unity control name (`leftShift`, `escape`, `pageUp`); both spellings reach the same control. |
 | `src/app/main.cpp` | The standalone viewer's bindings live in `assets/input/viewer.inputactions`; the camera, its toggles and its screenshot key are actions. |
-| `editor/src/main_window.cpp` | The editor's own chrome (Ctrl+S, menu shortcuts) stays on Qt. Key presses in the Game view are forwarded to the running world as portable key text, which `World::setKeyHeld` translates to a control name. |
+| `editor/src/main_window.cpp` | The editor's own chrome (Ctrl+S, menu shortcuts) stays on Qt. Key presses in the Game view are forwarded to the running world as portable key text, which `World::setKeyHeld` translates to a control name. The Input settings page's Rebind button takes the next key press in that window (§7). |
 
 ## 9. Multi-player: PlayerInput and InputUser
 
@@ -321,7 +358,7 @@ first use and shares the world's `Gameplay` map and its devices.
 
 ## 10. The test
 
-`tests/input_test.cpp` drives the runtime with synthetic devices: no window, no GPU, no GLFW. 187 checks, grouped:
+`tests/input_test.cpp` drives the runtime with synthetic devices: no window, no GPU, no GLFW. 234 checks, grouped:
 
 1. devices and control paths — a keyboard has `space`, a trigger is an Axis, `readPath` resolves a control;
 2. button actions — press, hold, release, and `triggered()` being true for exactly one frame;
@@ -342,7 +379,10 @@ first use and shares the world's `Gameplay` map and its devices.
     `refreshMaps` copies a map added to the master without disturbing the map a player is driving;
 15. auto-join, default maps and per-player schemes — a press edge joins one player and not two, `maxPlayers` caps it,
     the joining press already reads, a player on the `Gamepad` scheme ignores its own keyboard, and unpairing zeroes the
-    player while keeping its map.
+    player while keeping its map;
+16. rebinding as a session — the readable names and their 102 round trips, a capture applied to the live binding, the
+    previous path and `revert`, the conflict list, cancel, a timeout, destroying the operation mid-wait, the state's own
+    callbacks coming back afterwards, a control pressed between two updates, and a bad map, action or index refused.
 
 Run it anywhere:
 
@@ -357,7 +397,7 @@ on Linux and under MSVC on Windows — the second one is what keeps the runtime 
 every other POSIX assumption a single-platform CI would let through. The test is what makes the asset format safe to
 change: the round trip fails the build if a save stops reproducing its input.
 
-Three bugs it caught before the system shipped, each now covered:
+Four bugs it caught before the system shipped, each now covered:
 
 - `ActionMap::add` returned a reference into a `std::vector`, so adding a second action invalidated the first. Actions
   and maps are `std::deque`s now; a cached `Action*` survives setup, which is how game code uses it.
@@ -372,9 +412,10 @@ Three bugs it caught before the system shipped, each now covered:
 Touch and XR. A **split keyboard** — two players on one keyboard, WASD versus the arrow keys — needs Unity's
 device-indexed control paths (`<Keyboard>/w` on device 1), which the asset parser does not speak; two players can share
 a keyboard today only with `allowDuplicates`, which hands both of them every key. Control path wildcards
-(`<Keyboard>/*`); per-binding press points; `press` interaction parameters; `Dpad` as a non-composite control; and the
-editor's rebinding overlay (the API is there — §7 — the UI is not). A device is one keyboard, one mouse and up to four
-gamepads, which is the shape this engine's games use.
+(`<Keyboard>/*`); per-binding press points; `press` interaction parameters; and `Dpad` as a non-composite control. The
+editor rebinds the player's actions in Project Settings, but there is no in-game rebinding overlay widget: a game gets
+`RebindOperation` (§7) and draws its own, which is what Unity ships too. A device is one keyboard, one mouse and up to
+four gamepads, which is the shape this engine's games use.
 
 ## 12. Rebuilding the viewer asset
 

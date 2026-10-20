@@ -9,6 +9,7 @@
 #include "input/input.h"
 #include "input/input_asset.h"
 #include "input/input_users.h"
+#include "input/rebind.h"
 
 #include <cmath>
 #include <cstdio>
@@ -1019,6 +1020,164 @@ void testAutoJoin() {
               "re-pairing a gamepad while it is held reads as a press on the rebuilt bindings");
 }
 
+// ---------------------------------------------------------------- 16. rebinding operations
+//
+// State::startRebind is the capture; RebindOperation is what an overlay needs around it: a status, the captured path
+// in a form a person can read, the other actions that already own it, and an undo. docs/INPUT.md §7, §9a.
+
+void testRebindOperation() {
+    std::printf("\n16. rebinding operations and control names\n");
+    Fixture f;
+    ActionMap& map = f.state.addMap("Player");
+    Action& jump = map.add("Jump", ActionType::Button);
+    jump.bindings.push_back(Binding{"", "", "<Keyboard>/space", "Jump", "", "", "", false, false, -1});
+    Action& fire = map.add("Fire", ActionType::Button);
+    fire.bindings.push_back(Binding{"", "", "<Keyboard>/j", "Fire", "", "", "", false, false, -1});
+    ActionMap& menu = f.state.addMap("Menu");
+    Action& back = menu.add("Back", ActionType::Button);
+    back.bindings.push_back(Binding{"", "", "<Keyboard>/escape", "Back", "", "", "", false, false, -1});
+    f.state.enableMap("Player");
+    f.state.enableMap("Menu");
+
+    // Names a prompt can show.
+    checkEq(controlDisplayName("<Keyboard>/space"), "Space", "a space reads as \"Space\"");
+    checkEq(controlDisplayName("<Keyboard>/leftShift"), "Left Shift", "a shifted key reads as two words");
+    checkEq(controlDisplayName("<Keyboard>/w"), "W", "a letter reads as a capital");
+    checkEq(controlDisplayName("<Gamepad>/buttonSouth"), "South", "a pad button loses the button prefix");
+    checkEq(controlDisplayName("<Gamepad>/leftStick"), "Left Stick", "a stick reads as two words");
+    checkEq(controlDisplayName("<Gamepad>/dpad/up"), "D-pad Up", "a d-pad direction reads as D-pad Up");
+    checkEq(controlDisplayName("<Mouse>/leftButton"), "Left Button", "a mouse button reads as two words");
+    checkEq(controlDisplayName("<Mouse>/delta"), "Mouse Delta", "the mouse delta is named");
+    checkEq(controlDisplayName(""), "", "an empty path stays empty");
+
+    // Portable text round trips for every keyboard control that has a spelling, and refuses to invent one for the rest.
+    int spelled = 0;
+    bool allRoundTrip = true;
+    for (const std::string& control : keyboardControls()) {
+        const std::string portable = portableKeyFromControlName(control);
+        if (portable.empty()) continue;
+        ++spelled;
+        std::string back;
+        if (!controlNameFromPortableKey(portable, &back) || back != control) allRoundTrip = false;
+    }
+    checkTrue(allRoundTrip, "every portable spelling reads back as the control it came from");
+    checkTrue(spelled >= 100, "most keyboard controls have a portable spelling (" + std::to_string(spelled) + ")");
+    checkEq(portableKeyFromControlName("numpadMinus"), "NumMinus", "a numpad key has a portable spelling");
+    checkEq(portableKeyFromControlName("buttonSouth"), "", "a control that is not a key has no portable spelling");
+
+    // The operation: waiting, then a capture from another device kind.
+    RebindOperation op;
+    std::string applied;
+    int canceled = 0;
+    op.onApplied = [&](const std::string& path) { applied = path; };
+    op.onCanceled = [&] { ++canceled; };
+    checkTrue(op.start(f.state, "Player", "Jump"), "the operation starts on an existing binding");
+    checkTrue(op.status() == RebindOperation::Status::Waiting && op.running(), "and reports that it is waiting");
+    checkEq(op.previousPath(), "<Keyboard>/space", "the path it is replacing is recorded");
+
+    f.tick();
+    checkTrue(op.running() && applied.empty(), "nothing is captured without a press");
+
+    // A gamepad button captures a keyboard binding: the overlay asks for any device, which State::startRebind does not
+    // do by default (§8 pins the default).
+    f.pad->setButton("buttonSouth", true);
+    f.tick();
+    checkTrue(op.status() == RebindOperation::Status::Applied, "a gamepad press applies with anyDevice");
+    checkEq(applied, "<Gamepad>/buttonSouth", "the applied path is the pad button");
+    checkEq(op.display(), "South", "and the overlay can name it");
+    checkEq(jump.bindings[0].path, "<Gamepad>/buttonSouth", "the binding holds the new path");
+    checkTrue(op.conflicts().empty(), "a free control has no conflicts");
+
+    // Undo puts the old control back and re-resolves, so the old key works again.
+    op.revert();
+    checkEq(jump.bindings[0].path, "<Keyboard>/space", "revert restores the previous path");
+    checkTrue(op.status() == RebindOperation::Status::Idle, "and returns the operation to idle");
+    f.pad->setButton("buttonSouth", false);
+    f.tick();
+    f.keyboard->setButton("space", true);
+    f.tick();
+    checkTrue(jump.triggered(), "the restored key drives the action again");
+    f.keyboard->setButton("space", false);
+    f.tick();
+
+    // Conflicts are found in every map, and name the action that owns the control.
+    RebindOperation second;
+    checkTrue(second.start(f.state, "Player", "Jump"), "a second operation starts");
+    f.keyboard->setButton("j", true);
+    f.tick();
+    checkTrue(second.status() == RebindOperation::Status::Applied, "the keyboard press applies");
+    const std::vector<RebindConflict> conflicts = second.conflicts();
+    checkTrue(conflicts.size() == 1 && conflicts[0].action == "Fire" && conflicts[0].map == "Player",
+              "the conflict names the action that already uses the key");
+    second.revert();
+    f.keyboard->setButton("j", false);
+    f.tick();
+
+    // Cancel leaves the binding alone and reports through the callback once.
+    RebindOperation third;
+    third.onCanceled = [&] { ++canceled; };
+    checkTrue(third.start(f.state, "Player", "Jump"), "a third operation starts");
+    third.cancel();
+    checkTrue(third.status() == RebindOperation::Status::Canceled && canceled == 1,
+              "cancel reports once and leaves the binding");
+    checkTrue(!f.state.rebinding(), "the state is no longer waiting for a capture");
+
+    // The timeout is counted in tick, not in wall-clock time, so the caller owns the clock.
+    RebindOperation timed;
+    int timedOut = 0;
+    timed.onCanceled = [&] { ++timedOut; };
+    checkTrue(timed.start(f.state, "Player", "Jump", 0, true, 0.5f), "a timed operation starts");
+    timed.tick(0.2f);
+    checkTrue(timed.running() && timedOut == 0, "it waits before the timeout");
+    timed.tick(0.4f);
+    checkTrue(timed.status() == RebindOperation::Status::TimedOut && timedOut == 1,
+              "and times out after it");
+    checkTrue(!f.state.rebinding(), "a timed-out operation stops the capture");
+
+    // Destroying an operation mid-wait must not leave the state rebinding into a dead object.
+    {
+        RebindOperation scoped;
+        scoped.start(f.state, "Player", "Jump");
+        checkTrue(f.state.rebinding(), "the scoped operation is capturing");
+    }
+    checkTrue(!f.state.rebinding(), "destroying it cancels the state's rebind");
+
+    // Whatever callback the state had before is put back, so the operation does not quietly take the slot.
+    bool callerSaw = false;
+    f.state.onRebind = [&](const std::string&) { callerSaw = true; };
+    RebindOperation chained;
+    chained.start(f.state, "Player", "Jump");
+    checkTrue(chained.start(f.state, "Player", "Jump"), "starting twice restarts cleanly");
+    chained.finish();
+    f.state.onRebind("test");
+    checkTrue(callerSaw, "finishing restores the state's own onRebind");
+    f.state.onRebind = nullptr;
+
+    // A control pressed between two updates is a capture: the edge is measured against the snapshot taken when the
+    // capture started, not against the previous frame's latch. That is how the editor's Game view delivers a key - the
+    // editor writes it the moment Qt sees it - so the two have to agree.
+    RebindOperation late;
+    std::string lateApplied;
+    late.onApplied = [&](const std::string& path) { lateApplied = path; };
+    checkTrue(late.start(f.state, "Player", "Jump", 0, true), "a capture starts");
+    f.keyboard->setButton("l", true);   // down before the update that would see the press
+    f.tick();
+    checkTrue(late.status() == RebindOperation::Status::Applied, "a control pressed between updates is captured");
+    checkEq(lateApplied, "<Keyboard>/l", "and its path is reported on the frame it was seen");
+    checkEq(jump.bindings[0].path, "<Keyboard>/l", "the binding is written by that update");
+    f.keyboard->setButton("l", false);
+    f.tick();
+    checkEq(jump.bindings[0].path, "<Keyboard>/l", "and survives the release");
+    late.revert();
+    f.tick();
+
+    // The binding has to exist for an operation to start.
+    RebindOperation missing;
+    checkTrue(!missing.start(f.state, "Player", "Nope"), "an unknown action refuses to start");
+    checkTrue(!missing.start(f.state, "Nope", "Jump"), "an unknown map refuses to start");
+    checkTrue(!missing.start(f.state, "Player", "Jump", 4), "a binding index past the end refuses to start");
+}
+
 } // namespace
 
 int main() {
@@ -1038,6 +1197,7 @@ int main() {
     testPlayers();
     testJoinRules();
     testAutoJoin();
+    testRebindOperation();
     std::printf("\n%d checks, %d failure(s)\n", gChecks, gFailures);
     return gFailures == 0 ? 0 : 1;
 }

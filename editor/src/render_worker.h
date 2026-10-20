@@ -5,6 +5,7 @@
 #pragma once
 
 #include <atomic>
+#include <memory>
 
 #include <optional>
 #include <vector>
@@ -16,6 +17,7 @@
 
 #include "engine/camera.h"
 #include "engine/renderer.h"
+#include "input/rebind.h"
 #include "systems/components.h"
 
 #include <QStringList>
@@ -179,6 +181,18 @@ public:
     bool preloadModel(const QString& path, QString* error) { return session_.preloadModel(path, error); }
     void setProjectSettings(const engine::ProjectSettings& s) { session_.setProjectSettings(s); }
     void setKeyHeld(const QString& key, bool down) { session_.setKeyHeld(key, down); }
+    // Starts a capture on the live world's input state, so a rebinding screen rebinds the binding the running game is
+    // actually reading. Empty on success, otherwise why it could not start.
+    QString beginRebind(const QString& action);
+    // Feeds one key press to the waiting capture and answers with the control path it produced ("<Keyboard>/space"),
+    // empty when nothing was captured. The press and its release are delivered together, so a key that was only
+    // pressed to bind it does not stay held in the game. This is the editor's input path: play mode gets its keys from
+    // the Game view's key events (setKeyHeld), not from a poller, so a page that listens for one has to deliver it the
+    // same way.
+    QString rebindKey(const QString& key);
+    // Stops the capture where it is. The binding is left alone: a capture that has not applied anything has nothing
+    // to undo, and one that has is the page's to write down (it holds the same result).
+    void cancelRebind();
     bool playing() const { return session_.playing(); }
     std::vector<std::string> playWarnings() const { return session_.playWarnings(); }
     int liveParticles() const { return session_.liveParticles(); }
@@ -211,6 +225,9 @@ private:
     // Emits sceneChanged when the session has notes.
     void reportScene();
     EngineSession session_;
+    // The capture, on the worker thread, on the running world (see input/rebind.h). Null when nothing is waiting.
+    std::unique_ptr<ukiyo::input::RebindOperation> rebindOp_;
+    std::string rebindCaptured_;
 };
 
 } // namespace editor

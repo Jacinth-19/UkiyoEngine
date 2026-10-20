@@ -240,6 +240,9 @@ public:
     // Stops play mode and puts every instance back where it was before play.
     void stopPlay();
     bool playing() const { return world_ != nullptr; }
+    // The world that exists while playing, for the parts of the editor that drive its input directly (the rebinding
+    // screen). Only valid when playing(); the key path goes through setKeyHeld.
+    ukiyo::World& world() { return *world_; }
     // Non-fatal problems found while starting play, such as a sound file that does not load.
     const std::vector<std::string>& playWarnings() const { return playWarnings_; }
     // Advances play mode by dt seconds and moves instances to their simulated positions. Render calls

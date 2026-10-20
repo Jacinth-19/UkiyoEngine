@@ -652,13 +652,27 @@ void World::setInputActions(const std::vector<engine::InputAction>& actions) {
     for (const engine::InputAction& a : actions_) {
         if (a.name.empty()) continue;
         uinput::Action& action = map.add(a.name, uinput::ActionType::Button);
-        // A key the engine has no control name for keeps its action but can never fire; setKeyHeld() cannot produce
-        // it either, so the two stay consistent instead of one silently working and the other not.
-        std::string control;
-        if (!uinput::controlNameFromPortableKey(a.key, &control)) continue;
+        // A binding is a control path, which names its device; a bare key is the keyboard's path, which is what a
+        // project written before paths holds. A control the engine does not know keeps its action but can never fire:
+        // setKeyHeld() cannot produce it either, so the two stay consistent instead of one silently working.
+        std::string path = a.key;
+        if (path.empty()) continue;
+        if (path.front() != '<') {
+            std::string control;
+            if (!uinput::controlNameFromPortableKey(path, &control)) continue;
+            path = "<Keyboard>/" + control;
+        }
+        uinput::DeviceKind kind;
+        if (!uinput::deviceKindFromPath(path, &kind)) continue;
+        const auto& known = kind == uinput::DeviceKind::Keyboard ? uinput::keyboardControls()
+                           : kind == uinput::DeviceKind::Mouse  ? uinput::mouseControls()
+                                                                : uinput::gamepadControls();
+        const std::string control = path.substr(path.rfind('/') + 1);
+        if (std::find(known.begin(), known.end(), control) == known.end()) continue;
         uinput::Binding binding;
-        binding.path = "<Keyboard>/" + control;
+        binding.path = path;
         binding.action = a.name;
+        binding.name = control;
         action.bindings.push_back(std::move(binding));
     }
     map.enabled = true;

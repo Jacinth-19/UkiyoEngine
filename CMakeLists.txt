@@ -284,7 +284,8 @@ target_compile_options(gi_test PRIVATE ${UKIYO_WARNINGS})
 add_library(ukiyo_input STATIC
   src/input/input.cpp
   src/input/input_asset.cpp
-  src/input/input_users.cpp)
+  src/input/input_users.cpp
+  src/input/rebind.cpp)
 target_include_directories(ukiyo_input PUBLIC ${CMAKE_SOURCE_DIR}/src)
 target_link_libraries(ukiyo_input PUBLIC glm::glm nlohmann_json::nlohmann_json)
 target_compile_options(ukiyo_input PRIVATE ${UKIYO_WARNINGS})
