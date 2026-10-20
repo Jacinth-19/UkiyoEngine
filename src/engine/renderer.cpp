@@ -86,6 +86,7 @@ PushConstants pcWith(const glm::mat4& model, glm::vec4 p0, glm::vec4 p1 = glm::v
 
 Renderer::Renderer(rhi::Device& device) : dev_(device) {
     frameUbo_ = dev_.createBuffer(rhi::BufferUsage::Uniform, sizeof(FrameUBO));
+    contactUbo_ = dev_.createBuffer(rhi::BufferUsage::Uniform, sizeof(glm::vec4));
 
     rhi::TextureDesc sd;
     sd.width = kShadowAtlas;
@@ -532,6 +533,7 @@ void Renderer::buildPostSets() {
     // Binding 6 is the albedo for the multi-bounce AO fit. It is rebound per frame to either the G-buffer target or a
     // 1x1 transparent texture, which is how the shader is told the approximation is off (alpha 0 = no albedo).
     setEffects_->setTexture(6, noAlbedo_.get());
+    setEffects_->setBuffer(7, contactUbo_.get());
     setGiTrace_ = dev_.createDescriptorSet(rhi::SetType::Post);
     // Unit 1 is the Frame set's shadow atlas on the shared GL texture-unit space; 2 is the heightmap (bound per frame,
     // because the terrain under the camera can change), 3 the raster, 4 depth, 5 normals.
@@ -1138,10 +1140,10 @@ void Renderer::render(const OrbitCamera& cam, const std::vector<Model*>& models,
         }
     }
 
-    // 2a'. View-space normals for SSAO, SSR and the depth-normal outline. The same draws as the velocity
+    // 2a'. View-space normals for SSAO, SSR, contact shadows and the depth-normal outline. The same draws as the velocity
     // pass, against the scene depth. Pixels with no opaque surface keep alpha 0.
     const bool needNormals = s.ssao > 0.0f || s.ssr > 0.0f || s.depthNormalOutline > 0.0f || s.screenRim > 0.0f
-                              || s.depthEdgeRim > 0.0f || s.gi > 0.0f;
+                              || s.depthEdgeRim > 0.0f || s.gi > 0.0f || s.contactShadows > 0.0f;
     if (needNormals) {
         rhi::PassDesc np;
         np.colors = {normal_.get(), albedo_.get()};
@@ -1261,6 +1263,10 @@ void Renderer::render(const OrbitCamera& cam, const std::vector<Model*>& models,
                                   glm::vec4(0.5f, s.screenRim, s.outlineNoise, s.depthEdgeRim));
         // SplitScreen line: p2 = (dir, offset px, width px); p3 = tints and line colour as packed RGBA8 bits.
         ep.p3.w = giComposite ? s.gi : 0.0f;
+        // Contact-shadow parameters: Post binding 7, uploaded here because the push block has no free slot.
+        const glm::vec4 contactParams(s.contactShadowLength, s.contactShadowThickness, s.contactShadows,
+                                      float(s.contactShadowSteps));
+        contactUbo_->upload(&contactParams, sizeof(contactParams));
         if (glm::dot(s.splitDir, s.splitDir) > 1e-8f) {
             const glm::vec2 dir = glm::normalize(s.splitDir);
             ep.p2 = glm::vec4(dir, s.splitOffsetPx, s.splitLineWidthPx);

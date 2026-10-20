@@ -928,7 +928,11 @@ private:
         setLayouts_[2] = make({B(9, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, V)});
         setLayouts_[3] = make({B(1, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, F), B(2, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, F),
                                B(3, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, F), B(4, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, F),
-                               B(5, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, F), B(6, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, F)});
+                               B(5, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, F), B(6, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, F),
+                               // 7 is the effects pass's small parameter block (screen-space contact shadows). Textures
+                               // stop at 6 on purpose: a Post pass that also has the Frame set binds the shadow atlas
+                               // on GL unit 1, and the two sets would collide there.
+                               B(7, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, F)});
         {
             std::vector<VkDescriptorSetLayoutBinding> sm;
             sm.push_back(B(15, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, VF));   // vertex too: foliage reads instance rows (step 3)

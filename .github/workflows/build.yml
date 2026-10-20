@@ -100,6 +100,12 @@ jobs:
         run: |
           set -o pipefail
           ./build/ao_test 2>&1 | tee /tmp/ukiyo-test-ao_test.log
+      # Screen-space contact shadows (GH-118045): the depth-buffer march effects.frag runs, on a scene that can be
+      # solved on paper (docs/CONTACT_SHADOWS.md).
+      - name: Run Contact Shadow Test
+        run: |-
+          set -o pipefail
+          ./build/contact_shadow_test 2>&1 | tee /tmp/ukiyo-test-contact_shadow_test.log
       # Fuzzy asset search and glob matching: the ranking that makes three keystrokes enough in the Project browser
       # (docs/SEARCH.md). Pure C++, no window.
       - name: Run Search Test
@@ -113,6 +119,9 @@ jobs:
       # The AO figure, and the number the docs quote: single-bounce against multi-bounce, both against a tracer.
       - name: Render the multi-bounce AO figure
         run: mkdir -p renders && ./build/ao_preview renders/ao-preview.png 1600 900 96
+      # The contact-shadow figure, and the numbers its caption quotes.
+      - name: Render the contact shadow figure
+        run: mkdir -p renders && ./build/contact_shadow_preview renders/contact-shadows.png 1600 1000
       # The input runtime, its asset format and its actions, driven from synthetic devices: no window, no GPU, no GLFW.
       # It checks press/hold/tap/multitap, 1D and 2D composites, processors, control schemes, rebinding, and that the
       # .inputactions file the engine writes loads back byte-for-byte. docs/INPUT.md.
@@ -351,7 +360,7 @@ jobs:
       - name: Run the portable tests
         run: |
           $failed = @()
-          foreach ($t in @("systems_test", "network_test", "project_test", "vgeom_test", "motion_test", "gi_test", "input_test", "trail_test", "search_test", "ao_test")) {
+          foreach ($t in @("systems_test", "network_test", "project_test", "vgeom_test", "motion_test", "gi_test", "input_test", "trail_test", "search_test", "ao_test", "contact_shadow_test")) {
             Write-Host "::group::$t"
             $out = & "./build/$t.exe" 2>&1
             $code = $LASTEXITCODE

@@ -38,8 +38,10 @@ Plus the offline tools, which are part of the build rather than a separate scrip
 | The same scene through the **real-time estimator** that runs in the renderer: one traced bounce at half resolution, accumulated over sixteen frames and composited at full resolution. RMSE 0.035 against a 64-sample tracer, explaining 43 % of the error the raster leaves ([docs/PATHTRACE.md](docs/PATHTRACE.md)). | Multi-bounce ambient occlusion: a corner of three planes under single-bounce AO (top right) and the albedo-weighted fit this engine now applies (bottom left), against a two-bounce tracer (bottom right). Luminance error falls from 0.241 to 0.189 ([docs/AO.md](docs/AO.md)). |
 | ![Trails](docs/trail-preview.png) | ![Motion matching](docs/motion-demo.png) |
 | Trail ribbons built by the engine's CPU code and shaded by a software rasteriser, so the figure needs no GPU: an additive sword sweep, the three UV mappings, and a ground ribbon that does not billboard ([docs/TRAIL.md](docs/TRAIL.md)). | Ten seconds of motion matching: the route, the footprints and four poses from the run. Walk, run and idle are chosen by the matcher from a database of 490 000 poses ([docs/MOTION.md](docs/MOTION.md)). |
-| ![Splash](docs/splash-capture.png) | ![Virtual geometry](docs/vgeom-levels.png) |
-| The launcher's splash, painted in C++ by the program itself — the woodblock artwork, the lockup in the open sky, and the determinate bar. | The 131 072-triangle Terrain Lab tile built into a virtual-geometry cluster tree, cut at 1 px and 8 px ([docs/VGEOM.md](docs/VGEOM.md)). |
+| ![Contact shadows](docs/contact-shadows.png) | ![Splash](docs/splash-capture.png) |
+| Screen-space contact shadows (GH-118045): a 32 × 32 shadow map with 20 cm of bias (top left), the depth-buffer march alone (top right) and both (bottom left), each with a 2× crop of the same contact. The pass darkens 86 % of the contact band and touches 0.43 % of the lit pixels ([docs/CONTACT_SHADOWS.md](docs/CONTACT_SHADOWS.md)). | The launcher's splash, painted in C++ by the program itself — the woodblock artwork, the lockup in the open sky, and the determinate bar. |
+| ![Virtual geometry](docs/vgeom-levels.png) | ![Grass scatter](docs/grass-scatter-preview.png) |
+| The 131 072-triangle Terrain Lab tile built into a virtual-geometry cluster tree, cut at 1 px and 8 px ([docs/VGEOM.md](docs/VGEOM.md)). | Grass scatter over the terrain, drawn by `grass_scatter_preview` from the same bands the engine uses ([docs/GRASS.md](docs/GRASS.md)). |
 
 The hub is the first thing anyone sees, so it is checked like a screen and not like a build artifact: CI captures its
 three pages offscreen with `ukiyo_hub --screenshots renders` and commits them to `docs/hub/`. The images below are the
@@ -129,6 +131,11 @@ Vulkan backend and an OpenGL backend; `--backend gl` selects the latter.
   going grey and black. The albedo rides in the normal pre-pass's second target; the fit is applied in the screen-space
   pass, clamped so a post-processed frame can only have light restored, never added
   ([docs/AO.md](docs/AO.md), 21 % closer to a two-bounce tracer in the figure).
+* **Screen-space contact shadows** (Godot 4.8's GH-118045): the short shadows a cascaded shadow map cannot resolve,
+  marched in the depth buffer that the screen-space pass already holds — 0.35 m towards the sun in 24 steps, with a
+  growing bias and a thickness that keeps the result at contact scale instead of turning into a second shadow map. No per-
+  light target, no dispatch, no blur: one loop in `effects.frag`, on the pixels whose normal faces the sun. The figure's
+  frame darkens 86 % of its contact band and touches 0.43 % of the lit pixels ([docs/CONTACT_SHADOWS.md](docs/CONTACT_SHADOWS.md)).
 * **Trails** in Godot 4.8's `Trail3D` shape: a ribbon of quads accumulated as an object moves, limited by lifetime or
   path length, shaped by a width curve and a colour gradient, billboarded or pinned to a ground plane, with stretch,
   tiling and pinned UVs. The geometry is plain CPU code (`src/engine/trail.cpp`) so the test measures it without a GPU;
@@ -299,6 +306,7 @@ own glslang package is generated with a broken SPIRV-Tools path; everything else
 | [docs/PATHTRACE.md](docs/PATHTRACE.md) | the CPU reference tracer, the traced-bounce estimator, and the iGPU argument |
 | [docs/INPUT.md](docs/INPUT.md) | action maps, the `.inputactions` format, the Unity semantics kept, the CI test |
 | [docs/AO.md](docs/AO.md) | the multi-bounce AO fit, where the albedo comes from, and why the post pass clamps it |
+| [docs/CONTACT_SHADOWS.md](docs/CONTACT_SHADOWS.md) | the contact-shadow march: parameters, why per pixel, and what the test pins |
 | [docs/TRAIL.md](docs/TRAIL.md) | trail ribbons: sections, the width curve and gradient, the alignment and tiling modes, the test |
 | [docs/SEARCH.md](docs/SEARCH.md) | fuzzy asset ranking and the glob grammar, and why the ranking is deliberately not "contains" |
 

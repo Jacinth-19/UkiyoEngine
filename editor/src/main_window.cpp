@@ -984,6 +984,22 @@ QWidget* MainWindow::buildProjectSettings() {
         form->addRow(label, cb);
     };
 
+    auto intNumber = [this](QFormLayout* form, const QString& label, int* field, int lo, int hi) {
+        QSpinBox* sp = new QSpinBox;
+        sp->setRange(lo, hi);
+        sp->setValue(*field);
+        connect(sp, QOverload<int>::of(&QSpinBox::valueChanged), this, [this, field](int val) {
+            *field = val;
+            markDirty();
+            refresh();
+        });
+        settingSyncers_.push_back([sp, field] {
+            QSignalBlocker b(sp);
+            sp->setValue(*field);
+        });
+        form->addRow(label, sp);
+    };
+
     auto number = [this](QFormLayout* form, const QString& label, float* field, double lo, double hi, double step) {
         QDoubleSpinBox* sp = new QDoubleSpinBox;
         sp->setRange(lo, hi);
@@ -1168,6 +1184,12 @@ QWidget* MainWindow::buildProjectSettings() {
         // Multi-bounce AO: restores the light that bounces between the surfaces doing the occluding, weighted by each
         // surface's albedo, so a corner of a coloured room no longer reads as grey.
         check(fx, "Ambient occlusion: multi-bounce (albedo-weighted)", &settings_.multiBounceAO);
+        // Screen-space contact shadows (GH-118045): the short shadows a cascaded shadow map cannot resolve. The length and
+        // thickness are metres; the step count is the depth fetches per pixel.
+        number(fx, "Contact shadows", &settings_.contactShadows, 0.0, 1.0, 0.05);
+        number(fx, "Contact shadow length (m)", &settings_.contactShadowLength, 0.02, 2.0, 0.01);
+        number(fx, "Contact shadow thickness (m)", &settings_.contactShadowThickness, 0.01, 1.0, 0.01);
+        intNumber(fx, "Contact shadow steps", &settings_.contactShadowSteps, 4, 64);
         // The iGPU path tracer: traced diffuse bounce light. Needs a terrain heightfield and the normal pre-pass,
         // which it turns on itself.
         number(fx, "Traced bounce light (GI)", &settings_.gi, 0.0, 1.0, 0.05);
@@ -5706,7 +5728,8 @@ QJsonObject MainWindow::sceneDocument() {
         s["glossPower"] = settings_.glossPower;
     }
     // Screen effects: written only when one is on, so existing scene files stay the same.
-    if (settings_.fogDensity > 0.0f || settings_.ssao > 0.0f || settings_.ssr > 0.0f || settings_.depthNormalOutline > 0.0f
+    if (settings_.fogDensity > 0.0f || settings_.ssao > 0.0f || settings_.contactShadows > 0.0f || settings_.ssr > 0.0f
+        || settings_.depthNormalOutline > 0.0f
         || settings_.gi > 0.0f
         || settings_.flare > 0.0f || settings_.motionBlur > 0.0f || settings_.chromatic > 0.0f || settings_.sharpen > 0.0f
         || settings_.autoExposure || settings_.celBand || settings_.screenRim > 0.0f || settings_.outlineNoise > 0.0f
@@ -5735,6 +5758,10 @@ QJsonObject MainWindow::sceneDocument() {
         s["fogSun"] = double(settings_.fogSun);
         s["ssao"] = double(settings_.ssao);
         s["multiBounceAO"] = settings_.multiBounceAO;
+        s["contactShadows"] = double(settings_.contactShadows);
+        s["contactShadowLength"] = double(settings_.contactShadowLength);
+        s["contactShadowThickness"] = double(settings_.contactShadowThickness);
+        s["contactShadowSteps"] = settings_.contactShadowSteps;
         s["gi"] = double(settings_.gi);
         s["giRadius"] = double(settings_.giRadius);
         s["giRays"] = settings_.giRays;
@@ -6839,6 +6866,12 @@ bool MainWindow::applySceneDocument(const QJsonObject& root, const QString& sour
     // QJsonObject::value has no "default" overload: a scene written before this key existed keeps the setting's
     // own default.
     if (s.contains("multiBounceAO")) st.multiBounceAO = s.value("multiBounceAO").toBool();
+    // Contact shadows: keys written by this version onward, so a scene from before them keeps the defaults.
+    st.contactShadows = std::clamp(float(s.value("contactShadows").toDouble(st.contactShadows)), 0.0f, 1.0f);
+    st.contactShadowLength = std::clamp(float(s.value("contactShadowLength").toDouble(st.contactShadowLength)), 0.02f, 2.0f);
+    st.contactShadowThickness =
+        std::clamp(float(s.value("contactShadowThickness").toDouble(st.contactShadowThickness)), 0.01f, 1.0f);
+    st.contactShadowSteps = std::clamp(int(s.value("contactShadowSteps").toInt(st.contactShadowSteps)), 4, 64);
     st.gi = std::clamp(float(s.value("gi").toDouble(st.gi)), 0.0f, 1.0f);
     st.giRadius = std::clamp(float(s.value("giRadius").toDouble(st.giRadius)), 2.0f, 40.0f);
     st.giRays = std::clamp(float(s.value("giRays").toDouble(st.giRays)), 1.0f, 8.0f);

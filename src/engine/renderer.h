@@ -83,6 +83,12 @@ struct RenderSettings {
     // effect while `ssao` is 0. Needs the albedo the normal pre-pass writes, and falls back to single-bounce on
     // geometry that pre-pass does not cover (terrain, foliage, grass, graph materials).
     bool multiBounceAO = true;
+    // Screen-space contact shadows (GH-118045): the short shadows a cascaded shadow map cannot resolve, marched in the
+    // depth buffer towards the sun. 0 is off. Length and thickness are metres; steps is the depth fetch count.
+    float contactShadows = 0.0f;
+    float contactShadowLength = 0.35f;
+    float contactShadowThickness = 0.08f;
+    int contactShadowSteps = 24;
     float ssr = 0.0f;                // screen-space reflections, 0..1 (normal pre-pass)
     // Real-time diffuse GI (the iGPU path tracer): half-resolution traced bounce light, temporally accumulated and
     // composited at full resolution. 0 = off, 1 = one bounce at full strength. Needs a heightfield (setHeightfield) and
@@ -347,6 +353,7 @@ private:
     // Water (item 16). The grid is a fixed 128 x 128 rest grid over [0,1]^2, displaced in water.vert.
     std::optional<WaterVolume> water_;
     std::unique_ptr<rhi::Buffer> waterVb_, waterIb_;
+    std::unique_ptr<rhi::Buffer> contactUbo_;   // 16 bytes: the effects pass's contact-shadow parameters (Post binding 7)
     uint32_t waterIndexCount_ = 0;
 
     // Resolution-dependent targets.
