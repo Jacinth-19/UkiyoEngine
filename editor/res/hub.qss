@@ -13,7 +13,7 @@ QWidget#hubBrand { background: transparent; }
 QLabel#hubBrandMark { background: transparent; }
 QLabel#hubWordmark { color: #f2f6fb; background: transparent; font-size: 25px; font-weight: bold; }
 QLabel#hubWordmarkSub { color: #b9a892; background: transparent; font-size: 9px; font-weight: 500; }
-QLabel#hubWordmarkJp { color: #7d8a99; background: transparent; font-size: 10px; padding-top: 0px; }
+QLabel#hubWordmarkJp { color: #8b8f94; background: transparent; font-size: 11px; padding-top: 1px; }
 QLabel#hubRailCaption { color: #566274; background: transparent; font-size: 9px; font-weight: bold; }
 QLabel#hubRailPath { color: #6d7987; background: transparent; font-size: 10px; }
 QPushButton#hubNav {

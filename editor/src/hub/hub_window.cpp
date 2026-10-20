@@ -165,9 +165,12 @@ QWidget* HubWindow::buildRail() {
     titles->setContentsMargins(0, 0, 0, 0);
     titles->setSpacing(0);
 
+    // The rail's lockup is the identity, so it is set in the display face — the same Mincho as the splash — and the
+    // rest of the hub stays in Plex. A launcher whose wordmark is set differently from its splash reads as two products.
+    const QString display = editor::displayFamily();
     auto* wordmark = new QLabel(QStringLiteral("UKIYO"));
     wordmark->setObjectName(QStringLiteral("hubWordmark"));
-    QFont markFont = wordmark->font();
+    QFont markFont = display.isEmpty() ? wordmark->font() : QFont(display);
     markFont.setPixelSize(25);
     markFont.setWeight(QFont::Bold);
     markFont.setLetterSpacing(QFont::AbsoluteSpacing, 3.2);
@@ -188,10 +191,10 @@ QWidget* HubWindow::buildRail() {
     // as a stray caption.
     auto* jp = new QLabel(QStringLiteral("浮世エンジン"));
     jp->setObjectName(QStringLiteral("hubWordmarkJp"));
-    QFont jpFont = jp->font();
-    jpFont.setPixelSize(10);
-    jpFont.setWeight(QFont::Medium);
-    jpFont.setLetterSpacing(QFont::AbsoluteSpacing, 2.2);
+    QFont jpFont = display.isEmpty() ? jp->font() : QFont(display);
+    jpFont.setPixelSize(11);
+    jpFont.setWeight(QFont::Normal);
+    jpFont.setLetterSpacing(QFont::AbsoluteSpacing, 2.0);
     jp->setFont(jpFont);
     titles->addSpacing(3);
     titles->addWidget(jp);
