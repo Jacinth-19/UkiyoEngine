@@ -12654,8 +12654,14 @@ void MainWindow::fillInputPage(QVBoxLayout* v) {
     h->addWidget(resetBinding);
     h->addStretch(1);
 
-    // The settings window is rebuilt per project; a capture it started must not outlive it.
+    // The settings window is rebuilt per project; a capture it started must not outlive it. The filter goes first:
+    // left on the application it would keep swallowing every key press in the editor with nothing left to give them to.
     QObject::connect(table, &QObject::destroyed, this, [this, capture] {
+        if (capture->filter) {
+            qApp->removeEventFilter(capture->filter);
+            capture->filter->deleteLater();
+            capture->filter = nullptr;
+        }
         if (capture->row >= 0) {
             capture->row = -1;
             if (worker_) runOnWorker([this] { if (worker_) worker_->cancelRebind(); });
