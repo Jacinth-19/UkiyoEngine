@@ -18,7 +18,8 @@ if(MSVC)
   set(UKIYO_NO_WARNINGS /w)
   # min() and max() from <windows.h> collide with std::min/std::max; the CRT's "unsafe function" warnings are noise
   # for a codebase that already uses the bounded forms.
-  add_compile_definitions(NOMINMAX WIN32_LEAN_AND_MEAN _CRT_SECURE_NO_WARNINGS)
+  # M_PI is not defined by <cmath> under MSVC unless asked for; the audio tests and the splash read it.
+  add_compile_definitions(NOMINMAX WIN32_LEAN_AND_MEAN _CRT_SECURE_NO_WARNINGS _USE_MATH_DEFINES)
 else()
   set(UKIYO_WARNINGS -Wall -Wextra -Wno-missing-field-initializers)
   set(UKIYO_WARNINGS_PEDANTIC -Wall -Wextra -Wpedantic)

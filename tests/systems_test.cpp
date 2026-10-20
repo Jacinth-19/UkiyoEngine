@@ -13,7 +13,14 @@
 #include <string>
 #include <vector>
 
+// The pak test needs a unique temporary directory name, which is the process id. MSVC spells the call with a leading
+// underscore and declares it in <process.h>.
+#ifdef _WIN32
+#include <process.h>
+#define getpid _getpid
+#else
 #include <unistd.h>
+#endif
 
 #include "engine/cull.h"
 #include "engine/foliage.h"
