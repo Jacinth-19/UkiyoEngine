@@ -1,5 +1,7 @@
 #include "splash_screen.h"
 
+#include "icons.h"
+
 #include <algorithm>
 #include <cmath>
 
@@ -29,7 +31,7 @@ const QColor kScrim(8, 12, 20);
 // The design is laid out on a 960 x 540 grid; everything is multiplied by `s`.
 constexpr qreal kDesignWidth = 960.0;
 constexpr qreal kMargin = 44.0;
-constexpr qreal kBarTop = 286.0;
+constexpr qreal kBarTop = 452.0;   // the track sits at the foot of the status block
 constexpr qreal kBarWidth = 340.0;
 constexpr qreal kMarkHoldMs = 950.0;     // the mark's beat before the artwork
 constexpr qreal kCrossfadeMs = 450.0;
@@ -79,6 +81,7 @@ SplashScreen::SplashScreen(const QString& artPath, const QString& heading, QWidg
     if (!artPath.isEmpty()) art_.load(artPath);
     // The designed mark, if the checkout ships it. Without it the text mark below still stands in.
     brand_.load(QStringLiteral(UKIYO_ROOT) + QStringLiteral("/editor/res/brand/ukiyo-splash.png"));
+    brand_.setDevicePixelRatio(1.0);
 
     markEnd_ = kMarkHoldMs / 1000.0;
     clock_.start();
@@ -215,14 +218,16 @@ void SplashScreen::paintEvent(QPaintEvent*) {
 void SplashScreen::paintMark(QPainter& painter, qreal s) {
     painter.fillRect(rect(), kNight);
 
+    // The designed lockup, drawn by tools/brand.py from the same geometry as the mark assets. When it is missing,
+    // the text below still stands in, so a checkout without the generated PNGs is not a blank screen.
+    const qreal alpha = skipped_ ? 1.0 : std::clamp(age_ / 0.34, 0.0, 1.0);
     if (!brand_.isNull()) {
-        // The mark settles in: a hair of scale and a short fade, over the flat indigo. The artwork crossfades over it.
-        const qreal alpha = skipped_ ? 1.0 : std::clamp(age_ / 0.34, 0.0, 1.0);
+        // The mark settles: a hair of scale and a short fade. The artwork crossfades over it.
         const qreal settle = 0.986 + 0.014 * alpha;
-        const qreal targetW = 380.0 * s * settle;
+        const qreal targetW = 430.0 * s * settle;
         const qreal targetH = targetW * qreal(brand_.height()) / qreal(brand_.width());
         QRectF box(0.0, 0.0, targetW, targetH);
-        box.moveCenter(QPointF(width() * 0.5, height() * 0.5 - 2.0 * s));
+        box.moveCenter(QPointF(width() * 0.5, height() * 0.5 - 4.0 * s));
         painter.save();
         painter.setOpacity(alpha);
         painter.setRenderHint(QPainter::SmoothPixmapTransform, true);
@@ -231,30 +236,32 @@ void SplashScreen::paintMark(QPainter& painter, qreal s) {
         return;
     }
 
+    // Fallback: the wordmark set in the display face, which is the same Mincho the PNG is set in.
     const qreal w = width();
     const qreal h = height();
-    const qreal spacing = 13.0 * s;
-    const QFont wordFont = sized(font(), 34.0 * s, QFont::Black, spacing);
+    const QString family = displayFamily();
+    QFont wordFont = family.isEmpty() ? font() : QFont(family);
+    wordFont.setPixelSize(std::max(1, int(std::lround(44.0 * s))));
+    wordFont.setWeight(QFont::Bold);
+    wordFont.setLetterSpacing(QFont::AbsoluteSpacing, 11.0 * s);
     const QFontMetricsF wordMetrics(wordFont);
     const QString word = QStringLiteral("UKIYO");
     const qreal wordWidth = wordMetrics.horizontalAdvance(word);
 
-    const qreal baseline = h * 0.5 - 4.0 * s;
+    const qreal baseline = h * 0.5 - 6.0 * s;
     painter.setFont(wordFont);
     painter.setPen(kInk);
-    painter.drawText(QPointF(w * 0.5 - opticalCentre(wordWidth, spacing), baseline), word);
+    painter.drawText(QPointF(w * 0.5 - opticalCentre(wordWidth, 11.0 * s), baseline), word);
 
-    painter.setPen(Qt::NoPen);
-    painter.setBrush(kVermilion);
-    painter.drawRect(QRectF(w * 0.5 - 27.0 * s, baseline + 22.0 * s, 54.0 * s, 2.0 * s));
-
-    const qreal subSpacing = 4.8 * s;
-    const QFont subFont = sized(font(), 8.0 * s, QFont::DemiBold, subSpacing);
-    const QString sub = QStringLiteral("ENGINE");
-    const qreal subWidth = QFontMetricsF(subFont).horizontalAdvance(sub);
-    painter.setFont(subFont);
-    painter.setPen(QColor(196, 184, 166, 220));
-    painter.drawText(QPointF(w * 0.5 - opticalCentre(subWidth, subSpacing), baseline + 46.0 * s), sub);
+    QFont jpFont = wordFont;
+    jpFont.setPixelSize(std::max(1, int(std::lround(15.0 * s))));
+    jpFont.setWeight(QFont::Normal);
+    jpFont.setLetterSpacing(QFont::AbsoluteSpacing, 4.0 * s);
+    const QString jp = QStringLiteral("浮世エンジン");
+    const qreal jpWidth = QFontMetricsF(jpFont).horizontalAdvance(jp);
+    painter.setFont(jpFont);
+    painter.setPen(kMuted);
+    painter.drawText(QPointF(w * 0.5 - opticalCentre(jpWidth, 4.0 * s), baseline + 34.0 * s), jp);
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -264,37 +271,62 @@ void SplashScreen::paintArtwork(QPainter& painter, qreal s) {
     const QRectF area(rect());
     paintArt(painter, area);
 
-    // Take the print down a little so white type always has something to sit on.
-    painter.fillRect(area, QColor(kScrim.red(), kScrim.green(), kScrim.blue(), kArtScrimAlpha));
+    // The print is a woodblock with its subject on the right and open sky on the left. The left is where the type
+    // goes, so the scrim is a horizontal wash that seats it without dulling the island: denser at the margin, gone
+    // by two thirds across. A vertical gradient under the status block adds weight at the foot.
+    QLinearGradient wash(area.topLeft(), area.topRight());
+    wash.setColorAt(0.00, QColor(kScrim.red(), kScrim.green(), kScrim.blue(), 172));
+    wash.setColorAt(0.34, QColor(kScrim.red(), kScrim.green(), kScrim.blue(), 118));
+    wash.setColorAt(0.62, QColor(kScrim.red(), kScrim.green(), kScrim.blue(), 22));
+    wash.setColorAt(1.00, QColor(kScrim.red(), kScrim.green(), kScrim.blue(), 0));
+    painter.fillRect(area, wash);
 
-    QLinearGradient scrim(QPointF(0.0, area.height() * 0.34), QPointF(0.0, area.height()));
-    scrim.setColorAt(0.00, QColor(kScrim.red(), kScrim.green(), kScrim.blue(), 0));
-    scrim.setColorAt(0.55, QColor(kScrim.red(), kScrim.green(), kScrim.blue(), 54));
-    scrim.setColorAt(1.00, QColor(kScrim.red(), kScrim.green(), kScrim.blue(), 128));
-    painter.fillRect(area, scrim);
+    QLinearGradient foot(QPointF(0.0, area.height() * 0.62), QPointF(0.0, area.height()));
+    foot.setColorAt(0.00, QColor(kScrim.red(), kScrim.green(), kScrim.blue(), 0));
+    foot.setColorAt(1.00, QColor(kScrim.red(), kScrim.green(), kScrim.blue(), 132));
+    painter.fillRect(area, foot);
 
     const qreal a = skipped_ ? 1.0 : artAlpha();
     painter.save();
     painter.translate(0.0, (1.0 - a) * 9.0 * s);
+    painter.setOpacity(a);
 
-    // Wordmark, top left.
-    const qreal markSpacing = 6.4 * s;
-    painter.setFont(sized(font(), 20.0 * s, QFont::Black, markSpacing));
+    // ---- the identity, in the open sky
+    const QString family = displayFamily();
+    const bool mincho = !family.isEmpty();
+    QFont wordFont = mincho ? QFont(family) : font();
+    wordFont.setPixelSize(std::max(1, int(std::lround(58.0 * s))));
+    wordFont.setWeight(QFont::Bold);
+    wordFont.setLetterSpacing(QFont::AbsoluteSpacing, 7.0 * s);
+    painter.setFont(wordFont);
     painter.setPen(kInk);
-    painter.drawText(QPointF(kMargin * s, 50.0 * s), QStringLiteral("UKIYO"));
+    const qreal wordX = kMargin * s + 150.0 * s;
+    const qreal wordY = 176.0 * s;
+    painter.drawText(QPointF(wordX, wordY), QStringLiteral("UKIYO"));
 
-    const qreal subSpacing = 2.4 * s;
-    painter.setFont(sized(font(), 7.0 * s, QFont::DemiBold, subSpacing));
-    painter.setPen(QColor(kDim.red(), kDim.green(), kDim.blue(), 230));
-    painter.drawText(QPointF(kMargin * s + 1.0 * s, 70.0 * s), QStringLiteral("ENGINE"));
+    // The mark sits on the wordmark's cap line, at the left of it: the seal is the only red here, as in the PNG.
+    const QPixmap mark = QPixmap(QStringLiteral(UKIYO_ROOT) + QStringLiteral("/editor/res/brand/ukiyo-mark.png"))
+                             .scaled(int(128.0 * s), int(128.0 * s), Qt::KeepAspectRatio, Qt::SmoothTransformation);
+    if (!mark.isNull())
+        painter.drawPixmap(QPointF(kMargin * s, wordY - 92.0 * s), mark);
 
-    // The engine's other name, in the Japanese face that ships with it. Small, and after the Latin, so the
-    // interface still reads as English by default.
-    painter.setFont(sized(font(), 8.0 * s, QFont::Medium, 1.2 * s));
-    painter.setPen(QColor(kDim.red(), kDim.green(), kDim.blue(), 200));
-    painter.drawText(QPointF(kMargin * s + 1.0 * s, 88.0 * s), QStringLiteral("浮世エンジン"));
+    QFont subFont = mincho ? QFont(family) : font();
+    subFont.setPixelSize(std::max(1, int(std::lround(13.0 * s))));
+    subFont.setWeight(QFont::Normal);
+    subFont.setLetterSpacing(QFont::AbsoluteSpacing, 6.0 * s);
+    painter.setFont(subFont);
+    painter.setPen(kMuted);
+    painter.drawText(QPointF(wordX + 3.0 * s, wordY + 26.0 * s), QStringLiteral("ENGINE"));
 
-    // Version, top right.
+    // The engine's other name, after the Latin, so the interface still reads as English by default.
+    QFont jpFont = subFont;
+    jpFont.setPixelSize(std::max(1, int(std::lround(15.0 * s))));
+    jpFont.setLetterSpacing(QFont::AbsoluteSpacing, 3.0 * s);
+    painter.setFont(jpFont);
+    painter.setPen(QColor(kMuted.red(), kMuted.green(), kMuted.blue(), 210));
+    painter.drawText(QPointF(wordX + 2.0 * s, wordY + 54.0 * s), QStringLiteral("浮世エンジン"));
+
+    // Version, top right, over the sky rather than the island.
     const QString version = QStringLiteral("v0.1");
     const QFont versionFont = sized(font(), 8.0 * s, QFont::Normal, 0.8 * s);
     const qreal versionWidth = QFontMetricsF(versionFont).horizontalAdvance(version);
@@ -302,25 +334,25 @@ void SplashScreen::paintArtwork(QPainter& painter, qreal s) {
     painter.setPen(QColor(kDim.red(), kDim.green(), kDim.blue(), 220));
     painter.drawText(QPointF(width() - kMargin * s - versionWidth, 46.0 * s), version);
 
-    // The status block, set in the open sky above the water.
-    const qreal typeWidth = std::min(500.0 * s, width() - kMargin * 2.0 * s);
+    // ---- the status block, low in the left column
+    const qreal typeWidth = std::min(430.0 * s, width() - kMargin * 2.0 * s);
     const QFont eyebrowFont = sized(font(), 7.0 * s, QFont::Bold, 2.2 * s);
     painter.setFont(eyebrowFont);
     painter.setPen(QColor(196, 184, 166, 240));
-    painter.drawText(QPointF(kMargin * s, 194.0 * s), eyebrow_);
+    painter.drawText(QPointF(kMargin * s, 372.0 * s), eyebrow_);
 
-    const QFont headingFont = sized(font(), 26.0 * s, QFont::Bold, 0.2 * s);
+    const QFont headingFont = sized(font(), 24.0 * s, QFont::Bold, 0.2 * s);
     const QFontMetricsF headingMetrics(headingFont);
     painter.setFont(headingFont);
     painter.setPen(kInk);
-    painter.drawText(QPointF(kMargin * s, 230.0 * s),
+    painter.drawText(QPointF(kMargin * s, 402.0 * s),
                      headingMetrics.elidedText(heading_, Qt::ElideRight, typeWidth));
 
-    const QFont stageFont = sized(font(), 11.0 * s, QFont::Normal, 0.2 * s);
+    const QFont stageFont = sized(font(), 10.0 * s, QFont::Normal, 0.2 * s);
     const QFontMetricsF stageMetrics(stageFont);
     painter.setFont(stageFont);
     painter.setPen(kMuted);
-    painter.drawText(QPointF(kMargin * s, 261.0 * s),
+    painter.drawText(QPointF(kMargin * s, 428.0 * s),
                      stageMetrics.elidedText(message_, Qt::ElideRight, typeWidth));
 
     paintProgress(painter, s);
@@ -399,7 +431,7 @@ void SplashScreen::paintFallbackArt(QPainter& painter, const QRectF& area) {
 }
 
 void SplashScreen::paintProgress(QPainter& painter, qreal s) {
-    const QRectF track(kMargin * s, kBarTop * s, kBarWidth * s, std::max(2.0, 2.0 * s));
+    const QRectF track(kMargin * s, 452.0 * s, kBarWidth * s, std::max(2.0, 2.0 * s));
     const qreal filled = std::clamp<qreal>(track.width() * shown_, 0.0, track.width());
 
     painter.setPen(Qt::NoPen);
@@ -429,7 +461,7 @@ void SplashScreen::paintProgress(QPainter& painter, qreal s) {
     const qreal percentWidth = QFontMetricsF(percentFont).horizontalAdvance(percent);
     painter.setFont(percentFont);
     painter.setPen(QColor(208, 202, 190));
-    painter.drawText(QPointF(track.right() - percentWidth, 276.0 * s), percent);
+    painter.drawText(QPointF(track.right() - percentWidth, 442.0 * s), percent);
 }
 
 } // namespace editor

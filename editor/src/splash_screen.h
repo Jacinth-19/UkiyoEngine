@@ -2,14 +2,18 @@
 //
 // It runs in two beats, the way an editor splash usually does:
 //
-//   1. the mark: UKIYO on flat indigo, with a short vermilion rule under it;
-//   2. the artwork: editor/res/splash.png, the project name, the line that says
-//      what is loading right now, and a thin vermilion progress bar.
+//   1. the mark: the ensō with its hanko, and UKIYO set in Shippori Mincho, on flat indigo
+//      (editor/res/brand/ukiyo-splash.png, drawn by tools/brand.py);
+//   2. the artwork: editor/res/splash.png, with the identity set in the open sky at the left,
+//      and the project name, the line that says what is loading, and a vermilion progress bar
+//      low in that same column.
 //
-// The two fade into each other, the artwork drifts a few pixels so the screen is
-// never quite still, and finish() fades the window out and closes it.
+// The second beat is a composition, not artwork with a scrim over it: the print's subject is on the right and its
+// empty sky is on the left, so the type goes where the print leaves room, and the wash under it runs out before the
+// island so the print is not dulled.
 //
-// The layout is designed at 960 x 540 and scaled from the widget's width, so it
+// The two fade into each other, the artwork drifts a few pixels so the screen is never quite still, and finish()
+// fades the window out and closes it. The layout is designed at 960 x 540 and scaled from the widget's width, so it
 // also holds up when the window is clamped on a small screen.
 #pragma once
 

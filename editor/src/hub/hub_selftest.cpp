@@ -113,7 +113,9 @@ int runHubSelfTest() {
     check(!frame.isNull() && frame.width() == splash->width(), "splash: it paints its frame",
           QStringLiteral("%1 x %2").arg(frame.width()).arg(frame.height()));
     const QImage painted = frame.toImage();
-    const QColor bar = painted.pixelColor(64, 287);   // inside the vermilion bar at 50%
+    // The track is at the foot of the status block (see kBarTop in splash_screen.cpp); 40% of the way along it is
+    // inside the filled part at a half-finished stage.
+    const QColor bar = painted.pixelColor(int(splash->width() * 0.10), int(splash->height() * 0.838));
     check(bar.red() > 110 && bar.red() > bar.green() + 40, "splash: the progress bar is drawn",
           bar.name());
     check(!splash->finishing(), "splash: it starts visible");

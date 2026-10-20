@@ -25,6 +25,7 @@ int main(int argc, char* argv[]) {
     // Material Symbols icon font and the bilingual UI typeface, both shipped with the editor.
     editor::loadIconFont(QStringLiteral(UKIYO_ROOT) + "/editor/res/fonts/MaterialSymbolsOutlined.ttf");
     editor::loadBrandFont(QStringLiteral(UKIYO_ROOT) + "/editor/res/fonts");
+    editor::loadDisplayFont(QStringLiteral(UKIYO_ROOT) + "/editor/res/fonts");
 
     // Dark theme, shipped with the editor.
     QFile qss(QStringLiteral(UKIYO_ROOT) + "/editor/res/dark.qss");

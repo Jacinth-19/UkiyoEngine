@@ -13,6 +13,7 @@ namespace editor {
 
 namespace {
 QString gIconFamily;
+QString gDisplayFamily;
 } // namespace
 
 bool loadIconFont(const QString& ttfPath) {
@@ -41,6 +42,22 @@ QString loadBrandFont(const QString& fontsDir) {
     QGuiApplication::setFont(font);
     return family;
 }
+
+QString loadDisplayFont(const QString& fontsDir) {
+    // Two weights, subset to the identity's own words and kana: 400 for the Japanese sub-line, 700 for UKIYO.
+    QString family;
+    for (const char* weight : {"Regular", "Bold"}) {
+        const int id = QFontDatabase::addApplicationFont(fontsDir + QStringLiteral("/ShipporiMinchoDisplay-") +
+                                                         QString::fromLatin1(weight) + QStringLiteral(".ttf"));
+        if (id < 0) continue;
+        const QStringList families = QFontDatabase::applicationFontFamilies(id);
+        if (!families.isEmpty() && family.isEmpty()) family = families.first();
+    }
+    gDisplayFamily = family;
+    return family;
+}
+
+QString displayFamily() { return gDisplayFamily; }
 
 QIcon materialIcon(const char* name, const QColor& color, int px) {
     QIcon icon;

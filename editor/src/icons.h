@@ -19,6 +19,12 @@ bool loadIconFont(const QString& ttfPath);
 // Returns the family name, or an empty string when no face loaded (the app then keeps its default font).
 QString loadBrandFont(const QString& fontsDir);
 
+// The identity's display face: Shippori Mincho, a Japanese Mincho with a Latin cut by the same hand as the kana.
+// It is for the mark, the splash and headings that are part of the brand — not for the interface, which stays in
+// Plex so a menu never looks like a logo. Empty when the face is missing.
+QString loadDisplayFont(const QString& fontsDir);
+QString displayFamily();
+
 // Icon for a Material Symbols name. The disabled state is the same glyph at reduced opacity.
 // Returns an empty icon when the name is not in the subset shipped with the editor.
 QIcon materialIcon(const char* name, const QColor& color, int px = 16);

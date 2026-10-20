@@ -70,6 +70,10 @@ jobs:
       # The launcher's pages, grabbed offscreen: downloadable as the screenshots artifact and used by the docs.
       - name: Capture hub screenshots
         run: QT_QPA_PLATFORM=offscreen ./build/ukiyo_hub --screenshots renders
+      # The splash, offscreen and with real content: beat 1 (the mark) and beat 2 (the artwork, lockup, status block).
+      # This is the program's own output — the identity is drawn in C++ and its assets come from tools/brand.py.
+      - name: Capture splash screenshots
+        run: QT_QPA_PLATFORM=offscreen ./build/ukiyo_hub --splash-shots renders
       # The artifact host is not reachable from every environment, so the pictures a reviewer needs also land in the
       # repository: the hub's three pages are committed under docs/hub/ from CI, where they are actually rendered.
       # [skip ci] stops that commit from starting another build.
@@ -78,6 +82,7 @@ jobs:
         run: |
           mkdir -p docs/hub
           cp renders/hub_projects.png renders/hub_templates.png renders/hub_about.png docs/hub/
+          cp renders/splash.png renders/splash_mark.png docs/
           git config user.name "ukiyo-ci"
           git config user.email "ci@ukiyo.invalid"
           git add docs/hub
@@ -105,6 +110,7 @@ jobs:
           path: |
             renders/terrain_*.png
             renders/hub_*.png
+            renders/splash*.png
             renders/motion-demo.png
             renders/gi-*.png
           if-no-files-found: warn

@@ -20,6 +20,7 @@ int main(int argc, char* argv[]) {
     const QString engine = editor::hub::engineRoot();
     editor::loadIconFont(engine + QStringLiteral("/editor/res/fonts/MaterialSymbolsOutlined.ttf"));
     editor::loadBrandFont(engine + QStringLiteral("/editor/res/fonts"));
+    editor::loadDisplayFont(engine + QStringLiteral("/editor/res/fonts"));
 
     QString theme;
     for (const char* file : {"/editor/res/dark.qss", "/editor/res/hub.qss"}) {
@@ -36,6 +37,11 @@ int main(int argc, char* argv[]) {
             editor::hub::HubWindow window;
             window.capturePages(QString::fromLocal8Bit(argv[i + 1]));
             return 0;
+        }
+        // The splash, offscreen: the same widget the hub and the editor show, painted with real content. Two frames,
+        // because the screen has two beats — the mark alone, and the artwork with the lockup and the status block.
+        if (QString::fromLocal8Bit(argv[i]) == QLatin1String("--splash-shots") && i + 1 < argc) {
+            return editor::hub::captureSplash(QString::fromLocal8Bit(argv[i + 1]));
         }
     }
 

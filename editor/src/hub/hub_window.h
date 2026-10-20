@@ -36,6 +36,11 @@ public:
     // platform plugin can grab the widgets without a display, and by anyone who wants the launcher in the docs.
     void capturePages(const QString& dir);
 
+// Renders the startup splash to `<dir>/splash_mark.png` (beat 1, the mark) and `<dir>/splash.png` (beat 2, the
+// artwork with the lockup and a half-finished status block). Used by `ukiyo_hub --splash-shots`, so the splash in
+// the docs is the program's own output at the commit being read, not a mockup.
+int captureSplash(const QString& dir);
+
 private:
     QWidget* buildRail();
     QWidget* buildProjectsPage();

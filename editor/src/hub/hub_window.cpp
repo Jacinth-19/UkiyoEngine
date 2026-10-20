@@ -9,6 +9,7 @@
 #include <QCoreApplication>
 #include <QDateTime>
 #include <QDir>
+#include <QElapsedTimer>
 #include <QFileDialog>
 #include <QFileInfo>
 #include <QFont>
@@ -508,6 +509,36 @@ void HubWindow::capturePages(const QString& dir) {
         if (!grab().save(path)) std::fprintf(stderr, "could not write %s\n", qUtf8Printable(path));
         else std::printf("wrote %s\n", qUtf8Printable(path));
     }
+}
+
+int captureSplash(const QString& dir) {
+    QDir().mkpath(dir);
+    SplashScreen splash(splashArtPath(), QStringLiteral("UkiyoEngine"));
+    splash.setEyebrow(QStringLiteral("OPENING PROJECT"));
+    splash.setCaption(QStringLiteral("~/Projects/UkiyoEngine"));
+    splash.resize(960, 540);
+
+    // Beat 1. The mark has a settle animation; let it run so the grab is the design, not a half-faded frame.
+    splash.skipIntro();
+    splash.setStage(0.0f, QString());
+    QElapsedTimer beat;
+    beat.start();
+    while (beat.elapsed() < 260) QCoreApplication::processEvents(QEventLoop::AllEvents, 16);
+    if (!splash.grab().save(dir + QStringLiteral("/splash_mark.png"))) {
+        std::fprintf(stderr, "could not write splash_mark.png\n");
+        return 1;
+    }
+
+    // Beat 2: the artwork, a heading, and the bar part-way through the work the splash is for.
+    splash.setStage(0.36f, QStringLiteral("Loading renderer and assets"));
+    beat.restart();
+    while (beat.elapsed() < 900) QCoreApplication::processEvents(QEventLoop::AllEvents, 16);
+    if (!splash.grab().save(dir + QStringLiteral("/splash.png"))) {
+        std::fprintf(stderr, "could not write splash.png\n");
+        return 1;
+    }
+    std::printf("wrote %s/splash.png\n", qUtf8Printable(dir));
+    return 0;
 }
 
 void HubWindow::selectPage(int index) {
