@@ -186,6 +186,14 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # aqtinstall runs under the runner's default Python, which is newer than aqt supports for a while after each
+      # Python release; 3.12 is the version the Qt action is tested against. This costs a few seconds and removes a
+      # failure that has nothing to do with this repository.
+      - name: Python for aqt
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
       - name: Install Qt 6
         uses: jurplel/install-qt-action@v4
         with:
