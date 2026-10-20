@@ -12,6 +12,7 @@
 
 #include <cmath>
 #include <cstdio>
+#include <filesystem>
 #include <fstream>
 #include <memory>
 #include <string>
@@ -530,7 +531,8 @@ void testAsset() {
     checkTrue(!r4.ok && !r4.error.empty(), "an asset with no maps array is an error, not an empty asset");
 
     // The file on disk round-trips too.
-    const std::string path = "/tmp/ukiyo_input_test.inputactions";
+    // The system temporary directory: /tmp does not exist on Windows.
+    const std::string path = (std::filesystem::temp_directory_path() / "ukiyo_input_test.inputactions").string();
     std::string err;
     checkTrue(saveAssetFile(f.state, path, &err), "the asset saves to a file");
     State fromFile;

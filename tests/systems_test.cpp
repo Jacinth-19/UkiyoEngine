@@ -440,7 +440,9 @@ static void testNavigation() {
 
 // Writes a mono 16-bit WAV: a sine tone of the given frequency, amplitude, and length.
 static std::string writeToneWav(const char* name, double seconds, double freq, double amp) {
-    const std::string path = std::string("/tmp/") + name;
+    // The system temporary directory, not /tmp: Windows has no /tmp, and a path that cannot be opened would leave the
+    // audio checks failing on a platform that is fine.
+    const std::string path = (std::filesystem::temp_directory_path() / name).string();
     const uint32_t rate = 48000;
     const uint32_t n = uint32_t(seconds * rate);
     std::vector<int16_t> samples(n);
@@ -1758,7 +1760,7 @@ static void testTerrain() {
           "terrain: a point on a sample reads that sample's height");
 
     // The raw file round trip. Heights come back within the 16-bit step, and a wrong size is refused.
-    const std::string tmp = std::string(std::getenv("TMPDIR") ? std::getenv("TMPDIR") : "/tmp") + "/ukiyo_terrain_test.u16";
+    const std::string tmp = (std::filesystem::temp_directory_path() / "ukiyo_terrain_test.u16").string();
     std::string err;
     check(saveHeightmapU16(tmp, ramp, &err), "terrain: a heightmap saves to a raw file", err);
     Heightmap back;
