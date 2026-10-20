@@ -63,20 +63,6 @@ jobs:
           grep -E "error:|Error [0-9]" build.log | head -40 | while IFS= read -r line; do
             echo "::error::${line//'%'/'%25'}"
           done
-
-      # A failing test's own output, as annotations. The job log is served from a signed URL that is not reachable from
-      # every environment, and the lines that matter (FAIL, and the summary) are never the last ones.
-      - name: Annotate test failures
-        if: failure()
-        run: |
-          shopt -s nullglob
-          for f in /tmp/ukiyo-test-*.log; do
-            echo "::group::$f"
-            grep -E "FAIL|failed|error" "$f" | head -20 | while IFS= read -r line; do
-              echo "::error::${line//'%'/'%25'}"
-            done
-            echo "::endgroup::"
-          done
       - name: Run Systems Test
         run: |
           set -o pipefail
@@ -175,6 +161,20 @@ jobs:
           done
           echo "could not publish the screenshots; the artifact still has them" >&2
           exit 1
+
+      # A failing test's own output, as annotations. The job log is served from a signed URL that is not reachable from
+      # every environment, and the lines that matter (FAIL, and the summary) are never the last ones.
+      - name: Annotate test failures
+        if: failure()
+        run: |
+          shopt -s nullglob
+          for f in /tmp/ukiyo-test-*.log; do
+            echo "::group::$f"
+            grep -E "FAIL|failed|error" "$f" | head -20 | while IFS= read -r line; do
+              echo "::error::${line//'%'/'%25'}"
+            done
+            echo "::endgroup::"
+          done
 
       # The self-test draws the sample terrain to renders/terrain_*.png. Keep them, so a graphics change can be
       # looked at without a local GL context.
