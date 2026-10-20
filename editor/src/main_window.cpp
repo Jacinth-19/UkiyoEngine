@@ -309,6 +309,18 @@ protected:
         return ukiyo::matchesNameTokens(std::string_view(utf8.constData(), static_cast<size_t>(utf8.size())), query_);
     }
 
+    // Folders first, then names the way a file browser compares them. QFileSystemModel sorts that way itself, but a
+    // proxy sorts by QVariant and would mix folders into the files; the details view is sorted, so it would show at once.
+    bool lessThan(const QModelIndex& left, const QModelIndex& right) const override {
+        auto* fs = qobject_cast<QFileSystemModel*>(sourceModel());
+        if (!fs || left.column() != 0) return QSortFilterProxyModel::lessThan(left, right);
+        const bool leftDir = fs->isDir(left), rightDir = fs->isDir(right);
+        if (leftDir != rightDir) return leftDir;
+        const QString a = left.data(Qt::DisplayRole).toString();
+        const QString b = right.data(Qt::DisplayRole).toString();
+        return QString::compare(a, b, Qt::CaseInsensitive) < 0;
+    }
+
 private:
     std::string query_;   // UTF-8, the form the engine's matcher reads
     QString root_;
