@@ -214,6 +214,12 @@ static void testAnimeProject() {
     check(created, "anime: the project is created", error);
     if (!created) return;
 
+    // The template links the engine's own asset, so the checkout has to have it and the engine root has to point at
+    // it. Checked on its own because every failure below is a consequence of this one, and an empty model path three
+    // checks later says nothing about why.
+    check(fs::exists(fs::path(options.engineRoot) / "assets" / "Seed-san.vrm"),
+          "anime: the engine asset resolves from the engine root", options.engineRoot);
+
     const json scene = readJson(root / "Scenes" / "Main.ukscene");
     const std::string path = scene["models"][0].value("path", std::string());
     check(!path.empty() && path.find('\\') == std::string::npos,
