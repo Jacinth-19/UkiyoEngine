@@ -276,6 +276,38 @@ def sheet(size=1200):
     return img
 
 
+def readme_header(width=1600, height=460):
+    """The plate at the top of the README: the lockup on the night ground, with the second name set vertically.
+
+    The vertical column is the one typographic gesture that reads as Japanese publishing rather than as a Western
+    wordmark with kana attached — and it lets the Latin keep the left edge, which is where a reader starts.
+    """
+    img = Image.new("RGB", (width, height), INDIGO)
+    d = ImageDraw.Draw(img)
+    # A flat ground is a poster; a shallow gradient is a plate. Four levels up the page, nothing anyone can name.
+    for y in range(height):
+        t = y / max(1, height - 1)
+        d.line([(0, y), (width, y)], fill=tuple(int(c * (1.06 - 0.12 * t)) for c in INDIGO))
+
+    # No second Japanese line here: the vertical column is the second name, and saying it twice in one plate is noise.
+    lk = lockup(int(width * 0.72), int(width * 0.72 / 1400 * 380), ink=INK, jp=False)
+    lk = lk.crop(lk.getbbox())  # the box reserved for the omitted kana is empty; crop so the lockup sits centred
+    img.paste(lk, (int(width * 0.065), (height - lk.height) // 2), lk)
+
+    f = ImageFont.truetype(MINCHO, 56)
+    glyphs = "浮世エンジン"
+    x = width - int(width * 0.105)
+    step = 74
+    top = height / 2 - (len(glyphs) - 1) * step / 2
+    for i, ch in enumerate(glyphs):
+        d.text((x, top + i * step), ch, font=f, fill=MUTED, anchor="mm")
+
+    # A full-height hairline parts the type column from the plate: the gutter of a printed page, not a rule that
+    # starts and stops for no reason.
+    d.line([(x - int(width * 0.062), 0), (x - int(width * 0.062), height)], fill=(48, 62, 92), width=2)
+    return img
+
+
 def size_strip():
     """The mark at the sizes the program actually draws it: 16 to 256 px, on both grounds."""
     w, h = 760, 300
@@ -313,6 +345,7 @@ def main():
     splash_mark().save(os.path.join(RES_DIR, "ukiyo-splash.png"))
     sheet().save(os.path.join(DOC_DIR, "logo-sheet.png"))
     size_strip().save(os.path.join(DOC_DIR, "logo-sizes.png"))
+    readme_header().save(os.path.join(DOC_DIR, "readme-header.png"))
     print("wrote brand assets")
 
 

@@ -27,7 +27,17 @@ jobs:
       - name: Configure CMake
         run: cmake -B build -DCMAKE_BUILD_TYPE=Release
       - name: Build Everything
-        run: cmake --build build --parallel 4
+        run: |
+          set -o pipefail
+          cmake --build build --parallel 4 2>&1 | tee build.log
+      # A compiler error in a 4-minute log is hard to find, so the failing lines are lifted into the run's
+      # annotations, where the summary shows them without downloading anything.
+      - name: Annotate compile errors
+        if: failure()
+        run: |
+          grep -E "error:|Error [0-9]" build.log | head -40 | while IFS= read -r line; do
+            echo "::error::${line//'%'/'%25'}"
+          done
       - name: Run Systems Test
         run: ./build/systems_test
       - name: Run Network Test
@@ -46,6 +56,14 @@ jobs:
       # .inputactions file the engine writes loads back byte-for-byte. docs/INPUT.md.
       - name: Run Input System Test
         run: ./build/input_test
+      # NOTICE.md claims the ground textures are complete and correct. This checks that claim: every layer has
+      # albedo/normal/AO at the atlas size, the three layers are genuinely different images, and the normal maps are
+      # tangent-space rather than mis-exported. It is cheap and it is the difference between a documented promise and
+      # a tested one.
+      - name: Verify terrain texture coverage
+        run: |
+          python3 -m pip install --quiet --break-system-packages pillow
+          python3 tools/verify_terrain_textures.py --repo .
       # Bindings are the one class of shader bug a compiler cannot see and CI has no GPU to catch. This resolves the
       # includes and fails on two samplers at one (set, binding), or two bindings on one GL texture unit.
       - name: Audit shader descriptor bindings
