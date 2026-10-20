@@ -17,8 +17,8 @@ void main() {
     if (soft > 0.0) {
         // v runs 0..1 across the strip. smoothstep never gets a reversed pair of edges (undefined in GLSL), so the far
         // side is the one's complement rather than an inverted call.
-        const float half = soft * 0.5;
-        alpha *= smoothstep(0.0, half, vUV.y) * (1.0 - smoothstep(1.0 - half, 1.0, vUV.y));
+        const float band = soft * 0.5;   // `half` is a reserved word in GLSL, so the band is not called that
+        alpha *= smoothstep(0.0, band, vUV.y) * (1.0 - smoothstep(1.0 - band, 1.0, vUV.y));
     }
     if (alpha <= 0.002) discard;   // a fully faded tail leaves no depth or blending work behind it
     outColor = vec4(vColor.rgb, alpha);
