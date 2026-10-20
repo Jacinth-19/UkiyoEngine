@@ -162,7 +162,9 @@ QWidget* HubWindow::buildRail() {
         mark->setPixmap(markPixmap.scaled(px, px, Qt::KeepAspectRatio, Qt::SmoothTransformation));
         mark->setFixedSize(px, px);
     }
-    brandRow->addWidget(mark, 0, Qt::AlignVCenter);
+    // Top-aligned to the wordmark's cap line, not centred on the three-line stack: the stamp belongs to UKIYO, and
+    // the sub-lines hang under it.
+    brandRow->addWidget(mark, 0, Qt::AlignTop);
 
     auto* titles = new QVBoxLayout;
     titles->setContentsMargins(0, 0, 0, 0);

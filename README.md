@@ -153,6 +153,11 @@ At 32 px and below the character inside the seal turns to mud, so the small size
 `ukiyo-mark-32.png` and `ukiyo-seal-32.png`. At 26 px, which is what the hub's rail draws, the block still reads as a
 stamp and is the one red accent in an otherwise indigo interface.
 
+![The mark at the sizes the program draws it](docs/brand/logo-sizes.png)
+
+*16 to 128 px. Below 40 px the ring's gap closes up, so the stamp carries the mark; the character inside the stamp is
+only drawn where it survives.*
+
 ### Type
 
 Two faces, and neither of them is a fallback:

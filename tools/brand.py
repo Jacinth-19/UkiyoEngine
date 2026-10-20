@@ -316,8 +316,14 @@ def size_strip():
     f = ImageFont.truetype(PLEX.format("Regular"), 13)
     x = 30
     for s in (16, 24, 32, 48, 64, 96, 128):
-        # Below 40 px the ring's gap closes up; the stamp carries the mark instead.
-        im = hanko(s, glyph="" if s <= 24 else "浮") if s <= 32 else mark_with_seal(s)
+        # Below 40 px the ring's gap closes up; the stamp carries the mark instead. The glyph is only drawn where it
+        # survives, which is the rule the hub follows at 26 px: a block of pigment, not a smudge of character.
+        if s <= 32:
+            im = hanko(s, glyph="浮" if s > 24 else "")
+        elif s < 128:
+            im = mark_with_seal(s, glyph="")
+        else:
+            im = mark_with_seal(s)
         img.paste(im, (x, 60 + (100 - s) // 2), im)
         d.text((x, 190), str(s), font=f, fill=(120, 132, 152))
         x += s + 34

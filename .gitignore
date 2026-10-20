@@ -8,3 +8,7 @@
 # Virtual geometry caches, written beside the model it belongs to
 *.vgeom
 *.vgeomset
+
+# Python bytecode from the tools in tools/
+__pycache__/
+*.pyc
