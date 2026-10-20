@@ -73,25 +73,15 @@ find_program(GLSLANG_VALIDATOR glslangValidator
 if(NOT GLSLANG_VALIDATOR)
   message(FATAL_ERROR "glslangValidator not found: install the Vulkan SDK, or glslang-tools on Debian")
 endif()
-# glslang is linked into the engine: GLSL -> SPIR-V at runtime (generated material shaders). The SDK's own directory
-# layout is the reliable place to look: VULKAN_SDK is not always exported to the process, while C:/VulkanSDK/<version>
-# always exists on Windows. Debian keeps glslang in libglslang-dev, which the default search path already finds.
+# glslang is linked into the engine: GLSL -> SPIR-V at runtime (generated material shaders).
+#
+# On Linux it is libglslang-dev and the default search finds it. On Windows the Vulkan SDK does ship a package, but its
+# SPIRV-Tools imported target is generated with the wrong install prefix — it points at
+# <sdk>/Lib/cmake/lib/SPIRV-Tools.lib, a file that does not exist — so including it fails inside the SDK's own file.
+# CI therefore installs glslang with vcpkg and puts that prefix on CMAKE_PREFIX_PATH (see .github/workflows/build.yml);
+# a developer on Windows does the same, or installs glslang themselves.
 find_package(glslang CONFIG QUIET HINTS "$ENV{VULKAN_SDK}/Lib/cmake" "$ENV{VULKAN_SDK}/lib/cmake")
 if(NOT glslang_FOUND)
-  # The Windows SDK nests the package two directories deeper than CMake's config search patterns reach
-  # (Lib/cmake/glslang/glslang/glslang-config.cmake) and does not put the SDK on CMAKE_PREFIX_PATH. Point glslang_DIR
-  # at the file that is actually there, and give the SDK's cmake root to the package's own dependencies, which live
-  # beside it (SPIRV-Tools, SPIRV-Headers).
-  file(GLOB UKIYO_GLSLANG_CONFIGS
-    "C:/VulkanSDK/*/Lib/cmake/glslang/glslang/glslang-config.cmake"
-    "$ENV{VULKAN_SDK}/Lib/cmake/glslang/glslang/glslang-config.cmake"
-    "$ENV{VULKAN_SDK}/lib/cmake/glslang/glslang-config.cmake")
-  if(UKIYO_GLSLANG_CONFIGS)
-    list(GET UKIYO_GLSLANG_CONFIGS 0 UKIYO_GLSLANG_CONFIG)
-    get_filename_component(glslang_DIR "${UKIYO_GLSLANG_CONFIG}" DIRECTORY)
-    list(APPEND CMAKE_PREFIX_PATH "$ENV{VULKAN_SDK}/Lib/cmake" "$ENV{VULKAN_SDK}/lib/cmake")
-    message(STATUS "glslang: using ${UKIYO_GLSLANG_CONFIG}")
-  endif()
   find_package(glslang CONFIG REQUIRED)
 endif()
 

@@ -215,6 +215,21 @@ jobs:
           }
           Write-Host "VULKAN_SDK=$env:VULKAN_SDK"
 
+      # glslang: the SDK's own CMake package is broken (its SPIRV-Tools target points at a lib path that does not
+      # exist), so the library comes from vcpkg, built static to match the rest of the link. The installed prefix is
+      # cached: on a hit this step is a no-op, on a miss it builds glslang and its two SPIR-V dependencies, which is
+      # the slowest thing in the job.
+      - name: Cache vcpkg packages
+        uses: actions/cache@v4
+        with:
+          path: C:\vcpkg\installed
+          key: vcpkg-glslang-${{ runner.os }}-1
+
+      - name: Install glslang
+        run: |
+          & C:\vcpkg\vcpkg.exe install glslang:x64-windows-static --clean-after-build
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
       # The SDK's location, in annotations rather than the job log: when a package is missing, the useful question is
       # "what is actually installed", and this answers it without downloading anything.
       - name: Where the Vulkan SDK is
@@ -240,7 +255,11 @@ jobs:
       # signed URL on a host this repository's tooling cannot always reach, and an annotation is readable from the API.
       - name: Configure CMake
         run: |
-          cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=Release 2>&1 | Tee-Object -FilePath configure.log
+          # CMAKE_PREFIX_PATH keeps whatever Qt set and adds the vcpkg prefix, so both packages are found and neither
+          # search path is lost.
+          cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=Release `
+            -DCMAKE_PREFIX_PATH="$env:CMAKE_PREFIX_PATH;C:/vcpkg/installed/x64-windows-static" `
+            2>&1 | Tee-Object -FilePath configure.log
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
       - name: Build Everything
