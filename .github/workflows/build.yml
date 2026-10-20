@@ -100,17 +100,22 @@ jobs:
         run: |
           mkdir -p docs/hub
           cp renders/hub_projects.png renders/hub_templates.png renders/hub_about.png docs/hub/
-          cp renders/splash.png renders/splash_mark.png docs/
+          # The captures get their own names: docs/splash.png is the artwork itself, which docs/index.html uses as a
+          # background, so the splash *screen* is a separate file.
+          cp renders/splash.png docs/splash-capture.png
+          cp renders/splash_mark.png docs/splash-mark.png
           git config user.name "ukiyo-ci"
           git config user.email "ci@ukiyo.invalid"
-          git add docs/hub
+          git add docs/hub docs/splash-capture.png docs/splash-mark.png
           if git diff --cached --quiet; then echo "no change"; exit 0; fi
           # actions/checkout leaves a detached HEAD, so there is no branch to push to: name the ref explicitly, and
-          # rebase first in case another push landed while this job was building.
+          # rebase first in case another push landed while this job was building. The fetch names the remote-tracking
+          # ref explicitly — a bare `git fetch origin <branch>` only writes FETCH_HEAD in a shallow checkout, and the
+          # rebase then has no upstream to use.
           branch="${GITHUB_REF_NAME}"
           git commit -m "Hub screenshots from CI [skip ci]"
           for attempt in 1 2 3; do
-            git fetch origin "$branch"
+            git fetch origin "+refs/heads/$branch:refs/remotes/origin/$branch"
             git rebase "origin/$branch" || { git rebase --abort; exit 1; }
             if git push origin "HEAD:$branch"; then exit 0; fi
             sleep 5
