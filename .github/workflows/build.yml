@@ -216,19 +216,21 @@ jobs:
           Write-Host "VULKAN_SDK=$env:VULKAN_SDK"
 
       # glslang: the SDK's own CMake package is broken (its SPIRV-Tools target points at a lib path that does not
-      # exist), so the library comes from vcpkg, built static to match the rest of the link. The installed prefix is
-      # cached: on a hit this step is a no-op, on a miss it builds glslang and its two SPIR-V dependencies, which is
-      # the slowest thing in the job.
+      # exist), so the library comes from vcpkg. The triplet is the dynamic-CRT one on purpose: Qt is built /MD and
+      # this build uses CMake's default /MD too, so a static-CRT glslang would fail the link with an
+      # RuntimeLibrary mismatch. Its DLLs go on PATH for every later step. The prefix is cached — on a hit this is a
+      # no-op, on a miss it builds glslang and its two SPIR-V dependencies, the slowest thing in the job.
       - name: Cache vcpkg packages
         uses: actions/cache@v4
         with:
           path: C:\vcpkg\installed
-          key: vcpkg-glslang-${{ runner.os }}-1
+          key: vcpkg-glslang-${{ runner.os }}-2
 
       - name: Install glslang
         run: |
-          & C:\vcpkg\vcpkg.exe install glslang:x64-windows-static --clean-after-build
+          & C:\vcpkg\vcpkg.exe install glslang:x64-windows --clean-after-build
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          "C:\vcpkg\installed\x64-windows\bin" | Out-File -FilePath $env:GITHUB_PATH -Append -Encoding utf8
 
       # The SDK's location, in annotations rather than the job log: when a package is missing, the useful question is
       # "what is actually installed", and this answers it without downloading anything.
@@ -258,7 +260,7 @@ jobs:
           # CMAKE_PREFIX_PATH keeps whatever Qt set and adds the vcpkg prefix, so both packages are found and neither
           # search path is lost.
           cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=Release `
-            -DCMAKE_PREFIX_PATH="$env:CMAKE_PREFIX_PATH;C:/vcpkg/installed/x64-windows-static" `
+            -DCMAKE_PREFIX_PATH="$env:CMAKE_PREFIX_PATH;C:/vcpkg/installed/x64-windows" `
             2>&1 | Tee-Object -FilePath configure.log
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
