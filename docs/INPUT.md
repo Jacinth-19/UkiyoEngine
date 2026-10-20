@@ -352,8 +352,10 @@ cmake --build build --target input_test
 ./build/input_test
 ```
 
-CI runs it on every push (`Run Input System Test` in `.github/workflows/build.yml`) on a machine with no GPU. The test
-is what makes the asset format safe to change: the round trip fails the build if a save stops reproducing its input.
+CI runs it on every push (`Run Input System Test` in `.github/workflows/build.yml`) on machines with no GPU, under GCC
+on Linux and under MSVC on Windows — the second one is what keeps the runtime honest about `<unistd.h>`, `/tmp` and
+every other POSIX assumption a single-platform CI would let through. The test is what makes the asset format safe to
+change: the round trip fails the build if a save stops reproducing its input.
 
 Three bugs it caught before the system shipped, each now covered:
 

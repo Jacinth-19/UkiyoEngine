@@ -240,7 +240,12 @@ About 59 000 lines of C++ and 56 shaders.
 
 ## Tests and CI
 
-Every push installs the dependencies, builds every target, and then runs:
+Two jobs run on every push. **Linux** installs the dependencies, builds every target and runs everything below;
+**Windows** builds the same tree with MSVC and Ninja and runs the seven portable tests, so a POSIX assumption or an
+`<unistd.h>` cannot sit in the engine unnoticed. Compilation goes through ccache on Linux and the Qt and vcpkg packages
+are cached on Windows, so a one-file change costs a recompile of that file and its dependents, not of the engine.
+
+Linux builds every target, and then runs:
 
 ```sh
 ./build/systems_test       # physics, Lua, world, navigation, water, LOD, terrain, grass, foliage
@@ -262,6 +267,10 @@ QT_QPA_PLATFORM=offscreen ./build/ukiyo_hub --splash-shots renders
 The renders are committed to `docs/` and uploaded as an artifact, so a graphics change can be looked at without a local
 GPU — the screenshots in this README are that pipeline's output. `tests/` also carries GPU regression programs
 (`lod_gpu_test`, `endfield_gpu_test`, `particles_gpu_test`, `water_render`) that run where there is a device.
+
+Windows takes its packages from two places: Qt from `install-qt-action` and glslang from vcpkg, because the Vulkan SDK's
+own glslang package is generated with a broken SPIRV-Tools path; everything else is vendored. The reasons are in
+`.github/workflows/build.yml` beside the steps that do it.
 
 ## Documentation
 
@@ -293,7 +302,7 @@ GPU — the screenshots in this README are that pipeline's output. `tests/` also
 
 ## Status
 
-The engine builds and tests on Linux CI, and the editor and hub run on Windows, Linux and macOS. Known gaps are listed
+The engine builds and tests on Linux and Windows CI, and the editor and hub run on Windows, Linux and macOS. Known gaps are listed
 at the end of each doc — the largest is GPU-driven virtual geometry, which needs compute or multi-draw in the RHI. The
 traced bounce light does not see creases narrower than 5 cm, and that has been measured rather than estimated: closing
 it changes 0.35 % of pixels in the reference and costs 17 % more march, which is why it is a documented trade

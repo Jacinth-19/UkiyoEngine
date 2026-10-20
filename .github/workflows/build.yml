@@ -260,18 +260,18 @@ jobs:
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           "C:\vcpkg\installed\x64-windows\bin" | Out-File -FilePath $env:GITHUB_PATH -Append -Encoding utf8
 
-      # The SDK's location, in annotations rather than the job log: when a package is missing, the useful question is
-      # "what is actually installed", and this answers it without downloading anything.
+      # What the image actually provides, in the log rather than in an annotation: when a package is missing, this is
+      # the question being asked, and it is answered without a second run. (During bring-up these lines were
+      # ::warning:: annotations, which is how the SDK's layout was found; a green build does not need them to shout.)
       - name: Where the Vulkan SDK is
         run: |
           Write-Host "VULKAN_SDK=$env:VULKAN_SDK"
-          Write-Host "::warning::VULKAN_SDK=$env:VULKAN_SDK"
           Get-ChildItem C:\VulkanSDK -Directory -ErrorAction SilentlyContinue |
-            ForEach-Object { Write-Host "::warning::sdk dir: $($_.FullName)" }
+            ForEach-Object { Write-Host "sdk dir: $($_.FullName)" }
           Get-ChildItem C:\VulkanSDK -Recurse -Filter "glslang*config.cmake" -ErrorAction SilentlyContinue |
-            Select-Object -First 5 | ForEach-Object { Write-Host "::warning::glslang config: $($_.FullName)" }
+            Select-Object -First 5 | ForEach-Object { Write-Host "glslang config: $($_.FullName)" }
           $v = Get-Command glslangValidator -ErrorAction SilentlyContinue
-          if ($v) { Write-Host "::warning::glslangValidator: $($v.Source)" } else { Write-Host "::warning::glslangValidator: not on PATH" }
+          if ($v) { Write-Host "glslangValidator: $($v.Source)" } else { Write-Host "glslangValidator: not on PATH" }
 
       # Ninja rather than the Visual Studio generator: it is the configuration MSVC developers actually use, it compiles
       # translation units in parallel by default, and it puts the binaries in one directory instead of per-config
