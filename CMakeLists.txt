@@ -78,11 +78,20 @@ endif()
 # always exists on Windows. Debian keeps glslang in libglslang-dev, which the default search path already finds.
 find_package(glslang CONFIG QUIET HINTS "$ENV{VULKAN_SDK}/Lib/cmake" "$ENV{VULKAN_SDK}/lib/cmake")
 if(NOT glslang_FOUND)
-  file(GLOB UKIYO_SDK_CMAKE_DIRS "C:/VulkanSDK/*/Lib/cmake" "$ENV{VULKAN_SDK}/Lib/cmake"
-       "$ENV{VULKAN_SDK}/lib/cmake")
-  find_package(glslang CONFIG QUIET PATHS ${UKIYO_SDK_CMAKE_DIRS})
-endif()
-if(NOT glslang_FOUND)
+  # The Windows SDK nests the package two directories deeper than CMake's config search patterns reach
+  # (Lib/cmake/glslang/glslang/glslang-config.cmake) and does not put the SDK on CMAKE_PREFIX_PATH. Point glslang_DIR
+  # at the file that is actually there, and give the SDK's cmake root to the package's own dependencies, which live
+  # beside it (SPIRV-Tools, SPIRV-Headers).
+  file(GLOB UKIYO_GLSLANG_CONFIGS
+    "C:/VulkanSDK/*/Lib/cmake/glslang/glslang/glslang-config.cmake"
+    "$ENV{VULKAN_SDK}/Lib/cmake/glslang/glslang/glslang-config.cmake"
+    "$ENV{VULKAN_SDK}/lib/cmake/glslang/glslang-config.cmake")
+  if(UKIYO_GLSLANG_CONFIGS)
+    list(GET UKIYO_GLSLANG_CONFIGS 0 UKIYO_GLSLANG_CONFIG)
+    get_filename_component(glslang_DIR "${UKIYO_GLSLANG_CONFIG}" DIRECTORY)
+    list(APPEND CMAKE_PREFIX_PATH "$ENV{VULKAN_SDK}/Lib/cmake" "$ENV{VULKAN_SDK}/lib/cmake")
+    message(STATUS "glslang: using ${UKIYO_GLSLANG_CONFIG}")
+  endif()
   find_package(glslang CONFIG REQUIRED)
 endif()
 
