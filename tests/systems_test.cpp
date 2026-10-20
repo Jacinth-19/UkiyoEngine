@@ -498,14 +498,12 @@ static void testWorldRebind() {
 
     // The capture runs on the world's own state, and the editor delivers a key the moment Qt sees it: the world's
     // update is what turns that into a capture. setKeyHeld updates the world itself, so the press is seen there.
-    int capturedCount = 0;
     std::string captured;
-    state.onRebindCapture = [&](const std::string& path) { captured = path; ++capturedCount; };
     state.onRebind = [&](const std::string& path) { captured = path; };
     state.startRebind(*gameplay, *jump, 0, true);
     check(state.rebinding(), "rebind: a capture starts on the live map");
     w.setKeyHeld("J", true);   // the editor's own path: a key event becomes a held control, then one update
-    check(captured == "<Keyboard>/j" && capturedCount == 1, "rebind: a press between updates is captured", captured);
+    check(captured == "<Keyboard>/j", "rebind: a press between updates is captured", captured);
     check(jump->bindings[0].path == "<Keyboard>/j", "rebind: the action reads J once the write lands");
     check(w.actionDown("Jump"), "rebind: a script sees the new key as held");
     w.setKeyHeld("J", false);
@@ -515,7 +513,6 @@ static void testWorldRebind() {
 
     // A capture that started after the key went down never sees an edge: that is the honest answer, and the editor's
     // dialog avoids it by starting the capture on the frame the row is armed, not after the press.
-    state.onRebindCapture = nullptr;
     state.onRebind = [&](const std::string& path) { captured = path; };
     captured.clear();
     w.setKeyHeld("H", true);
