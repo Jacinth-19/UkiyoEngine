@@ -45,7 +45,9 @@ static fs::path tempRoot() {
     // a project on another volume cannot be described by a relative path. Windows CI checks the engine out on D: and
     // keeps TEMP on C:, so a project in TEMP made every "the path is relative" check fail for a reason that has
     // nothing to do with the code under test. build/ is where a build already writes, and it is ignored by git.
-    const fs::path base = fs::path(UKIYO_ROOT) / "build" / "project_test";
+    // "test-projects", not "project_test": on Linux the executable itself is build/project_test, so a directory of
+    // that name cannot be created beside it.
+    const fs::path base = fs::path(UKIYO_ROOT) / "build" / "test-projects";
     std::error_code ec;
     fs::create_directories(base, ec);
     return base / ("case" + std::to_string(++counter));
