@@ -105,8 +105,12 @@ spreads, too wide and it turns the whole penumbra grey.
 | error | 0.2010 | 0.1740 | 0.1511 | 0.1314 | 0.1015 | 0.0794 | **0.0655** | 0.0698 | 0.0950 |
 
 `tests/pcss_test.cpp` runs the same header against a closed-form answer — the fraction of a disc whose ray clears a
-straight edge — rather than against another filter. 26 checks, 0 failures: the curve, the contact hardening, both
-formulas, the clamp, the off switch, the tap pattern. On a single gap at 0.5 m, mean error is **PCSS 0.0488, PCF 0.0712,
+straight edge — rather than against another filter. 30 checks, 0 failures: the curve, the contact hardening, both
+formulas, the clamp, the off switch, the tap pattern, and — separately — the shader's own algebra, which works in the
+shadow matrix's units rather than in metres. That last section builds the orthographic matrix the renderer builds,
+derives `uvPerMetre` and `zPerMetre` from its rows exactly as `pcssShadow` does, and runs the shader's arithmetic
+against the header's on the same map: if the GPU's scale factor were wrong, no test of the header would notice, and
+every penumbra in the engine would be wrong by that factor. On a single gap at 0.5 m, mean error is **PCSS 0.0488, PCF 0.0712,
 hard 0.0522**; across three gaps that share one filter, **PCSS 0.0526 against PCF 0.1522**, because one radius cannot
 be right for 0.25 m and 1.0 m at the same time. That spread, not the single-scene mean, is the argument for the
 technique.

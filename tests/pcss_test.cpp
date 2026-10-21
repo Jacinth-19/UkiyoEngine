@@ -14,6 +14,8 @@
 
 #include "engine/pcss.h"
 
+#include <glm/gtc/matrix_transform.hpp>
+
 #include <algorithm>
 #include <cmath>
 #include <cstdio>
@@ -263,6 +265,92 @@ int main() {
         checkTrue(inside, "7a: every tap is inside the disc");
         checkTrue(distinct, "7b: no two taps coincide");
         checkTrue(vogelTap(5, 24) == vogelTap(5, 24), "7c: the taps are a fixed pattern");
+    }
+
+    // 8. The shader's algebra. shaders/shadow_sample.glsl works in the shadow matrix's own units -- uv and z -- and
+    //    derives both of its scales from the cascade's matrix rows, because a cascade's box changes size with the
+    //    camera. A wrong factor there would widen or narrow every penumbra on the GPU, and no test of the header would
+    //    notice: this checks the derivation against a matrix built the way the renderer builds one, then runs the
+    //    shader's arithmetic against the header's on the same map.
+    {
+        // fitCascade's box: an orthographic projection over a 2R square, near 0.01, far 4R, with the light this far
+        // back from the centre.
+        const float radius = 4.0f;
+        const glm::vec3 lightDir = glm::normalize(glm::vec3(0.0f, 0.0f, -1.0f));   // the direction light travels
+        const glm::vec3 towards = -lightDir;
+        const glm::vec3 up(0.0f, 1.0f, 0.0f);
+        const glm::mat4 view = glm::lookAtRH(towards * radius * 2.0f, glm::vec3(0.0f), up);
+        const glm::mat4 proj = glm::orthoRH_ZO(-radius, radius, -radius, radius, 0.01f, radius * 4.0f);
+        const glm::mat4 M = proj * view;
+
+        // The scale the shader reads, and the one the matrix actually has: uv spans 0.5 of the atlas across W metres,
+        // and clip x spans [-1, 1] across the same W, so uv per metre is |row 0| / 4.
+        const float uvPerMetre = 0.25f * glm::length(glm::vec3(M[0]));
+        const float zPerMetre = std::fabs(M[2][2]);
+        const glm::vec3 right = glm::normalize(glm::cross(towards, up));
+        const glm::vec3 p0(0.37f, -0.21f, 0.0f);
+        auto clip = [&](const glm::vec3& p) { const glm::vec4 c = M * glm::vec4(p, 1.0f); return glm::vec3(c) / c.w; };
+        const glm::vec3 a = clip(p0), b = clip(p0 + right), c = clip(p0 + towards);
+        checkNear(std::fabs(b.x - a.x) * 0.25f, uvPerMetre, 1e-5f,
+                  "8a: a metre across the light's plane is |row 0| / 4 of atlas uv");
+        checkNear(std::fabs(c.z - a.z), zPerMetre, 1e-6f, "8b: a metre towards the light is |row 2| of shadow z");
+        checkNear(uvPerMetre * (2.0f * radius) * 2.0f, 1.0f, 1e-4f,
+                  "8c: and the whole cascade lands on half the atlas");
+
+        // The shader's arithmetic, in z units, on the map section 1 already measured: the same blocker, receiver and
+        // sun, the same 16 and 32 taps, the same Vogel spiral.
+        constexpr float kNear = 0.01f, kFar = 16.0f;
+        const float zPerMetreScene = 1.0f / (kFar - kNear);
+        auto toZ = [&](float metres) { return (metres - kNear) * zPerMetreScene; };
+
+        EdgeMap map;
+        map.size = 512;
+        map.halfWidth = 4.0f;
+        map.blockerDistance = 1.0f;
+        map.receiverDistance = 2.0f;
+        map.build();
+
+        PcssParams p;
+        p.mode = 2;
+        p.sunTanRadius = 0.05f;
+        p.searchRadius = 0.3f;
+        p.blockerSamples = 16;
+        p.pcfSamples = 32;
+        p.receiverSlope = 0.0f;
+
+        // `facing` is the shader's sqrt(1 - (N.L)^2): 1 for a surface turned towards the sun, 0 edge-on. The header
+        // carries the complement, receiverSlope, so a facing receiver is receiverSlope 0 and facing 1.
+        auto shaderVisibility = [&](float x, float facing) {
+            const float scale = map.uvPerMetre() * std::max(facing, 1e-3f);
+            const float zReceiver = toZ(map.receiverDistance);
+            const float search = p.searchRadius * scale;
+            float blocker = 0.0f;
+            int found = 0;
+            for (int i = 0; i < 16; ++i) {
+                const glm::vec2 off = vogelTap(i, 16) * search;
+                const float d = mapDepth(&map, glm::vec2(map.uvForX(x) + off.x, 0.5f + off.y));
+                const float slack = 0.0008f + facing * (glm::length(off) / scale) * zPerMetreScene;
+                if (d > 0.0f && toZ(d) < zReceiver - slack) {
+                    blocker += toZ(d);
+                    ++found;
+                }
+            }
+            if (found == 0) return 1.0f;
+            const float gap = std::max(zReceiver - blocker / float(found), 0.0f) / zPerMetreScene;
+            const float width = std::min(2.0f * p.sunTanRadius * gap, p.maxPenumbra) * scale;
+            int lit = 0;
+            for (int i = 0; i < 32; ++i) {
+                const glm::vec2 off = vogelTap(i, 32) * width;
+                const float d = mapDepth(&map, glm::vec2(map.uvForX(x) + off.x, 0.5f + off.y));
+                const float slack = 0.0008f + facing * (glm::length(off) / scale) * zPerMetreScene;
+                if (d <= 0.0f || toZ(d) >= zReceiver - slack) ++lit;
+            }
+            return float(lit) / 32.0f;
+        };
+        float worst = 0.0f;
+        for (float x = -0.5f; x <= 0.5f; x += 0.05f)
+            worst = std::max(worst, std::fabs(shaderVisibility(x, 1.0f) - visibilityAt(map, x, p)));
+        checkLess(worst, 1e-4f, "8d: the shader's z-space arithmetic gives the header's answer");
     }
 
     std::printf("pcss: %d checks, %d failure(s)\n", gChecks, gFailures);
