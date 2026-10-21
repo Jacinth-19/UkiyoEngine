@@ -223,9 +223,17 @@ void* allocate(size_t size) {
 void note(const char* what, size_t size, const void* where, bool fatal) {
     if (fatal) ++failures;   // a run that damaged its own heap is not a passing run, however it ends
     if (reported >= 8) return;
-    char line[288];
-    std::snprintf(line, sizeof line, "CRASH %s at check %d, section '%s': block of %zu bytes at %p", what, checks,
-                  lastSection, size, where);
+    char place[288] = "";
+#ifdef _WIN32
+    // A pointer that is not a block is worth naming: module+offset says whether it is code, a string literal, or a heap
+    // address that is merely off by a header -- and the linker map turns the offset into a function.
+    char described[192];
+    describeAddress(described, sizeof described, const_cast<void*>(where));
+    std::snprintf(place, sizeof place, " (%s)", described);
+#endif
+    char line[512];
+    std::snprintf(line, sizeof line, "CRASH %s at check %d, section '%s': block of %zu bytes at %p%s", what, checks,
+                  lastSection, size, where, place);
     std::printf("%s\n", line);
     if (traceLog) {
         traceLog << line << "\n";

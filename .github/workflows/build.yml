@@ -587,39 +587,59 @@ jobs:
               # small, so script_test's diagnosis goes to a file that the step after this one announces.
               if ($t -eq "script_test") {
                 # The diagnosis file is announced by a step that can only print ten lines, so the lines that decide what
-                # to do next are written first: which check kills the run, then why.
+                # to do next are written first: which check kills the run, then why, then where.
                 #
-                # One section at a time, a fresh process per check count: the first count that dies is the check the run
-                # cannot survive, and the trace line before it names the check.
-                foreach ($s in @("sandbox", "errors", "require", "runtime", "project files")) {
-                  $first = 0
-                  for ($n = 1; $n -le 45; $n++) {
-                    $probeLog = "$PWD\script_test.probe.log"
-                    $env:UKIYO_TEST_LOG = $probeLog
-                    & "./build/script_test.exe" --trace --only $s --max $n | Out-Null
-                    $probeCode = $LASTEXITCODE
-                    if ($probeCode -ne 0) {
-                      $last = @()
-                      if (Test-Path $probeLog) {
-                        $last = Get-Content $probeLog | Select-String -Pattern "^PASS|^CRASH" | Select-Object -Last 1
-                      }
-                      Add-Content windows-diagnosis.txt "bisect $s dies at check $n (exit $probeCode), after: $($last -join '')"
-                      $first = $n
-                      break
-                    }
-                    if ((Test-Path $probeLog) -and ((Get-Content $probeLog -Tail 1) -like "END*")) { break }
+                # An address in this binary, resolved against the map the linker wrote.
+                function Resolve-UkiyoOffset([string]$hexOffset) {
+                  if (-not (Test-Path "build/script_test.map")) { return "" }
+                  $rva = [Convert]::ToUInt64($hexOffset, 16)
+                  $best = ""
+                  $bestAt = [Convert]::ToUInt64("0", 16)
+                  $base = [Convert]::ToUInt64("0000000140000000", 16)
+                  foreach ($mapLine in Get-Content "build/script_test.map") {
+                    $load = [regex]::Match($mapLine, "Preferred load address is ([0-9a-fA-F]+)")
+                    if ($load.Success) { $base = [Convert]::ToUInt64($load.Groups[1].Value, 16); continue }
+                    $m = [regex]::Match($mapLine, "^\s+[0-9a-f]{4}:[0-9a-f]{8}\s+(\S+)\s+([0-9a-fA-F]{16})")
+                    if (-not $m.Success) { continue }
+                    $at = [Convert]::ToUInt64($m.Groups[2].Value, 16)
+                    if ($at -le ($base + $rva) -and $at -gt $bestAt) { $bestAt = $at; $best = $m.Groups[1].Value }
                   }
-                  if ($first -eq 0) { Add-Content windows-diagnosis.txt "bisect $s survives every prefix" }
+                  if ($best) { return "$best + 0x$('{0:x}' -f (($base + $rva) - $bestAt))" }
+                  return ""
                 }
+                # Which check damages the heap? The whole test, one fresh process per check count, stopping after each
+                # count in turn: the first count the test cannot survive is the check that does it.
+                $first = 0
+                for ($n = 1; $n -le 120; $n++) {
+                  $probeLog = "$PWD\script_test.probe.log"
+                  $env:UKIYO_TEST_LOG = $probeLog
+                  & "./build/script_test.exe" --trace --max $n | Out-Null
+                  $probeCode = $LASTEXITCODE
+                  if ($probeCode -ne 0) {
+                    $last = @()
+                    if (Test-Path $probeLog) {
+                      $last = Get-Content $probeLog | Select-String -Pattern "^PASS|^CRASH " | Select-Object -Last 1
+                    }
+                    Add-Content windows-diagnosis.txt "bisect: dies at check $n (exit $probeCode), after: $($last -join '')"
+                    $first = $n
+                    break
+                  }
+                  if ((Test-Path $probeLog) -and ((Get-Content $probeLog -Tail 1) -like "END*")) { break }
+                }
+                if ($first -eq 0) { Add-Content windows-diagnosis.txt "bisect: survives every prefix" }
                 $env:UKIYO_TEST_LOG = $traceLog
-                # Why: the harness's own line names the exception and the faulting module, and the lines before it name
-                # the check that was running.
+                # The harness's own lines: a broken canary, a double free, a pointer that is not a block, or the
+                # exception that killed it.
                 $trace = @()
                 if (Test-Path $traceLog) { $trace = @(Get-Content $traceLog) }
-                # The harness's own lines: a broken canary, a double free, or the exception that killed it.
-                $crashLines = @($trace | Select-String -Pattern "^CRASH " | Select-Object -First 3)
+                $crashLines = @($trace | Select-String -Pattern "^CRASH " | Select-Object -First 2)
                 if ($crashLines.Count -gt 0) {
                   $crashLines | ForEach-Object { Add-Content windows-diagnosis.txt "crash: $($_.Line)" }
+                  $hex = [regex]::Match($crashLines[0].Line, "script_test\.exe\+0x([0-9a-f]+)")
+                  if ($hex.Success) {
+                    $symbol = Resolve-UkiyoOffset $hex.Groups[1].Value
+                    if ($symbol) { Add-Content windows-diagnosis.txt "symbol: $symbol" }
+                  }
                 } elseif ($trace.Count -gt 0) {
                   Add-Content windows-diagnosis.txt "trace: no CRASH line; last was: $($trace[-1])"
                 }
@@ -651,8 +671,6 @@ jobs:
                     break
                   }
                   if (-not $found) { Add-Content windows-diagnosis.txt "dump: $($dump.Name), no exception stream" }
-                } else {
-                  Add-Content windows-diagnosis.txt "dump: none written"
                 }
                 Add-Content windows-diagnosis.txt "script_test exit code $code"
                 # The frames go to the artifact, where there is room for them.
