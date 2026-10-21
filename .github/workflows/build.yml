@@ -586,30 +586,13 @@ jobs:
               # Annotations are the only part of this log a restricted client can read, and a step's budget for them is
               # small, so script_test's diagnosis goes to a file that the step after this one announces.
               if ($t -eq "script_test") {
-                Add-Content windows-diagnosis.txt "script_test exit code $code"
-                # The crash block: the reason, the faulting address, and the frames above it. A trace line that starts
-                # with CRASH is the harness saying why; the lines before it name the check that was running.
-                if (Test-Path $traceLog) {
-                  $trace = @(Get-Content $traceLog)
-                  # The first CRASH line of the last block: the ones after it are the frames it wrote.
-                  $at = -1
-                  for ($i = 0; $i -lt $trace.Count; $i++) {
-                    if ($trace[$i] -like "CRASH*" -and ($i -eq 0 -or $trace[$i - 1] -notlike "CRASH*")) { $at = $i }
-                  }
-                  if ($at -ge 0) {
-                    $to = [Math]::Min($trace.Count - 1, $at + 7)
-                    for ($i = [Math]::Max(0, $at - 1); $i -le $to; $i++) {
-                      Add-Content windows-diagnosis.txt "trace: $($trace[$i])"
-                    }
-                  } else {
-                    Add-Content windows-diagnosis.txt "trace: no CRASH line; last was: $($trace[-1])"
-                  }
-                }
-                # Which check damages the heap? One section at a time, a fresh process per check count: the first count
-                # that dies is the check the run cannot survive, and the trace line before it names the check.
+                # The diagnosis file is announced by a step that can only print ten lines, so the lines that decide what
+                # to do next are written first: which check kills the run, then why.
+                #
+                # One section at a time, a fresh process per check count: the first count that dies is the check the run
+                # cannot survive, and the trace line before it names the check.
                 foreach ($s in @("sandbox", "errors", "require", "runtime", "project files")) {
                   $first = 0
-                  $n = 0
                   for ($n = 1; $n -le 45; $n++) {
                     $probeLog = "$PWD\script_test.probe.log"
                     $env:UKIYO_TEST_LOG = $probeLog
@@ -618,9 +601,9 @@ jobs:
                     if ($probeCode -ne 0) {
                       $last = @()
                       if (Test-Path $probeLog) {
-                        $last = Get-Content $probeLog | Select-String -Pattern "^PASS|^CRASH" | Select-Object -Last 2
+                        $last = Get-Content $probeLog | Select-String -Pattern "^PASS|^CRASH" | Select-Object -Last 1
                       }
-                      Add-Content windows-diagnosis.txt "bisect $s dies at check $n (exit $probeCode): $($last -join ' | ')"
+                      Add-Content windows-diagnosis.txt "bisect $s dies at check $n (exit $probeCode), after: $($last -join '')"
                       $first = $n
                       break
                     }
@@ -629,6 +612,16 @@ jobs:
                   if ($first -eq 0) { Add-Content windows-diagnosis.txt "bisect $s survives every prefix" }
                 }
                 $env:UKIYO_TEST_LOG = $traceLog
+                # Why: the harness's own line names the exception and the faulting module, and the lines before it name
+                # the check that was running.
+                $trace = @()
+                if (Test-Path $traceLog) { $trace = @(Get-Content $traceLog) }
+                $crash = $trace | Select-String -Pattern "^CRASH exception" | Select-Object -Last 1
+                if ($crash) {
+                  Add-Content windows-diagnosis.txt "trace: $($crash.Line)"
+                } elseif ($trace.Count -gt 0) {
+                  Add-Content windows-diagnosis.txt "trace: no CRASH line; last was: $($trace[-1])"
+                }
                 # A dump is the only thing a fast-fail leaves that names its own reason: the exception record carries
                 # the fast-fail code in its first parameter -- a stack cookie, an invalid argument, a bad longjmp.
                 $dump = Get-ChildItem "dumps" -Filter *.dmp -ErrorAction SilentlyContinue |
@@ -660,6 +653,12 @@ jobs:
                 } else {
                   Add-Content windows-diagnosis.txt "dump: none written"
                 }
+                Add-Content windows-diagnosis.txt "script_test exit code $code"
+                # The frames go to the artifact, where there is room for them.
+                if ($trace.Count -gt 0) {
+                  $trace | Select-String -Pattern "^CRASH frame" | Select-Object -First 20 |
+                    ForEach-Object { Add-Content windows-diagnosis.txt "frame: $($_.Line)" }
+                }
               } else {
                 # The failing assertions first, then the summary line, then the tail: a test can print hundreds of PASS
                 # lines, and the interesting ones are never the last.
@@ -683,7 +682,7 @@ jobs:
         if: always()
         run: |
           if (Test-Path windows-diagnosis.txt) {
-            Get-Content windows-diagnosis.txt | Select-Object -First 18 | ForEach-Object { Write-Host "::error::$_" }
+            Get-Content windows-diagnosis.txt | Select-Object -First 9 | ForEach-Object { Write-Host "::error::$_" }
           }
 
       # The player, booting the fixture project with no window and no device (docs/PLAYER.md).
