@@ -568,7 +568,9 @@ jobs:
               if ($fails) { $fails | ForEach-Object { Write-Host "::error::  $($_.Line)" } }
               $summary = $out | Select-String -Pattern "passed|failed|checks" | Select-Object -Last 2
               if ($summary) { $summary | ForEach-Object { Write-Host "::error::  $($_.Line)" } }
-              $out | Select-Object -Last 4 | ForEach-Object { Write-Host "::error::  $_" }
+              # The tail is what says where a process died: the test prints its section before running it, so a crash
+              # leaves the section it was in as the last line it wrote. Four lines was not enough to see that.
+              $out | Select-Object -Last 12 | ForEach-Object { Write-Host "::error::  $_" }
               $failed += $t
             }
           }

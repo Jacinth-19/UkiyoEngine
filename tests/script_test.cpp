@@ -11,6 +11,7 @@
 #include <algorithm>
 #include <cmath>
 #include <cstdio>
+#include <exception>
 #include <filesystem>
 #include <fstream>
 #include <set>
@@ -36,6 +37,14 @@ static void check(bool ok, const std::string& what, const std::string& detail = 
     std::printf("FAIL  %s", what.c_str());
     if (!detail.empty()) std::printf("  -- %s", detail.c_str());
     std::printf("\n");
+    std::fflush(stdout);
+}
+
+// Printed before each section and flushed, so a crash in CI still says where it happened: a redirected stdout is
+// block-buffered, and a crashing process never flushes it.
+static void section(const char* name) {
+    std::printf("== %s\n", name);
+    std::fflush(stdout);
 }
 
 static fs::path testRoot() {
@@ -359,14 +368,27 @@ static void testProjectFiles() {
 }
 
 int main() {
-    makeTree();
-    testSandbox();
-    testErrors();
-    testRequire();
-    testRuntime();
-    testProjectFiles();
+    try {
+        section("sandbox");
+        testSandbox();
+        section("errors");
+        testErrors();
+        section("require");
+        testRequire();
+        section("runtime");
+        testRuntime();
+        section("project files");
+        testProjectFiles();
+    } catch (const std::exception& e) {
+        // An exception in the test is a failure of the test, not a crash the next reader has to decode from an exit
+        // code: say which one and exit cleanly.
+        std::printf("FAIL  the test threw: %s\n", e.what());
+        std::fflush(stdout);
+        ++failures;
+    }
     std::error_code ec;
     fs::remove_all(testRoot(), ec);
     std::printf("script: %d checks, %d failure(s)\n", checks, failures);
+    std::fflush(stdout);
     return failures == 0 ? 0 : 1;
 }
