@@ -6,6 +6,20 @@
 
 namespace ukiyo {
 
+// What the shader sees per scene light. Four vec4s: xyz position, w radius; xyz direction, w cos(outer half-angle);
+// rgb colour, w intensity; x type (0 directional, 1 point, 2 spot), y cos(inner half-angle).
+struct GpuLight {
+    glm::vec4 posRadius{0.0f};
+    glm::vec4 dirCosOuter{0.0f};
+    glm::vec4 colorIntensity{0.0f};
+    glm::vec4 params{0.0f};
+};
+static_assert(sizeof(GpuLight) == 64, "GpuLight crosses the C++/GLSL boundary as four vec4s");
+
+// Scene lights in one frame block. The sun is separate (it needs the cascade matrices), so these are point and spot
+// lights only; anything more is dropped by the selection in lights.h.
+constexpr int kFrameLights = 8;
+
 struct FrameUBO {                 // set 0, binding 0 (frame.glsl)
     glm::mat4 view;
     glm::mat4 proj;
@@ -20,8 +34,10 @@ struct FrameUBO {                 // set 0, binding 0 (frame.glsl)
     glm::vec4 cascadeSplits;
     glm::vec4 shadowParams;
     glm::vec4 screenParams;
-    glm::vec4 pointPos[4];
+    glm::vec4 pointPos[4];     // the two stylistic fills a scene without lights gets, as before
     glm::vec4 pointColor[4];
+    glm::vec4 lightParams;     // x = scene light count (0 = use the fills), y = 1 when the sun comes from a scene light
+    GpuLight lights[kFrameLights];
     glm::vec4 toonA;     // RealToon: x hair highlight, y hair shift, z hair exponent, w self shadow on
     glm::vec4 toonB;     // RealToon: x self threshold, y self hardness, z gloss, w gloss power
     glm::vec4 toonC;     // x cel band on (1 = three-step ramp in mtoon; 0 = off), y normal map strength, z material outline noise, w reflection strength

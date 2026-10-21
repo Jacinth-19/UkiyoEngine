@@ -553,6 +553,14 @@ Entry build(const QFileInfo& info) {
         e.icon = materialIcon("view_in_ar", iconColor(), kIconPx);
         e.details << "Format: UKPREFAB (JSON)";
         applyLiveRender(info, e);   // a render of the prefab's first model replaces the placeholder
+    } else if (suffix == "inputactions") {
+        // An input asset is a first-class kind in this engine, so it gets a picture like the others instead of the
+        // generic document. The audit sheet checks that every asset kind has one.
+        e.kind = QStringLiteral("Input Actions");
+        const QIcon ic = materialIcon("keyboard", iconColor(), kIconPx);
+        e.icon = ic;
+        e.preview = ic.pixmap(QSize(kPreviewPx / 2, kPreviewPx / 2)).toImage();
+        e.details << "Format: INPUTACTIONS (JSON)";
     } else if (suffix == "ukscene") {
         e.kind = QStringLiteral("Ukiyo scene");
         e.preview = sceneThumbnail();

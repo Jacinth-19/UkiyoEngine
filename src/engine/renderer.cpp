@@ -241,6 +241,10 @@ void Renderer::buildPipelines() {
                         rhi::Blend::Alpha, {F::RGBA16F}, false);
 }
 
+void Renderer::setSceneLights(std::vector<SceneLight> lights) {
+    sceneLights_ = std::move(lights);
+}
+
 void Renderer::setWater(const WaterVolume* volume) {
     if (!volume) {
         water_.reset();
@@ -643,19 +647,48 @@ void Renderer::render(const OrbitCamera& cam, const std::vector<Model*>& models,
     vgView.viewProj = viewProjUnjittered;
     vgView.eye = eye;
     vgView.pixelScale = 0.5f * float(intH_) * projUnjittered[1][1];
-    f.sunDir = glm::vec4(L, 0.0f);
-    f.sunColor = glm::vec4(glm::vec3(1.0f, 0.95f, 0.88f) * s.sunIntensity, 1.0f);
+    // The key light. A scene that authors a directional light turns it into the sun: its direction, colour and
+    // intensity replace the built-in one, so a key light in the Inspector is the light that casts the cascades.
+    glm::vec3 sunDir = L;
+    glm::vec3 sunColor = glm::vec3(1.0f, 0.95f, 0.88f) * s.sunIntensity;
+    lastKeyFromScene_ = false;
+    for (const SceneLight& sl : sceneLights_) {
+        if (!sl.enabled || sl.type != LightType::Directional) continue;
+        const float len = glm::length(sl.direction);
+        if (len < 1e-5f) continue;
+        sunDir = -sl.direction / len;   // authored as the direction it shines, used as the direction towards it
+        sunColor = sl.color * sl.intensity;
+        lastKeyFromScene_ = true;
+        break;
+    }
+    const glm::vec3 Lsun = sunDir;
+    f.sunDir = glm::vec4(Lsun, 0.0f);
+    f.sunColor = glm::vec4(sunColor, 1.0f);
     f.skyColor = glm::vec4(0.62f, 0.72f, 0.92f, 1.0f) * 0.9f;
     f.groundColor = glm::vec4(0.50f, 0.45f, 0.48f, 1.0f);
 
     // Cascade ranges: [near, 8], [8, 25], [25, 80].
     const float ranges[4] = {cam.nearZ, kSplits[0], kSplits[1], kSplits[2]};
-    for (int c = 0; c < 3; ++c) f.shadowMatrix[c] = fitCascade(cam, aspect, ranges[c], ranges[c + 1], L);
+    for (int c = 0; c < 3; ++c) f.shadowMatrix[c] = fitCascade(cam, aspect, ranges[c], ranges[c + 1], Lsun);
     f.cascadeSplits = glm::vec4(kSplits[0], kSplits[1], kSplits[2], 0.0f);
     f.shadowParams = glm::vec4(s.shadows ? 1.0f : 0.0f, 1.0f / float(kShadowAtlas), 0.02f, 0.0008f);
     f.screenParams = glm::vec4(float(intW_), float(intH_), time, float(frameIndex));
 
-    // Two soft coloured point lights for the anime rim/fill look.
+    // Scene lights: rank the point and spot lights against the camera's focus and pack the best ones. A camera looking
+    // at a lantern gets the lantern, not the two lights furthest away. Directional lights were taken above.
+    {
+        std::vector<SceneLight> local;
+        local.reserve(sceneLights_.size());
+        for (const SceneLight& sl : sceneLights_)
+            if (sl.type != LightType::Directional) local.push_back(sl);
+        const glm::vec3 focus = cam.target;
+        const glm::vec3 forward = cam.eye() - cam.target;   // the direction the camera looks
+        lastSceneLightCount_ = packSceneLights(local, focus, glm::length(forward) > 1e-5f ? glm::normalize(forward)
+                                                                                         : glm::vec3(0, 0, -1),
+                                               kFrameLights, f.lights);
+        f.lightParams = glm::vec4(float(lastSceneLightCount_), lastKeyFromScene_ ? 1.0f : 0.0f, 0.0f, 0.0f);
+    }
+    // Two soft coloured point lights for the anime rim/fill look, used only by a scene that authors no lights.
     f.pointPos[0] = glm::vec4(1.4f, 1.6f, 1.2f, 3.0f);
     f.toonA = glm::vec4(s.hairHighlight, s.hairShift, s.hairExponent, s.selfShadow ? 1.0f : 0.0f);
     f.toonB = glm::vec4(s.selfThreshold, s.selfHardness, s.gloss, s.glossPower);

@@ -17,6 +17,7 @@
 #include "engine/gpu_types.h"
 #include "engine/hud.h"
 #include "engine/graph_material.h"
+#include "engine/lights.h"
 #include "engine/model.h"
 #include "engine/trail.h"
 #include "engine/trail_renderer.h"
@@ -275,6 +276,15 @@ public:
 
     // Sets the water volume drawn by render() (item 16). Pass nullptr to remove it. The renderer keeps a copy.
     void setWater(const WaterVolume* volume);
+    // The scene's lights (item 6). Every enabled point and spot light is ranked against the camera each frame and the
+    // best kFrameLights are packed into the frame block; directional lights become the key light. An empty list means
+    // "no authored lights", and the frame keeps the two stylistic fills it has always had, so old scenes do not change.
+    void setSceneLights(std::vector<SceneLight> lights);
+    const std::vector<SceneLight>& sceneLights() const { return sceneLights_; }
+    // How many scene lights the last frame actually shaded with, and whether a directional scene light took over the
+    // key. Both zero/false on a scene with no authored lights.
+    int lastSceneLightCount() const { return lastSceneLightCount_; }
+    bool lastKeyLightFromScene() const { return lastKeyFromScene_; }
     // The terrain chunks to draw this frame (item 18). The buffers belong to the terrain instances, so pass the list
     // again every frame.
     void setTerrain(const std::vector<TerrainDraw>& chunks) { terrain_ = chunks; }
@@ -367,6 +377,9 @@ private:
 
     // Water (item 16). The grid is a fixed 128 x 128 rest grid over [0,1]^2, displaced in water.vert.
     std::optional<WaterVolume> water_;
+    std::vector<SceneLight> sceneLights_;
+    int lastSceneLightCount_ = 0;
+    bool lastKeyFromScene_ = false;
     std::unique_ptr<rhi::Buffer> waterVb_, waterIb_;
     std::unique_ptr<rhi::Buffer> contactUbo_;   // 16 bytes: the effects pass's contact-shadow parameters (Post binding 7)
     uint32_t waterIndexCount_ = 0;

@@ -35,16 +35,10 @@ struct SceneLight {
     bool enabled = true;
 };
 
-// What the shader sees per light. Four vec4s, std140-aligned.
-struct GpuLight {
-    glm::vec4 posRadius;      // xyz position, w radius
-    glm::vec4 dirCosOuter;    // xyz direction (point/spot), w cos(outer half-angle)
-    glm::vec4 colorIntensity; // rgb colour, w intensity
-    glm::vec4 params;         // x type (0 dir, 1 point, 2 spot), y cos(inner half-angle), z reserved, w reserved
-};
-static_assert(sizeof(GpuLight) == 64, "GpuLight crosses the C++/GLSL boundary as four vec4s");
+// GpuLight is defined in gpu_types.h, next to the frame block that carries them.
+static_assert(kFrameLights <= 16, "the frame block has room for the selected lights");
 
-// How many lights the frame block carries. The sun is separate, so this is in addition to it.
+// How many lights a scene may author. The frame block carries kFrameLights of them; the rest are ranked out.
 constexpr int kMaxSceneLights = 16;
 
 // Distance from the focus point at which a light's score reaches zero, used to drop lights that cannot contribute.

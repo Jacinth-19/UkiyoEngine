@@ -10694,12 +10694,17 @@ int MainWindow::runSelfTest() {
         small.setPointSize(7);
         p.setFont(small);
         int missing = 0;
+        QStringList withoutPreview;
         for (int i = 0; i < files.size(); ++i) {
             const int x = pad + (i % cols) * (cell + pad);
             const int y = pad + (i / cols) * (cell + labelH + pad);
             const QImage im = assets::previewImage(files[i]);
-            if (im.isNull()) ++missing;
-            else p.drawImage(QRect(x, y, cell, cell), im);
+            if (im.isNull()) {
+                ++missing;
+                withoutPreview << QFileInfo(files[i]).fileName();
+            } else {
+                p.drawImage(QRect(x, y, cell, cell), im);
+            }
             p.drawText(QRect(x - 4, y + cell + 2, cell + 8, labelH), Qt::AlignHCenter | Qt::AlignTop,
                        QFileInfo(files[i]).fileName());
         }
@@ -10707,7 +10712,13 @@ int MainWindow::runSelfTest() {
         const QString sheetPath = projectRoot_ + QStringLiteral("/renders/icon_audit.png");
         const bool saved = sheet.save(sheetPath);
         check(saved && missing == 0, "icon audit sheet written with a preview for every asset",
-              QString("%1 files, %2 without preview, sheet %3").arg(files.size()).arg(missing).arg(sheetPath));
+              QString("%1 files, %2 without preview, sheet %3%4")
+                  .arg(files.size())
+                  .arg(missing)
+                  .arg(sheetPath)
+                  .arg(withoutPreview.isEmpty() ? QString()
+                                                : QStringLiteral("; no picture for: ") +
+                                                      withoutPreview.join(QStringLiteral(", "))));
     }
 
     // --- 15. Anime grading: LUT path, white balance, tints, tonemapper comparison ----------
@@ -12712,10 +12723,11 @@ int MainWindow::runSelfTest() {
             if (terrain.value(QStringLiteral("heightmap")).toString().endsWith(QStringLiteral(".u16")))
                 grassBlock = terrain.value(QStringLiteral("grass")).toObject();
         }
+        const QString grassDetail = QString::fromUtf8(QJsonDocument(grassBlock).toJson(QJsonDocument::Compact));
         check(grassBlock.value(QStringLiteral("enabled")).toBool(false) &&
                   std::fabs(grassBlock.value(QStringLiteral("density")).toDouble() - 0.9) < 1e-4 &&
                   grassBlock.value(QStringLiteral("includeLayers")).toArray().size() == 1,
-              "grass: the scene document holds the scatter, the bands and the layer mask");
+              "grass: the scene document holds the scatter, the bands and the layer mask", grassDetail);
         runOnWorker([&] {
             restoredOk = worker_->setInstanceTerrain(grassIndex, forest, &grassErr);
             restoredShot = worker_->renderNow(gcam).convertToFormat(QImage::Format_RGB32);
@@ -12785,7 +12797,7 @@ bool MainWindow::eventFilter(QObject* watched, QEvent* e) {
         const bool typing = qobject_cast<const QLineEdit*>(focus) || qobject_cast<const QAbstractSpinBox*>(focus) ||
                             qobject_cast<const QTextEdit*>(focus) || qobject_cast<const QPlainTextEdit*>(focus);
         if (!ke->isAutoRepeat() && !typing) {
-            const QString key = QKeySequence(ke->key()).toString(QKeySequence::PortableText);
+            const QString key = portableKeyForQt(ke->key(), Qt::NoModifier);
             if (!key.isEmpty()) {
                 const bool down = e->type() == QEvent::KeyPress;
                 postToWorker([this, key, down] { worker_->setKeyHeld(key, down); });
@@ -12834,7 +12846,11 @@ QString portableKeyForQt(int key, Qt::KeyboardModifiers mods) {
         default: break;
         }
     }
-    return QKeySequence(key).toString(QKeySequence::PortableText);
+    // QKeySequence has no (int) constructor in Qt 6, so QKeySequence(key) silently converts the key code to a
+    // StandardKey -- Qt::Key_W becomes an empty sequence, and a rebind or a play-mode keypress was dropped without a
+    // word. Build the combination explicitly.
+    const QKeyCombination combo(mods & ~Qt::KeypadModifier, Qt::Key(key));
+    return QKeySequence(combo).toString(QKeySequence::PortableText);
 }
 
 // Unity's keyboard control name -> the key this editor's tables work in. "<Keyboard>/space" -> "Space"; a path on

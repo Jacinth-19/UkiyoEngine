@@ -1,4 +1,14 @@
 // Per-frame globals (camera, lights, shadow matrices, sky ambient).
+
+// What one scene light is: position and reach, direction and outer cone, colour and intensity, type and inner cone.
+// Declared outside the block because a uniform block holds instances, not type declarations.
+struct BlockLight {
+    vec4 posRadius;      // xyz position, w radius (0 = unbounded, clamped on the CPU)
+    vec4 dirCosOuter;    // xyz the direction the cone points, w cos(outer half-angle)
+    vec4 colorIntensity; // rgb colour, w intensity
+    vec4 params;         // x type (1 point, 2 spot), y cos(inner half-angle)
+};
+
 UBO(0, 0) FrameBlock {
     mat4 view;
     mat4 proj;
@@ -15,6 +25,9 @@ UBO(0, 0) FrameBlock {
     vec4 screenParams;   // xy internal resolution, z time (s), w frame index
     vec4 pointPos[4];    // xyz position, w radius
     vec4 pointColor[4];  // rgb * intensity
+    vec4 lightParams;    // x = scene light count (0 = the two fills above), y = 1 when a scene light is the key
+    // Scene lights (docs/LIGHTS.md). Directional lights never appear here: they are the sun above, with its cascades.
+    BlockLight lights[8];
     vec4 toonA;          // RealToon: x hair highlight, y hair shift, z hair exponent, w self shadow on (0 = off)
     vec4 toonB;          // RealToon: x self threshold, y self hardness, z gloss, w gloss power
     vec4 toonC;          // x cel band on (1 = three-step ramp in mtoon; 0 = off), y normal map strength, z material outline noise, w reflection strength

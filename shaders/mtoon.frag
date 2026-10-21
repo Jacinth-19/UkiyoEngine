@@ -74,17 +74,47 @@ void main() {
     amb = mix(amb, (frame.skyColor.rgb + frame.groundColor.rgb) * 0.5, mtl.toon.z);
     color += albedo * amb * 0.55;
 
-    // Point lights (toon-banded as well).
-    for (int i = 0; i < 4; ++i) {
-        float r = frame.pointPos[i].w;
-        if (r <= 0.0) continue;
-        vec3 dv = frame.pointPos[i].xyz - vWorldPos;
-        float dist = length(dv);
-        float att = clamp(1.0 - dist / r, 0.0, 1.0);
-        att *= att;
-        float pn = dot(N, dv / max(dist, 1e-4));
-        float pr = linearstep(-1.0 + toony, 1.0 - toony, pn + shift);
-        color += mix(albedo * shadeTint, albedo, pr) * frame.pointColor[i].rgb * att;
+    // Point lights (toon-banded as well). A scene that authors lights gets its own (up to eight, ranked by
+    // lights.h); a scene that authors none keeps the two stylistic fills the engine has always had, so every scene
+    // drawn before this existed renders identically.
+    if (frame.lightParams.x < 0.5) {
+        for (int i = 0; i < 4; ++i) {
+            float r = frame.pointPos[i].w;
+            if (r <= 0.0) continue;
+            vec3 dv = frame.pointPos[i].xyz - vWorldPos;
+            float dist = length(dv);
+            float att = clamp(1.0 - dist / r, 0.0, 1.0);
+            att *= att;
+            float pn = dot(N, dv / max(dist, 1e-4));
+            float pr = linearstep(-1.0 + toony, 1.0 - toony, pn + shift);
+            color += mix(albedo * shadeTint, albedo, pr) * frame.pointColor[i].rgb * att;
+        }
+    } else {
+        for (int i = 0; i < 8; ++i) {
+            if (i >= int(frame.lightParams.x)) break;
+            vec4 posRadius = frame.lights[i].posRadius;
+            vec3 toLight = posRadius.xyz - vWorldPos;
+            float dist = length(toLight);
+            vec3 l = toLight / max(dist, 1e-4);
+            // Inverse-square, windowed to nothing at the authored reach: a light that is on at its edge and off one
+            // metre past it draws a visible ring, and an unbounded one floods the scene.
+            float reach = posRadius.w;
+            float window = clamp(1.0 - dist / max(reach, 1e-3), 0.0, 1.0);
+            float att = window * window / (1.0 + dist * dist);
+            if (frame.lights[i].params.x > 1.5) {
+                // A spot: the cone is soft between the inner and outer angles, and hard-clipped outside the outer one.
+                float cd = dot(-l, normalize(frame.lights[i].dirCosOuter.xyz));
+                float cosOuter = frame.lights[i].dirCosOuter.w;
+                float cosInner = frame.lights[i].params.y;
+                float cone = smoothstep(cosOuter, max(cosInner, cosOuter + 1e-3), cd);
+                att *= cone;
+            }
+            if (att <= 0.0) continue;
+            float pn = dot(N, l);
+            float pr = linearstep(-1.0 + toony, 1.0 - toony, pn + shift);
+            vec3 litColor = mix(albedo * shadeTint, albedo, pr);
+            color += litColor * frame.lights[i].colorIntensity.rgb * frame.lights[i].colorIntensity.w * att;
+        }
     }
 
     // Leaf transmission (own implementation): light from behind a thin surface shows through, most when the view
