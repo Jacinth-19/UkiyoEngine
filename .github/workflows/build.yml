@@ -616,6 +616,8 @@ jobs:
                 # the check that was running.
                 $trace = @()
                 if (Test-Path $traceLog) { $trace = @(Get-Content $traceLog) }
+                $canary = $trace | Select-String -Pattern "^CRASH heap canary" | Select-Object -First 1
+                if ($canary) { Add-Content windows-diagnosis.txt "canary: $($canary.Line)" }
                 $crash = $trace | Select-String -Pattern "^CRASH exception" | Select-Object -Last 1
                 if ($crash) {
                   Add-Content windows-diagnosis.txt "trace: $($crash.Line)"

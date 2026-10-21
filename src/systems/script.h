@@ -10,6 +10,9 @@
 
 struct lua_State;
 using lua_CFunction = int (*)(lua_State*);
+// Lua's allocator signature, as lua.h declares it: a build can install its own before any state exists, which is how the
+// tests put a canary on both sides of every block a script asks for.
+using lua_Alloc = void* (*)(void* ud, void* ptr, size_t osize, size_t nsize);
 
 namespace ukiyo {
 
@@ -77,6 +80,9 @@ public:
     int errorCount() const { return totalErrors_; }   // every error this host has reported
 
     lua_State* state() const { return L_; }
+
+    // Every state this class creates uses this allocator. Null restores Lua's own. Set it before the first host is made.
+    static void setAllocator(lua_Alloc alloc, void* userdata);
 
 private:
     // Pushes the message handler, calls, and removes it again. `nargs` values and the function are on the stack.

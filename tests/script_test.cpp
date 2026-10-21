@@ -149,6 +149,140 @@ struct StopEarly {};
 
 static int maxChecks = 0;   // --max: stop after this many checks
 
+// --- a checked heap for this test --------------------------------------------------------------------------------
+// The scripting test corrupted the Windows heap once, somewhere, and the heap said so a section later: a wild write into
+// a live block is the one thing an address sanitiser cannot see, because the address it lands on is valid. Every block
+// this process asks for -- through C++ new, or through the allocator Lua is handed -- gets a canary on both sides and an
+// entry in a fixed table, and the test checks every live block after every check. The canary that is broken names the
+// block and the check, instead of leaving a heap-corruption exit code from three sections away.
+namespace checked {
+
+constexpr size_t kGuard = 16;
+constexpr size_t kMarkSize = 8;
+constexpr int kSlots = 1 << 17;   // a hashed table, never resized: it allocates nothing itself
+constexpr unsigned char kMark[kMarkSize] = {0xA5, 0x5A, 0xC3, 0x3C, 0x0F, 0xF0, 0x96, 0x69};
+
+struct Entry {
+    void* ptr = nullptr;
+    size_t size = 0;
+};
+
+Entry table[kSlots];
+long long allocated = 0;
+long long reported = 0;
+
+unsigned slotOf(void* ptr) { return static_cast<unsigned>((reinterpret_cast<uintptr_t>(ptr) >> 4) & (kSlots - 1)); }
+
+Entry* findEntry(void* ptr) {
+    const unsigned start = slotOf(ptr);
+    for (unsigned i = 0; i < 64; ++i) {
+        Entry& e = table[(start + i) & (kSlots - 1)];
+        if (e.ptr == ptr) return &e;
+        if (!e.ptr) return nullptr;
+    }
+    return nullptr;
+}
+
+bool intact(void* ptr, size_t size) {
+    const unsigned char* raw = static_cast<const unsigned char*>(ptr);
+    return std::memcmp(raw - kGuard, kMark, kMarkSize) == 0 &&
+           std::memcmp(raw + size, kMark, kMarkSize) == 0;
+}
+
+void insert(void* ptr, size_t size) {
+    const unsigned start = slotOf(ptr);
+    for (unsigned i = 0; i < 64; ++i) {
+        Entry& e = table[(start + i) & (kSlots - 1)];
+        if (!e.ptr) {
+            e.ptr = ptr;
+            e.size = size;
+            return;
+        }
+    }
+}
+
+void erase(void* ptr) {
+    Entry* e = findEntry(ptr);
+    if (e) e->ptr = nullptr;
+}
+
+void* allocate(size_t size) {
+    unsigned char* raw = static_cast<unsigned char*>(std::malloc(size + 2 * kGuard));
+    if (!raw) throw std::bad_alloc();
+    std::memcpy(raw, kMark, kMarkSize);
+    std::memcpy(raw + kGuard + size, kMark, kMarkSize);
+    insert(raw + kGuard, size);
+    ++allocated;
+    return raw + kGuard;
+}
+
+void release(void* ptr) {
+    if (!ptr) return;
+    Entry* e = findEntry(ptr);
+    if (!e) {   // not from here (a library allocating inside its own DLL, freed by its own delete)
+        std::free(ptr);
+        return;
+    }
+    if (!intact(ptr, e->size)) {
+        // A write past the end of this block happened. Say which block and how big, once per block.
+        if (reported < 8) {
+            char line[256];
+            std::snprintf(line, sizeof line, "CRASH heap canary broken at check %d, section '%s': block of %zu bytes",
+                          checks, lastSection, e->size);
+            std::printf("%s\n", line);
+            if (traceLog) {
+                traceLog << line << "\n";
+                traceLog.flush();
+            }
+            ++reported;
+        }
+    }
+    erase(ptr);
+    std::free(static_cast<unsigned char*>(ptr) - kGuard);
+}
+
+// Every live block, after every check: the first broken canary is the write that damaged the heap.
+void checkAll() {
+    if (reported >= 8) return;
+    for (int i = 0; i < kSlots; ++i) {
+        Entry& e = table[i];
+        if (!e.ptr || intact(e.ptr, e.size)) continue;
+        char line[256];
+        std::snprintf(line, sizeof line, "CRASH heap canary broken after section '%s': block of %zu bytes", lastSection,
+                      e.size);
+        std::printf("%s\n", line);
+        if (traceLog) {
+            traceLog << line << "\n";
+            traceLog.flush();
+        }
+        ++reported;
+        return;
+    }
+}
+
+// Lua's allocator, with the same canaries: a realloc is a copy, so every block stays checked.
+void* luaAllocator(void*, void* ptr, size_t osize, size_t nsize) {
+    if (nsize == 0) {
+        release(ptr);
+        return nullptr;
+    }
+    void* fresh = allocate(nsize);
+    if (ptr) {
+        std::memcpy(fresh, ptr, osize < nsize ? osize : nsize);
+        release(ptr);
+    }
+    return fresh;
+}
+
+} // namespace checked
+
+void* operator new(std::size_t size) { return checked::allocate(size); }
+void* operator new[](std::size_t size) { return checked::allocate(size); }
+void operator delete(void* ptr) noexcept { checked::release(ptr); }
+void operator delete[](void* ptr) noexcept { checked::release(ptr); }
+void operator delete(void* ptr, std::size_t) noexcept { checked::release(ptr); }
+void operator delete[](void* ptr, std::size_t) noexcept { checked::release(ptr); }
+
 static void check(bool ok, const std::string& what, const std::string& detail = {}) {
     ++checks;
     if (maxChecks > 0 && checks >= maxChecks) {
@@ -157,6 +291,7 @@ static void check(bool ok, const std::string& what, const std::string& detail = 
             std::printf("FAIL  %s\n", what.c_str());
         }
         std::fflush(stdout);
+        checked::checkAll();
         if (traceLog) {
             traceLog << "MAX " << checks << "\n";
             traceLog.flush();
@@ -192,6 +327,7 @@ static void section(const char* name) {
         traceLog.flush();
     }
 }
+
 
 static fs::path testRoot() {
     static const fs::path root = fs::temp_directory_path() / "ukiyo_script_test";
@@ -529,6 +665,8 @@ int main(int argc, char** argv) {
 #ifdef _WIN32
     installCrashReporters();
 #endif
+    checked::checkAll();
+    ScriptHost::setAllocator(checked::luaAllocator, nullptr);
     std::string only;   // --only <section>: one section, for CI to bisect a crash by
     for (int i = 1; i < argc; ++i) {
         const std::string arg = argv[i];

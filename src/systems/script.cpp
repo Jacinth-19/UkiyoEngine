@@ -18,6 +18,20 @@ namespace ukiyo {
 
 namespace {
 
+// Lua's own allocator, so a build that installs none behaves exactly as luaL_newstate would.
+void* defaultAllocator(void* ud, void* ptr, size_t osize, size_t nsize) {
+    (void)ud;
+    (void)osize;
+    if (nsize == 0) {
+        std::free(ptr);
+        return nullptr;
+    }
+    return std::realloc(ptr, nsize);
+}
+
+lua_Alloc stateAllocator = nullptr;
+void* stateAllocatorData = nullptr;
+
 // Lua aborts the process when an API call fails outside any protected call, and its default panic only prints to
 // stderr, which a Windows job reads as a number. Naming the engine in the line makes the abort say what happened.
 int panicHandler(lua_State* L) {
@@ -148,8 +162,13 @@ int l_require(lua_State* L) {
 
 } // namespace
 
+void ScriptHost::setAllocator(lua_Alloc alloc, void* userdata) {
+    stateAllocator = alloc;
+    stateAllocatorData = userdata;
+}
+
 ScriptHost::ScriptHost() {
-    L_ = luaL_newstate();
+    L_ = lua_newstate(stateAllocator ? stateAllocator : defaultAllocator, stateAllocatorData);
     if (!L_) {
         stopped_ = true;
         lastError_ = error_.message = "could not create a Lua state";
