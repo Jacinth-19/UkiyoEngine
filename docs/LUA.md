@@ -200,7 +200,7 @@ entry point exists; breakpoints in LuaLS's own debugger are not wired to the eng
 
 ```sh
 cmake --build build --target script_test && ./build/script_test
-# script: 112 checks, 0 failure(s)
+# script: 113 checks, 0 failure(s)
 ```
 
 It covers the sandbox (what a script can and cannot reach), `require()` (cache, dotted names, `init.lua`, cycles,
@@ -213,3 +213,19 @@ CI runs it in the `build` job on Linux and in the `windows` job on MSVC.
 In CI it runs with `--trace`: every check is printed with its number and flushed line by line, and the same trace is
 written to `UKIYO_TEST_LOG`. A native test that dies leaves no summary, and a crashed process on Windows was seen to
 lose the last lines of a redirected stdout — a file is what survives.
+
+Two flags make a crash findable rather than guessed at. `--only <section>` runs one section, and `--max <n>` stops after
+n checks by throwing, so the run's destructors still close every Lua state — an `_Exit` would skip the teardown that
+is the only thing that ever notices a damaged heap. The Windows job walks each section's check counts from one upwards,
+a fresh process each time, and the first count that dies is the check the run cannot survive:
+
+```sh
+./build/script_test --trace --only require --max 7
+```
+
+The test also allocates through a checked heap: C++ `new` and `delete` and the allocator `ScriptHost` is handed (see
+`ScriptHost::setAllocator`) put a canary on both sides of every block and verify every live block after every check. A
+write past the end of a block, or a pointer freed twice, is reported with the check number in the trace, instead of
+leaving the Windows heap to report corruption a section later with an exit code and nothing else. On Windows the same
+harness catches access violations and aborts, and writes why — the exception, the module, and the frames above it — into
+the trace file with plain Win32 calls that need no C++ runtime.

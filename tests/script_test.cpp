@@ -220,7 +220,8 @@ void* allocate(size_t size) {
     return raw + kGuard;
 }
 
-void note(const char* what, size_t size, const void* where) {
+void note(const char* what, size_t size, const void* where, bool fatal) {
+    if (fatal) ++failures;   // a run that damaged its own heap is not a passing run, however it ends
     if (reported >= 8) return;
     char line[288];
     std::snprintf(line, sizeof line, "CRASH %s at check %d, section '%s': block of %zu bytes at %p", what, checks,
@@ -241,14 +242,14 @@ void release(void* ptr) {
         // never handed out -- a double free, or a pointer that was never a block.
         bool seen = false;
         for (void* freed : recentlyFreed) seen = seen || freed == ptr;
-        note(seen ? "double free" : "free of an unknown pointer", 0, ptr);
+        note(seen ? "double free" : "free of an unknown pointer", 0, ptr, seen);
         if (seen) return;   // do not hand a double free to the CRT: it would report corruption somewhere else
         std::free(ptr);
         return;
     }
     if (!intact(ptr, e->size)) {
         // A write past the end of this block happened. Say which block and how big, once per block.
-        note("heap canary broken", e->size, ptr);
+        note("heap canary broken", e->size, ptr, true);
     }
     erase(ptr);
     recentlyFreed[recentlyFreedNext] = ptr;
@@ -262,7 +263,7 @@ void checkAll() {
     for (int i = 0; i < kSlots; ++i) {
         Entry& e = table[i];
         if (!e.ptr || intact(e.ptr, e.size)) continue;
-        note("heap canary broken", e.size, e.ptr);
+        note("heap canary broken", e.size, e.ptr, true);
         return;
     }
 }
