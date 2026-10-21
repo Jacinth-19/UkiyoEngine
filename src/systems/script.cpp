@@ -66,7 +66,9 @@ bool ScriptHost::loadFile(const std::string& path, std::string* error) {
 bool ScriptHost::loadString(const std::string& code, const std::string& chunkName, std::string* error) {
     if (!L_) return false;
     if (!report(luaL_loadbufferx(L_, code.data(), code.size(), chunkName.c_str(), "t"), error)) return false;
-    return report(lua_pcall(L_, 0, 0, 0), error);
+    if (!report(lua_pcall(L_, 0, 0, 0), error)) return false;
+    loaded_ = true;
+    return true;
 }
 
 bool ScriptHost::compileFile(const std::string& path, std::string* error) {

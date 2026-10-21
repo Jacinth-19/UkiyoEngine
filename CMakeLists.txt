@@ -33,12 +33,23 @@ endif()
 # for the two ABIs the project ships is what makes "Android" a build that can be checked rather than a promise, and it
 # keeps the phone build honest: the same translation units the desktop runs are the ones the NDK compiles.
 if(ANDROID)
+  # The player's runtime core is portable by construction (no Qt, no GL, no Vulkan): the manifest, the scene reader, the
+  # transform and light maths, the HUD canvas and its font atlas, and the HUD layout. Compiling it for both ABIs is what
+  # keeps "the player runs on Android" a checked claim rather than an intention, in the same way the browser's rules are.
   set(UKIYO_ANDROID_CORE
     src/engine/search.cpp
-    src/engine/browser_zoom.cpp)
-  foreach(t search_test browser_zoom_test)
+    src/engine/browser_zoom.cpp
+    src/engine/transform.cpp
+    src/engine/lights.cpp
+    src/engine/build_manifest.cpp
+    src/engine/scene_runtime.cpp
+    src/engine/text_atlas.cpp
+    src/engine/hud.cpp
+    src/player/hud_layout.cpp)
+  foreach(t search_test browser_zoom_test transform_test lights_test manifest_test scene_runtime_test)
     add_executable(${t} tests/${t}.cpp ${UKIYO_ANDROID_CORE})
-    target_include_directories(${t} PRIVATE ${CMAKE_SOURCE_DIR}/src)
+    target_include_directories(${t} PRIVATE ${CMAKE_SOURCE_DIR}/src ${CMAKE_SOURCE_DIR}/third_party
+                               ${CMAKE_SOURCE_DIR}/third_party/glm ${CMAKE_SOURCE_DIR}/third_party/nlohmann/include)
     target_compile_options(${t} PRIVATE ${UKIYO_WARNINGS})
   endforeach()
   return()
@@ -189,6 +200,13 @@ add_library(ukiyo_core STATIC
   src/rhi/vk_device.cpp
   src/engine/anim.cpp
   src/engine/camera.cpp
+  src/engine/transform.cpp
+  src/engine/lights.cpp
+  src/engine/text_atlas.cpp
+  src/engine/hud.cpp
+  src/engine/hud_renderer.cpp
+  src/engine/build_manifest.cpp
+  src/engine/scene_runtime.cpp
   src/engine/face.cpp
   src/engine/model.cpp
   src/engine/pmx_glb.cpp
@@ -244,6 +262,7 @@ add_library(ukiyo_systems STATIC
   src/systems/script.cpp
   src/systems/vfx.cpp
   src/systems/network.cpp
+  src/systems/save_game.cpp
   src/systems/world.cpp)
 target_include_directories(ukiyo_systems PUBLIC ${CMAKE_SOURCE_DIR}/src)
 target_link_libraries(ukiyo_systems PUBLIC ukiyo_core ukiyo_input Jolt ukiyo_recast ukiyo_lua ukiyo_miniaudio)
@@ -277,6 +296,14 @@ target_include_directories(vgeom_preview PRIVATE ${CMAKE_SOURCE_DIR}/src ${CMAKE
                            ${CMAKE_SOURCE_DIR}/third_party/meshoptimizer)
 target_link_libraries(vgeom_preview PRIVATE glm::glm)
 target_compile_options(vgeom_preview PRIVATE ${UKIYO_WARNINGS})
+
+# The figure for docs/PLAYER.md: the shipping HUD layout, composited over an engine frame by a software rasteriser. It
+# links only the CPU HUD code and STB, so CI compiles and runs it without a GPU.
+add_executable(hud_preview tools/hud_preview.cpp src/engine/text_atlas.cpp src/engine/hud.cpp
+               src/player/hud_layout.cpp)
+target_include_directories(hud_preview PRIVATE ${CMAKE_SOURCE_DIR}/src ${CMAKE_SOURCE_DIR}/third_party)
+target_link_libraries(hud_preview PRIVATE glm::glm)
+target_compile_options(hud_preview PRIVATE ${UKIYO_WARNINGS})
 
 # The CPU path tracer behind docs/PATHTRACE.md and docs/pathtrace-terrain.png: the ground-truth render of the Terrain
 # Lab scene, on any CPU and with no GPU at all. STB is implemented in the tool itself, so it does not link ukiyo_core.
@@ -421,6 +448,16 @@ target_link_libraries(project_test PRIVATE ukiyo_core)
 target_compile_definitions(project_test PRIVATE UKIYO_ROOT="${CMAKE_SOURCE_DIR}")
 target_compile_options(project_test PRIVATE ${UKIYO_WARNINGS})
 
+# ---- Player -----------------------------------------------------------------
+# The shipped game: manifest, scenes, World, HUD. It is deliberately thin, because everything it does beyond opening a
+# window lives in PlayerApp, which the player_test covers without a device.
+add_executable(ukiyo_player src/player/main.cpp src/player/player_app.cpp)
+target_link_libraries(ukiyo_player PRIVATE ukiyo_systems ukiyo_core)
+target_include_directories(ukiyo_player PRIVATE ${CMAKE_SOURCE_DIR}/src ${CMAKE_SOURCE_DIR}/third_party)
+# glfw3.h includes GL/gl.h unless told not to; the player never makes a GL call itself.
+target_compile_definitions(ukiyo_player PRIVATE GLFW_INCLUDE_NONE)
+target_compile_options(ukiyo_player PRIVATE ${UKIYO_WARNINGS})
+
 # ---- Application -----------------------------------------------------------
 add_executable(ukiyo src/app/main.cpp)
 target_link_libraries(ukiyo PRIVATE ukiyo_core ukiyo_input_glfw)
@@ -430,6 +467,51 @@ target_compile_definitions(ukiyo PRIVATE GLFW_INCLUDE_NONE UKIYO_ROOT="${CMAKE_S
 target_compile_options(ukiyo PRIVATE ${UKIYO_WARNINGS})
 
 # ---- Tests -----------------------------------------------------------------
+# Scene transforms and the instance hierarchy (docs/PLAYER.md).
+add_executable(transform_test tests/transform_test.cpp src/engine/transform.cpp)
+target_include_directories(transform_test PRIVATE ${CMAKE_SOURCE_DIR}/src)
+target_link_libraries(transform_test PRIVATE glm::glm)
+target_compile_options(transform_test PRIVATE ${UKIYO_WARNINGS_PEDANTIC})
+
+# Scene lights and the GPU packing (docs/PLAYER.md).
+add_executable(lights_test tests/lights_test.cpp src/engine/lights.cpp)
+target_include_directories(lights_test PRIVATE ${CMAKE_SOURCE_DIR}/src)
+target_link_libraries(lights_test PRIVATE glm::glm)
+target_compile_options(lights_test PRIVATE ${UKIYO_WARNINGS_PEDANTIC})
+
+# The save format (docs/PLAYER.md).
+add_executable(save_test tests/save_test.cpp src/systems/save_game.cpp)
+target_include_directories(save_test PRIVATE ${CMAKE_SOURCE_DIR}/src)
+target_link_libraries(save_test PRIVATE glm::glm)
+target_compile_options(save_test PRIVATE ${UKIYO_WARNINGS_PEDANTIC})
+
+# HUD text and layout. Needs the repository root for the test font.
+add_executable(hud_test tests/hud_test.cpp src/engine/text_atlas.cpp src/engine/hud.cpp)
+target_include_directories(hud_test PRIVATE ${CMAKE_SOURCE_DIR}/src ${CMAKE_SOURCE_DIR}/third_party)
+target_compile_definitions(hud_test PRIVATE UKIYO_ROOT="${CMAKE_SOURCE_DIR}")
+target_link_libraries(hud_test PRIVATE glm::glm)
+target_compile_options(hud_test PRIVATE ${UKIYO_WARNINGS})
+
+# The build manifest: the contract between the editor's Build page and the player.
+add_executable(manifest_test tests/manifest_test.cpp src/engine/build_manifest.cpp)
+target_include_directories(manifest_test PRIVATE ${CMAKE_SOURCE_DIR}/src)
+target_link_libraries(manifest_test PRIVATE glm::glm nlohmann_json::nlohmann_json)
+target_compile_options(manifest_test PRIVATE ${UKIYO_WARNINGS})
+
+# The runtime scene reader.
+add_executable(scene_runtime_test tests/scene_runtime_test.cpp src/engine/scene_runtime.cpp
+               src/engine/transform.cpp src/engine/lights.cpp)
+target_include_directories(scene_runtime_test PRIVATE ${CMAKE_SOURCE_DIR}/src)
+target_link_libraries(scene_runtime_test PRIVATE glm::glm nlohmann_json::nlohmann_json)
+target_compile_options(scene_runtime_test PRIVATE ${UKIYO_WARNINGS})
+
+# The player's own logic, with the real World, physics, Lua and audio (device-free): the whole boot, tick and scene
+# switch path, on a temporary project.
+add_executable(player_test tests/player_test.cpp src/player/player_app.cpp)
+target_link_libraries(player_test PRIVATE ukiyo_systems ukiyo_core)
+target_compile_definitions(player_test PRIVATE GLFW_INCLUDE_NONE)
+target_compile_options(player_test PRIVATE ${UKIYO_WARNINGS})
+
 add_executable(lod_gpu_test tests/lod_gpu_test.cpp)
 target_link_libraries(lod_gpu_test PRIVATE ukiyo_core)
 target_compile_options(lod_gpu_test PRIVATE ${UKIYO_WARNINGS})

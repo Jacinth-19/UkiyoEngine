@@ -1,0 +1,43 @@
+{
+  "format": "ukiyo-scene",
+  "version": 2,
+  "models": [
+    {
+      "name": "Ground",
+      "empty": true,
+      "position": [0, -0.5, 0],
+      "components": {
+        "body": { "dynamic": false, "box": true, "halfExtents": [8, 0.5, 8] }
+      }
+    },
+    {
+      "name": "Ball",
+      "empty": true,
+      "position": [0, 3, 0],
+      "components": {
+        "body": { "dynamic": true, "radius": 0.5, "mass": 1 },
+        "action": { "kind": "spin", "speed": 1.0, "axis": [0, 1, 0] }
+      }
+    },
+    {
+      "name": "Runner",
+      "empty": true,
+      "position": [2, 0, 0],
+      "components": {
+        "script": { "path": "Scripts/hello.lua" }
+      }
+    }
+  ],
+  "settings": {
+    "shadows": true,
+    "ssao": 0.4,
+    "tonemap": 3
+  },
+  "gameCamera": {
+    "target": [0, 1, 0],
+    "distance": 7,
+    "yaw": 0.4,
+    "pitch": 0.25,
+    "fovY": 0.8
+  }
+}

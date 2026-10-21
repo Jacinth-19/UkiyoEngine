@@ -101,6 +101,14 @@ public:
     uint32_t width() const override { return desc_.width; }
     uint32_t height() const override { return desc_.height; }
     Format format() const override { return desc_.format; }
+    void update(uint32_t x, uint32_t y, uint32_t w, uint32_t h, const void* rgba8) override {
+        if (rgba8 == nullptr || w == 0 || h == 0) return;
+        if (x + w > desc_.width || y + h > desc_.height) throw std::runtime_error("texture update out of range");
+        // Row 0 is the top row of the image, matching the Vulkan copy (GL's origin is the vertex's, not the texture's).
+        glTextureSubImage2D(id_, 0, static_cast<GLint>(x), static_cast<GLint>(y), static_cast<GLsizei>(w),
+                            static_cast<GLsizei>(h), GL_RGBA, GL_UNSIGNED_BYTE, rgba8);
+        if (levels_ > 1) glGenerateTextureMipmap(id_);
+    }
     GLuint id() const { return id_; }
 
 private:

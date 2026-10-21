@@ -28,6 +28,7 @@
 #include "anim_file.h"
 #include "anim_panel.h"
 #include "engine/anim.h"
+#include "engine/build_manifest.h"
 #include "engine/browser_zoom.h"
 #include "engine/cull.h"
 #include "engine/search.h"
@@ -13310,8 +13311,89 @@ void MainWindow::fillBuildPage(QVBoxLayout* v) {
     down->setObjectName(QStringLiteral("buildSceneDown"));
     connect(down, &QPushButton::clicked, this, [move] { move(1); });
 
-    // The manifest lists the product and its scenes in build order. Packaging an executable is not
-    // part of it yet.
+    // The start scene: the first entry unless the author picks another. Stored in project settings so the choice
+    // survives a restart, and validated by the manifest parser, which refuses a start scene that is not in the list.
+    QComboBox* startScene = new QComboBox;
+    startScene->setObjectName(QStringLiteral("buildStartScene"));
+    auto refillStart = [this, startScene] {
+        QSignalBlocker block(startScene);
+        startScene->clear();
+        startScene->addItem(QStringLiteral("(first scene)"), QString());
+        for (const std::string& s : projSettings_.buildScenes)
+            startScene->addItem(QString::fromStdString(s), QString::fromStdString(s));
+        const int idx = startScene->findData(QString::fromStdString(projSettings_.buildStartScene));
+        startScene->setCurrentIndex(idx < 0 ? 0 : idx);
+    };
+    refillStart();
+    connect(startScene, QOverload<int>::of(&QComboBox::currentIndexChanged), this, [this, startScene] {
+        projSettings_.buildStartScene = startScene->currentData().toString().toStdString();
+        saveProjectSettingsFile();
+    });
+
+    // HUD font: every .ttf under assets/fonts, plus none. The player draws the HUD with this face; without one it still
+    // draws panels, just no words.
+    QComboBox* font = new QComboBox;
+    font->setObjectName(QStringLiteral("buildFont"));
+    auto refillFonts = [this, font] {
+        QSignalBlocker block(font);
+        font->clear();
+        font->addItem(QStringLiteral("(no HUD text)"), QString());
+        QDir dir(projectRoot_ + QStringLiteral("/assets/fonts"));
+        const QStringList files = dir.entryList({QStringLiteral("*.ttf"), QStringLiteral("*.otf")}, QDir::Files, QDir::Name);
+        for (const QString& f : files) {
+            const QString rel = QStringLiteral("assets/fonts/") + f;
+            font->addItem(f, rel);
+        }
+        const int idx = font->findData(QString::fromStdString(projSettings_.buildFont));
+        font->setCurrentIndex(idx < 0 ? 0 : idx);
+    };
+    refillFonts();
+    connect(font, QOverload<int>::of(&QComboBox::currentIndexChanged), this, [this, font] {
+        projSettings_.buildFont = font->currentData().toString().toStdString();
+        saveProjectSettingsFile();
+    });
+
+    QSpinBox* winW = new QSpinBox;
+    winW->setObjectName(QStringLiteral("buildWidth"));
+    winW->setRange(320, 7680);
+    winW->setSingleStep(16);
+    winW->setValue(projSettings_.buildWidth);
+    QSpinBox* winH = new QSpinBox;
+    winH->setObjectName(QStringLiteral("buildHeight"));
+    winH->setRange(240, 4320);
+    winH->setSingleStep(16);
+    winH->setValue(projSettings_.buildHeight);
+    connect(winW, QOverload<int>::of(&QSpinBox::valueChanged), this, [this](int v) {
+        projSettings_.buildWidth = v;
+        saveProjectSettingsFile();
+    });
+    connect(winH, QOverload<int>::of(&QSpinBox::valueChanged), this, [this](int v) {
+        projSettings_.buildHeight = v;
+        saveProjectSettingsFile();
+    });
+    QCheckBox* fullscreen = new QCheckBox(QStringLiteral("Fullscreen"));
+    fullscreen->setObjectName(QStringLiteral("buildFullscreen"));
+    fullscreen->setChecked(projSettings_.buildFullscreen);
+    connect(fullscreen, &QCheckBox::toggled, this, [this](bool on) {
+        projSettings_.buildFullscreen = on;
+        saveProjectSettingsFile();
+    });
+    QWidget* windowRow = new QWidget;
+    QHBoxLayout* wr = new QHBoxLayout(windowRow);
+    wr->setContentsMargins(0, 0, 0, 0);
+    wr->addWidget(winW);
+    wr->addWidget(new QLabel(QStringLiteral("x")));
+    wr->addWidget(winH);
+    wr->addWidget(fullscreen);
+    wr->addStretch(1);
+    QLabel* playHint = new QLabel(QStringLiteral("Run: <b>ukiyo_player</b> (build/ukiyo_player, or %1 on PATH)")
+                                      .arg(QStringLiteral("ukiyo_player")));
+    playHint->setObjectName(QStringLiteral("buildHint"));
+    playHint->setWordWrap(true);
+    playHint->setTextInteractionFlags(Qt::TextSelectableByMouse);
+
+    // The whole manifest: product, start scene, ordered scenes, window, HUD font. The player is the reader, so the writer
+    // and the reader share parseBuildManifest's rules: this page cannot write a file the player would reject.
     QPushButton* write = new QPushButton(QStringLiteral("Write Build Manifest"));
     write->setObjectName(QStringLiteral("buildWrite"));
     connect(write, &QPushButton::clicked, this, [this, buildStatus] {
@@ -13320,31 +13402,45 @@ void MainWindow::fillBuildPage(QVBoxLayout* v) {
             return;
         }
         QStringList missing;
-        QJsonArray arr;
         for (const std::string& s : projSettings_.buildScenes) {
             const QString rel = QString::fromStdString(s);
             if (!QFileInfo::exists(projectRoot_ + QLatin1Char('/') + rel)) missing << rel;
-            arr.append(rel);
         }
         if (!missing.isEmpty()) {
             buildStatus->setText(QStringLiteral("Missing scene file: ") + missing.join(QStringLiteral(", ")));
             return;
         }
-        QJsonObject manifest;
-        manifest[QStringLiteral("format")] = QStringLiteral("ukiyo-build");
-        manifest[QStringLiteral("version")] = 1;
-        manifest[QStringLiteral("productName")] = QString::fromStdString(projSettings_.productName);
-        manifest[QStringLiteral("scenes")] = arr;
+        ukiyo::BuildManifest m;
+        m.name = projSettings_.productName;
+        m.scenes = projSettings_.buildScenes;
+        m.startScene = projSettings_.buildStartScene;
+        m.font = projSettings_.buildFont;
+        m.window.width = projSettings_.buildWidth;
+        m.window.height = projSettings_.buildHeight;
+        m.window.fullscreen = projSettings_.buildFullscreen;
+        if (!m.font.empty() && !QFileInfo::exists(projectRoot_ + QLatin1Char('/') + QString::fromStdString(m.font))) {
+            buildStatus->setText(QStringLiteral("Missing HUD font: %1").arg(QString::fromStdString(m.font)));
+            return;
+        }
+        const QString json = QString::fromStdString(ukiyo::buildManifestJson(m));
+        ukiyo::BuildManifest check;
+        std::string error;
+        if (!ukiyo::parseBuildManifest(json.toStdString(), &check, &error)) {
+            buildStatus->setText(QStringLiteral("The manifest would not load: %1").arg(QString::fromStdString(error)));
+            return;
+        }
         QDir().mkpath(projectRoot_ + QStringLiteral("/Build"));
         QFile out(projectRoot_ + QStringLiteral("/Build/build.json"));
         if (!out.open(QIODevice::WriteOnly | QIODevice::Truncate)) {
             buildStatus->setText(QStringLiteral("Could not write Build/build.json."));
             return;
         }
-        out.write(QJsonDocument(manifest).toJson(QJsonDocument::Indented));
+        out.write(json.toUtf8());
         out.close();
-        buildStatus->setText(QStringLiteral("Wrote Build/build.json with %1 scene(s). Packaging a playable executable is not included yet.")
-                                 .arg(arr.size()));
+        buildStatus->setText(QStringLiteral("Wrote Build/build.json: %1 scene(s), %2x%3. Run it with ukiyo_player --project .")
+                                 .arg(m.scenes.size())
+                                 .arg(m.window.width)
+                                 .arg(m.window.height));
     });
 
     QWidget* sceneButtons = new QWidget;
@@ -13359,11 +13455,21 @@ void MainWindow::fillBuildPage(QVBoxLayout* v) {
     f->addRow(QStringLiteral("Product name"), product);
     f->addRow(QStringLiteral("Scenes (build order)"), scenes);
     f->addRow(sceneButtons);
+    f->addRow(QStringLiteral("Start scene"), startScene);
+    f->addRow(QStringLiteral("Window"), windowRow);
+    f->addRow(QStringLiteral("HUD font"), font);
+    f->addRow(playHint);
     f->addRow(write);
     f->addRow(buildStatus);
-    settingSyncers_.push_back([syncProduct, refillScenes] {
+    settingSyncers_.push_back([this, syncProduct, refillScenes, refillStart, refillFonts, winW, winH, fullscreen] {
         syncProduct();
         refillScenes();
+        refillStart();
+        refillFonts();
+        QSignalBlocker b1(winW), b2(winH), b3(fullscreen);
+        winW->setValue(projSettings_.buildWidth);
+        winH->setValue(projSettings_.buildHeight);
+        fullscreen->setChecked(projSettings_.buildFullscreen);
     });
 }
 

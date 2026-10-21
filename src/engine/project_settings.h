@@ -37,9 +37,15 @@ struct ProjectSettings {
     // Input actions. A script asks for an action, and the action resolves to a key.
     std::vector<InputAction> inputActions;
 
-    // Build. Scenes are project-relative .ukscene paths, in build order.
+    // Build. Scenes are project-relative .ukscene paths, in build order. These fields are exactly what the player's
+    // manifest needs, so the Build page can write Build/build.json without asking anything twice.
     std::string productName = "Ukiyo Game";
     std::vector<std::string> buildScenes;
+    std::string buildStartScene;      // project-relative; empty means the first scene
+    std::string buildFont;            // project-relative .ttf for the HUD; empty means no text
+    int buildWidth = 1280;
+    int buildHeight = 720;
+    bool buildFullscreen = false;
 };
 
 // The built-in names for the first eight layer slots and the tags that always exist.

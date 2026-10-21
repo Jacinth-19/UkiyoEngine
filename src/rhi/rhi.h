@@ -15,6 +15,7 @@
 #include <cstdint>
 #include <memory>
 #include <string>
+#include <stdexcept>
 #include <vector>
 
 #include <glm/glm.hpp>
@@ -37,7 +38,9 @@ enum class BufferUsage : uint8_t { Vertex, Index, Uniform };
 // ShaderMaterial: parameters of a generated (node graph) material. UBO at binding 15,
 // textures at bindings 0-7. Vulkan only.
 // Particles: instance UBO at binding 11 (vertex stage), used by the particle quads.
-enum class SetType : uint8_t { Frame, Material, Skin, Post, ShaderMaterial, Motion, Particles };
+// Hud: one texture at binding 0, the glyph atlas. Its own set keeps the HUD out of the post chain and out of the
+// Frame set's texture units, which the GL backend flattens by binding number.
+enum class SetType : uint8_t { Frame, Material, Skin, Post, ShaderMaterial, Motion, Particles, Hud };
 enum class Cull : uint8_t { None, Back, Front };
 enum class Blend : uint8_t { None, Alpha, Additive };
 enum class Filter : uint8_t { Nearest, Linear };
@@ -93,6 +96,13 @@ public:
     virtual uint32_t width() const = 0;
     virtual uint32_t height() const = 0;
     virtual Format format() const = 0;
+    // Replaces a rectangle of an RGBA8 texture with new pixels (row 0 at `y`, tightly packed, w*h*4 bytes). Both
+    // backends synchronise internally, so it is safe between beginFrame/endFrame. This is what makes a glyph atlas
+    // possible without rebuilding the texture: text arrives one glyph at a time while a frame is being assembled.
+    virtual void update(uint32_t x, uint32_t y, uint32_t w, uint32_t h, const void* rgba8) {
+        (void)x; (void)y; (void)w; (void)h; (void)rgba8;
+        throw std::runtime_error("this texture does not support partial updates");
+    }
 };
 
 class Pipeline {

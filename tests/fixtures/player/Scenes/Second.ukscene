@@ -1,0 +1,7 @@
+{
+  "format": "ukiyo-scene",
+  "version": 2,
+  "models": [
+    { "name": "Lamp", "empty": true, "position": [0, 2, 0] }
+  ]
+}

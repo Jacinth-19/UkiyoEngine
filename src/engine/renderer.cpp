@@ -2,6 +2,8 @@
 #include "engine/vfs.h"
 #include "engine/renderer.h"
 
+#include "engine/hud_renderer.h"
+
 #include <glm/gtc/matrix_transform.hpp>
 #include <glm/gtc/packing.hpp>
 
@@ -1407,6 +1409,28 @@ void Renderer::render(const OrbitCamera& cam, const std::vector<Model*>& models,
         dev_.drawFullscreen();
         dev_.endPass();
     }
+}
+
+void Renderer::setHudAtlas(FontAtlas* atlas) {
+    hudAtlas_ = atlas;
+    hud_.reset();   // the texture is created lazily from the atlas on the next draw
+}
+
+uint32_t Renderer::drawHud(const std::vector<HudVertex>& vertices, uint32_t screenW, uint32_t screenH) {
+    if (!hudAtlas_ || !hudAtlas_->loaded() || vertices.empty()) return 0;
+    if (!hud_) hud_ = std::make_unique<HudRenderer>(dev_, rhi::Format::Backbuffer);
+    hud_->syncAtlas(dev_, *hudAtlas_);
+    rhi::PassDesc pass;
+    pass.backbuffer = true;
+    pass.clearColor = false;   // load the finished frame
+    pass.clearDepth = false;
+    dev_.beginPass(pass);
+    const uint32_t w = dev_.backbufferWidth();
+    const uint32_t h = dev_.backbufferHeight();
+    dev_.setViewport(0, 0, static_cast<int>(w), static_cast<int>(h));
+    const uint32_t drawn = hud_->draw(dev_, vertices, screenW ? screenW : w, screenH ? screenH : h);
+    dev_.endPass();
+    return drawn;
 }
 
 } // namespace ukiyo

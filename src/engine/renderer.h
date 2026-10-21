@@ -15,6 +15,7 @@
 
 #include "engine/camera.h"
 #include "engine/gpu_types.h"
+#include "engine/hud.h"
 #include "engine/graph_material.h"
 #include "engine/model.h"
 #include "engine/trail.h"
@@ -233,6 +234,13 @@ public:
     void render(const OrbitCamera& cam, const std::vector<Model*>& models,
                 float time, uint32_t frameIndex, const RenderSettings& settings);
 
+    // ---- HUD ------------------------------------------------------------------------------------------------
+    // The glyph atlas is borrowed and must outlive the renderer. drawHud() is called after render() and before
+    // device.endFrame(); it opens and closes its own pass on the presentation target, so the scene render is untouched.
+    void setHudAtlas(FontAtlas* atlas);
+    // Draws the canvas vertices (pixels, origin top-left). Returns the vertices drawn; 0 when there is no atlas.
+    uint32_t drawHud(const std::vector<HudVertex>& vertices, uint32_t screenW, uint32_t screenH);
+
     // Trails to draw this frame. The renderer keeps the pointers only for the duration of render(): the caller owns
     // the Trail objects, and they must outlive the call. Alpha trails are drawn after the blended materials so they
     // composite over them; additive trails (sword arcs, light streaks) are drawn after those. Each list is one draw.
@@ -319,6 +327,8 @@ private:
 
     // Fixed-size resources.
     std::unique_ptr<rhi::Buffer> frameUbo_;
+    std::unique_ptr<class HudRenderer> hud_;
+    FontAtlas* hudAtlas_ = nullptr;
     std::unique_ptr<rhi::Texture> shadowAtlas_;     // 4096, 2x2 cascades of 2048
     std::unique_ptr<rhi::Texture> dummyTex_;        // used by the shadow pass's Frame set
     std::unique_ptr<rhi::DescriptorSet> frameSet_;

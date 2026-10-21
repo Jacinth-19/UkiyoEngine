@@ -33,6 +33,9 @@ public:
     // lastError() and stop the scripts, as in callUpdate.
     void callPushed(int nargs);
     bool hasFunction(const char* name) const;
+    // True once a chunk has been loaded successfully. A host that was never given a script runs nothing; the player
+    // reports that rather than counting an empty host as a running script.
+    bool loaded() const { return loaded_; }
     bool hasFailed() const { return failed_; }
     const std::string& lastError() const { return lastError_; }
 
@@ -43,6 +46,7 @@ private:
     lua_State* L_ = nullptr;
     std::string lastError_;
     bool failed_ = false;
+    bool loaded_ = false;
 };
 
 } // namespace ukiyo

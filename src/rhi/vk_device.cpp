@@ -208,6 +208,38 @@ public:
     uint32_t height() const override { return desc_.height; }
     Format format() const override { return desc_.format; }
 
+    // Partial upload: sampled -> transfer dst -> one copy -> sampled. The staging buffer is freed by immediate()'s
+    // wait, so the caller sees a finished texture on return.
+    void update(uint32_t x, uint32_t y, uint32_t w, uint32_t h, const void* rgba8) override {
+        if (depth_ || external_) throw std::runtime_error("texture update needs an owned colour texture");
+        if (rgba8 == nullptr || w == 0 || h == 0) return;
+        if (x + w > desc_.width || y + h > desc_.height) throw std::runtime_error("texture update out of range");
+        const VkDeviceSize bytes = static_cast<VkDeviceSize>(w) * h * 4;
+        VkBufferCreateInfo bi{VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO};
+        bi.size = bytes;
+        bi.usage = VK_BUFFER_USAGE_TRANSFER_SRC_BIT;
+        VmaAllocationCreateInfo ai{};
+        ai.usage = VMA_MEMORY_USAGE_AUTO;
+        ai.flags = VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT | VMA_ALLOCATION_CREATE_MAPPED_BIT;
+        VkBuffer staging = VK_NULL_HANDLE;
+        VmaAllocation salloc = nullptr;
+        VmaAllocationInfo sinfo{};
+        VK_CHECK(vmaCreateBuffer(core_->vma, &bi, &ai, &staging, &salloc, &sinfo), "staging buffer (texture update)");
+        std::memcpy(sinfo.pMappedData, rgba8, static_cast<size_t>(bytes));
+        immediate(core_, [&](VkCommandBuffer cb) {
+            barrierLayout(cb, image_, aspect_, sampledLayout(), VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
+            VkBufferImageCopy region{};
+            region.bufferOffset = 0;
+            region.imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
+            region.imageOffset = {static_cast<int32_t>(x), static_cast<int32_t>(y), 0};
+            region.imageExtent = {w, h, 1};
+            vkCmdCopyBufferToImage(cb, staging, image_, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &region);
+            barrierLayout(cb, image_, aspect_, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, sampledLayout());
+        });
+        layout_ = sampledLayout();
+        vmaDestroyBuffer(core_->vma, staging, salloc);
+    }
+
     VkImage image() const { return image_; }
     VkImageView view() const { return view_; }
     VkSampler sampler() const { return sampler_; }
@@ -441,7 +473,8 @@ public:
         readback_.reset();
         destroySwapchain();
         if (swapchain_) vkDestroySwapchainKHR(core_.device, swapchain_, nullptr);
-        for (auto& l : setLayouts_) vkDestroyDescriptorSetLayout(core_.device, l, nullptr);
+        for (auto& l : setLayouts_)
+            if (l) vkDestroyDescriptorSetLayout(core_.device, l, nullptr);
         for (auto s : renderFinished_) vkDestroySemaphore(core_.device, s, nullptr);
         vkDestroySemaphore(core_.device, imageAvailable_, nullptr);
         vkDestroyFence(core_.device, inFlight_, nullptr);
@@ -964,7 +997,7 @@ private:
         auto B = [](uint32_t binding, VkDescriptorType t, VkShaderStageFlags s) {
             return VkDescriptorSetLayoutBinding{binding, t, 1, s, nullptr};
         };
-        // Index order must match SetType: Frame, Material, Skin, Post, ShaderMaterial, Motion, Particles.
+        // Index order must match SetType: Frame, Material, Skin, Post, ShaderMaterial, Motion, Particles, Hud.
         setLayouts_[0] = make({B(0, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, VF), B(1, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, VF)});
         setLayouts_[1] = make({B(4, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, F), B(5, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, F),
                                B(6, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, F), B(8, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, VF),
@@ -987,6 +1020,9 @@ private:
         }
         setLayouts_[5] = make({B(10, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, V)});
         setLayouts_[6] = make({B(11, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, V)});
+        // Index 7 is SetType::Hud: the glyph atlas, at binding 0. Its own set so the HUD pass binds one texture and
+        // nothing else, and does not disturb the Frame set's units.
+        setLayouts_[7] = make({B(0, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, F)});
     }
 
     void createSwapchain() {
@@ -1086,7 +1122,7 @@ public:
     VkCommandPool framePool_ = VK_NULL_HANDLE;
     VkCommandBuffer cb_ = VK_NULL_HANDLE;
     VkDescriptorPool descPool_ = VK_NULL_HANDLE;
-    VkDescriptorSetLayout setLayouts_[7]{};
+    VkDescriptorSetLayout setLayouts_[8]{};
     VkSemaphore imageAvailable_ = VK_NULL_HANDLE;
     VkFence inFlight_ = VK_NULL_HANDLE;
     VkSwapchainKHR swapchain_ = VK_NULL_HANDLE;

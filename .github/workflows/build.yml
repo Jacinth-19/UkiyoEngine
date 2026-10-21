@@ -141,6 +141,23 @@ jobs:
       # the counts in docs/FILESYSTEM.md are the ones the engine's matcher returns.
       - name: Render the browser figure
         run: mkdir -p renders && ./build/browser_qol_preview renders/browser-qol.png 1600 1000
+      # The player's runtime, without a device: the build manifest, the scene reader, transforms and the hierarchy,
+      # scene lights, the save format, HUD text and layout, and the whole boot/tick/script-switch path (docs/PLAYER.md).
+      - name: Run Player Tests
+        run: |
+          set -o pipefail
+          for t in transform_test lights_test save_test manifest_test scene_runtime_test hud_test player_test; do
+            echo "::group::$t"
+            ./build/$t 2>&1 | tee /tmp/ukiyo-test-$t.log
+            echo "::endgroup::"
+          done
+      # The player binary itself, booting the fixture project with no window, no GPU and no sound device: the same
+      # start, tick and HUD path main.cpp takes. This is the check that the Build page's output actually runs.
+      - name: Run Player Self-Test
+        run: ./build/ukiyo_player --selftest --build Build/build.json --project tests/fixtures/player
+      # The figure in docs/PLAYER.md, from the shipping layout. It renders the HUD with the same vertex list the GPU gets.
+      - name: Render the player HUD figure
+        run: mkdir -p renders && ./build/hud_preview --out renders/player-hud.png --background docs/terrain-hero.png
       # The input runtime, its asset format and its actions, driven from synthetic devices: no window, no GPU, no GLFW.
       # It checks press/hold/tap/multitap, 1D and 2D composites, processors, control schemes, rebinding, and that the
       # .inputactions file the engine writes loads back byte-for-byte. docs/INPUT.md.
@@ -380,7 +397,8 @@ jobs:
         run: |
           $failed = @()
           foreach ($t in @("systems_test", "network_test", "project_test", "vgeom_test", "motion_test", "gi_test", "input_test", "trail_test", "search_test", "browser_zoom_test", "ao_test",
-                    "contact_shadow_test", "alpha_mips_test")) {
+                    "contact_shadow_test", "alpha_mips_test", "transform_test", "lights_test", "save_test",
+                    "manifest_test", "scene_runtime_test", "hud_test", "player_test")) {
             Write-Host "::group::$t"
             $out = & "./build/$t.exe" 2>&1
             $code = $LASTEXITCODE
@@ -399,6 +417,10 @@ jobs:
             }
           }
           if ($failed.Count -gt 0) { throw "failed: $($failed -join ', ')" }
+
+      # The player, booting the fixture project with no window and no device (docs/PLAYER.md).
+      - name: Run Player Self-Test
+        run: ./build/ukiyo_player.exe --selftest --build Build/build.json --project tests/fixtures/player
 
       # The hub is the only Qt program CI can run without a desktop: offscreen, the same self-test the Linux job runs.
       - name: Run Hub Self-Test
@@ -462,6 +484,7 @@ jobs:
         run: |
           file build-android-arm64/search_test build-android-x86_64/search_test
           file build-android-arm64/browser_zoom_test build-android-x86_64/browser_zoom_test
+          file build-android-arm64/transform_test build-android-x86_64/transform_test
           file build-android-arm64/search_test | grep -q "ARM aarch64" ||
             { echo "::error::the arm64 build is not AArch64"; exit 1; }
           file build-android-x86_64/search_test | grep -Eq "x86-64" ||
