@@ -200,8 +200,14 @@ constexpr int kItemScene = -2;
 constexpr int kItemLight = -4;       // the project's sun, which always exists
 // Instance i is listed as kItemInstanceBase - i. Node rows use their index (>= 0).
 constexpr int kItemInstanceBase = -100;
-// Authored light i (item 6) is listed as kItemLightBase - i, so a row can be told from an instance row.
+// Authored light i (item 6) is listed as kItemLightBase - i, so a row can be told from an instance row. The two
+// ranges must never touch: an instance is (kItemLightBase, kItemInstanceBase], a light is <= kItemLightBase, and a
+// hundred thousand instances before they meet is five figures of headroom. They are read through these two helpers
+// because the first version of the light code tested "kind > kItemLightBase" wherever it meant "is an instance",
+// which is true of every instance and made a model row open the Delete Light menu.
 constexpr int kItemLightBase = -100000;
+constexpr bool isInstanceRow(int kind) { return kind <= kItemInstanceBase && kind > kItemLightBase; }
+constexpr bool isLightRow(int kind) { return kind <= kItemLightBase; }
 // Holds the label a Hierarchy row was built with, so a real edit can be told apart from a restyle.
 constexpr int kRowLabelRole = Qt::UserRole + 1;
 // Blue for prefab instances in the Hierarchy and Inspector.
@@ -299,10 +305,20 @@ protected:
         const QModelIndex index = fs->index(row, 0, parent);
         if (!index.isValid()) return true;
         const QString path = fs->filePath(index);
-        // The folder the browser is showing is never filtered away: a view whose root row is hidden would show nothing
-        // at all, and a query like "*.vrm" would make the browser look empty rather than filtered.
-        if (!root_.isEmpty() && QDir::cleanPath(path) == root_) return true;
         const bool isDir = fs->isDir(index);
+        // The folder the browser is showing, and every folder above it, is never filtered away. Two reasons, and the
+        // second one is not obvious: a view whose root row is hidden shows nothing at all, and a proxy model has no
+        // row for the children of a rejected parent -- so filtering "assets" out on a query like "sword" took the
+        // folder being shown with it and the grid went empty for every query typed inside a subfolder. The chain is
+        // kept unconditionally; only the rows below the folder are the query's business.
+        if (!root_.isEmpty()) {
+            const QString clean = QDir::cleanPath(path);
+            if (clean == root_) return true;
+            if (isDir) {
+                const QString below = QDir(clean).relativeFilePath(root_);
+                if (!below.startsWith(QStringLiteral("..")) && !QDir::isAbsolutePath(below)) return true;
+            }
+        }
         if (kind_ == 4 && !isDir) return false;                     // Folders: folders only
         if ((kind_ >= 1 && kind_ <= 3) && isDir) return false;      // a type filter is about files
         if (!isDir && !extensionAllowed(kind_, QFileInfo(path).suffix().toLower())) return false;
@@ -911,7 +927,7 @@ void MainWindow::buildDocks() {
         const QVariant built = item->data(0, kRowLabelRole);
         if (!built.isValid() || item->text(0) == built.toString()) return;
         const int kind = item->data(0, Qt::UserRole).toInt();
-        if (kind <= kItemInstanceBase && kind > kItemLightBase) renameInstance(kItemInstanceBase - kind, item->text(0));
+        if (isInstanceRow(kind)) renameInstance(kItemInstanceBase - kind, item->text(0));
     });
     hierarchy_->setContextMenuPolicy(Qt::CustomContextMenu);
     connect(hierarchy_, &QWidget::customContextMenuRequested, this, [this](const QPoint& pos) {
@@ -3409,7 +3425,7 @@ void MainWindow::updateInstanceRowMarkers() {
     QTreeWidgetItemIterator it(hierarchy_);
     while (*it) {
         const int kind = (*it)->data(0, Qt::UserRole).toInt();
-        if (kind <= kItemInstanceBase && kind > kItemLightBase) {
+        if (isInstanceRow(kind)) {
             const int index = kItemInstanceBase - kind;
             if (index < static_cast<int>(list.size())) {
                 QFont f = (*it)->font(0);
@@ -3468,7 +3484,7 @@ void MainWindow::showPropertiesFor(QTreeWidgetItem* item) {
         bool allInstances = true;
         for (QTreeWidgetItem* sel : hierarchy_->selectedItems()) {
             const int k = sel->data(0, Qt::UserRole).toInt();
-            if (k <= kItemInstanceBase) picked.push_back(kItemInstanceBase - k);
+            if (isInstanceRow(k)) picked.push_back(kItemInstanceBase - k);
             else allInstances = false;
         }
         if (allInstances) {
@@ -3487,7 +3503,7 @@ void MainWindow::showPropertiesFor(QTreeWidgetItem* item) {
         showCameraProperties(&gameCam_, "Main Camera", "photo_camera");
     } else if (kind == kItemLight) {
         showLightProperties();
-    } else if (kind < kItemInstanceBase && kind > kItemLightBase) {
+    } else if (isLightRow(kind)) {
         showSceneLightProperties(kItemLightBase - kind);
     } else if (kind == kItemScene) {
         showSceneProperties();
@@ -6381,7 +6397,7 @@ int MainWindow::selectedInstance() const {
     const QTreeWidgetItem* cur = hierarchy_->currentItem();
     if (!cur) return -1;
     const int kind = cur->data(0, Qt::UserRole).toInt();
-    return kind <= kItemInstanceBase && kind > kItemLightBase ? kItemInstanceBase - kind : -1;
+    return isInstanceRow(kind) ? kItemInstanceBase - kind : -1;
 }
 
 void MainWindow::copyInstance(int index) {
@@ -7044,7 +7060,7 @@ void MainWindow::renameInstance(int index, const QString& name) {
 QMenu* MainWindow::hierarchyContextMenu(QTreeWidgetItem* item) {
     QMenu* menu = new QMenu(this);
     const int kind = item ? item->data(0, Qt::UserRole).toInt() : kItemScene;
-    if (item && kind < kItemInstanceBase && kind > kItemLightBase) {
+    if (item && isLightRow(kind)) {
         const int index = kItemLightBase - kind;
         menu->addAction(uiIcon("delete"), QStringLiteral("Delete Light"), this, [this, index] { deleteLight(index); });
         return menu;
@@ -8529,6 +8545,11 @@ int MainWindow::runSelfTest() {
             const int emptyIndex = before;
             check(instanceCount() == before + 1, "Create > Empty Object adds one instance");
             check(selectedInstance() == emptyIndex, "the new empty object is selected");
+            // A row past the first instance has to reach the instance page: the light rows sit below kItemLightBase,
+            // and a range test that only asked "below the instance base" also caught every instance but the first,
+            // which opened a light page with an index no light has.
+            check(inspectedInstance_ == emptyIndex, "a second instance row opens the instance page, not a light page",
+                  QString::number(inspectedInstance_));
             check(labelOf(emptyIndex) == "Empty Object", "the empty object's row reads Empty Object");
             check(rowFor(emptyIndex) && (rowFor(emptyIndex)->flags() & Qt::ItemIsEditable),
                   "model rows can be renamed in place");
@@ -10180,8 +10201,12 @@ int MainWindow::runSelfTest() {
             if (meshNode >= 0) {
                 const QString before = nodes_[meshNode].graphMaterial;
                 const bool dirtyBefore = sceneDirty_;
-                const QString defAbs = root + QStringLiteral("/Materials/Default.ukmat");
-                const QString redAbs = root + QStringLiteral("/Materials/Red.ukmat");
+                const QString defAbs = QDir::cleanPath(root + QStringLiteral("/Materials/Default.ukmat"));
+                const QString redAbs = QDir::cleanPath(root + QStringLiteral("/Materials/Red.ukmat"));
+                // The node keeps the path exactly as it was given, so the scene's own (project-relative) value and the
+                // absolute path this block works in are two spellings of one file. Compare them as the file they name.
+                const QString beforeAbs = before.isEmpty() ? QString()
+                                                           : QDir::cleanPath(QDir(projectRoot_).absoluteFilePath(before));
                 // The Inspector checks above cleared Red's override, so write it again: the viewport must draw red.
                 writeMat(QStringLiteral("Red"), QJsonObject{{QStringLiteral("albedo"), QStringLiteral("Textures/red.png")}});
                 int active = 0;
@@ -10217,13 +10242,37 @@ int MainWindow::runSelfTest() {
                         *out = worker_->renderNow(cam).convertToFormat(QImage::Format_RGB32);
                     });
                 };
-                // The model's own look, before any override. Its palette is warm (a VRM character's skin and clothes
-                // count as "red" by any fixed rule), so the checks below compare against this shot rather than against
-                // an absolute red/blue dominance that only the flat test texture could satisfy.
+                // The model's own look, before any graph material: only used to show that assigning the shader's
+                // default is a visible change, so the baseline below is really the shader's own texture.
+                QImage ownView;
+                shot(&ownView);
+                long oR = 0, oB = 0;
+                tally(ownView, oR, oB);
+                auto pixelsDiffer = [](const QImage& a, const QImage& b) -> long {
+                    if (a.isNull() || b.isNull() || a.size() != b.size()) return -1;
+                    long n = 0;
+                    for (int y = 0; y < a.height(); ++y)
+                        for (int x = 0; x < a.width(); ++x)
+                            if (a.pixel(x, y) != b.pixel(x, y)) ++n;
+                    return n;
+                };
+
+                // The baseline is the shader's default texture on the model, not the model's own look. Its palette is
+                // warm (a VRM character's skin and clothes count as "red" by any fixed rule), so the checks below
+                // compare against this shot rather than against an absolute red/blue dominance that only the flat
+                // test texture could satisfy -- and the revert compares against it for the same reason.
+                setNodeMaterial(meshNode, defAbs);
+                settle();
                 QImage baseView;
                 shot(&baseView);
                 long bR = 0, bB = 0;
                 tally(baseView, bR, bB);
+                if (beforeAbs != defAbs) {
+                    const long materialDiff = pixelsDiffer(ownView, baseView);
+                    check(materialDiff > 200, "11t: assigning the shader's default material changes what the model draws",
+                          QString("%1 pixels differ from the view before it was assigned (own red %2, blue %3; "
+                                  "shader red %4, blue %5)").arg(materialDiff).arg(oR).arg(oB).arg(bR).arg(bB));
+                }
 
                 setNodeMaterial(meshNode, redAbs);
                 settle();
@@ -10232,7 +10281,8 @@ int MainWindow::runSelfTest() {
                 long rR = 0, rB = 0;
                 tally(redView, rR, rB);
                 check(rR > bR + 300, "11t: the viewport draws a material's texture override on the model",
-                      QString("override red %1, own look red %2, blue %3").arg(rR).arg(bR).arg(rB));
+                      QString("override red %1, blue %2; shader default red %3, blue %4")
+                          .arg(rR).arg(rB).arg(bR).arg(bB));
 
                 setNodeMaterial(meshNode, defAbs);
                 settle();
@@ -10245,7 +10295,7 @@ int MainWindow::runSelfTest() {
                 const long tolerance = std::max<long>(40, bR / 10);
                 check(std::labs(dR - bR) <= tolerance && std::labs(dB - bB) <= tolerance,
                       "11t: the viewport draws the shader's default texture when there is no override",
-                      QString("after override red %1, blue %2; before it red %3, blue %4").arg(dR).arg(dB).arg(bR).arg(bB));
+                      QString("after override red %1, blue %2; shader default red %3, blue %4").arg(dR).arg(dB).arg(bR).arg(bB));
 
                 setNodeMaterial(meshNode, before);
                 settle();
@@ -12890,8 +12940,14 @@ int MainWindow::runSelfTest() {
                 grassBlock = terrain.value(QStringLiteral("grass")).toObject();
         }
         const QString grassDetail = QString::fromUtf8(QJsonDocument(grassBlock).toJson(QJsonDocument::Compact));
+        // The values are compared against what was pushed (not against numbers written twice): the document has to
+        // carry the scatter, the two bands and the layer mask the settings above asked for.
+        auto close = [](double got, double want) { return std::fabs(got - want) < 1e-4; };
         check(grassBlock.value(QStringLiteral("enabled")).toBool(false) &&
-                  std::fabs(grassBlock.value(QStringLiteral("density")).toDouble() - 0.9) < 1e-4 &&
+                  close(grassBlock.value(QStringLiteral("density")).toDouble(-1.0), meadow.grass.density) &&
+                  close(grassBlock.value(QStringLiteral("bandNear")).toDouble(-1.0), meadow.grass.bandNear) &&
+                  close(grassBlock.value(QStringLiteral("bandMid")).toDouble(-1.0), meadow.grass.bandMid) &&
+                  close(grassBlock.value(QStringLiteral("cullDistance")).toDouble(-1.0), meadow.grass.cullDistance) &&
                   grassBlock.value(QStringLiteral("includeLayers")).toArray().size() == 1,
               "grass: the scene document holds the scatter, the bands and the layer mask", grassDetail);
         runOnWorker([&] {
