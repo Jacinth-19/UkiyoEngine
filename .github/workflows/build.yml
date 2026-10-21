@@ -556,10 +556,15 @@ jobs:
                     "contact_shadow_test", "alpha_mips_test", "transform_test", "lights_test", "save_test",
                     "manifest_test", "scene_runtime_test", "hud_test", "character_test", "player_test")) {
             Write-Host "::group::$t"
-            # script_test gets --trace: it prints the name of every check as it runs, flushed line by line, so a
-            # crash that leaves no summary still says which check it died in.
+            # script_test keeps a trace in a file as well as on stdout: a process that dies on Windows has been seen to
+            # lose the last lines of a redirected stdout, and a file is flushed on every line.
+            $traceLog = "$PWD\$t.trace.log"
+            $env:UKIYO_TEST_LOG = ""
             $testArgs = @()
-            if ($t -eq "script_test") { $testArgs = @("--trace") }
+            if ($t -eq "script_test") {
+                $testArgs = @("--trace")
+                $env:UKIYO_TEST_LOG = $traceLog
+            }
             $out = & "./build/$t.exe" @testArgs 2>&1
             $code = $LASTEXITCODE
             $out | ForEach-Object { Write-Host $_ }
@@ -572,9 +577,12 @@ jobs:
               if ($fails) { $fails | ForEach-Object { Write-Host "::error::  $($_.Line)" } }
               $summary = $out | Select-String -Pattern "passed|failed|checks" | Select-Object -Last 2
               if ($summary) { $summary | ForEach-Object { Write-Host "::error::  $($_.Line)" } }
-              # The tail is what says where a process died: the test prints its section before running it, so a crash
-              # leaves the section it was in as the last line it wrote. Four lines was not enough to see that.
-              $out | Select-Object -Last 12 | ForEach-Object { Write-Host "::error::  $_" }
+              # The tail is what says where a process died. Standard output of a crashed process is not always
+              # delivered, so script_test also writes its trace to a file; read whatever the file kept.
+              $tail = @()
+              if (Test-Path $traceLog) { $tail = Get-Content $traceLog -Tail 10 }
+              if ($tail.Count -eq 0) { $tail = $out | Select-Object -Last 10 }
+              $tail | ForEach-Object { Write-Host "::error::  $_" }
               $failed += $t
             }
           }

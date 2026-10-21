@@ -34,13 +34,18 @@ static int checks = 0;
 // Every check's name as it runs, off by default. A crash leaves no summary, and a CI runner writes a redirected
 // stdout in blocks, so the trace is flushed on every line: the last line it wrote is the check that killed it.
 static bool trace = false;
+static std::ofstream traceLog;   // UKIYO_TEST_LOG: the same trace in a file, flushed line by line
 
 static void check(bool ok, const std::string& what, const std::string& detail = {}) {
     ++checks;
     if (ok) {
         if (trace) {
-            std::printf("PASS  %s\n", what.c_str());
+            std::printf("PASS  #%d %s\n", checks, what.c_str());
             std::fflush(stdout);
+            if (traceLog) {
+                traceLog << "PASS  #" << checks << " " << what << "\n";
+                traceLog.flush();
+            }
         }
         return;
     }
@@ -56,6 +61,10 @@ static void check(bool ok, const std::string& what, const std::string& detail = 
 static void section(const char* name) {
     std::printf("== %s\n", name);
     std::fflush(stdout);
+    if (traceLog) {
+        traceLog << "== " << name << "\n";
+        traceLog.flush();
+    }
 }
 
 static fs::path testRoot() {
@@ -123,17 +132,22 @@ static void testErrors() {
     check(h.lastError().find("hero.lua:3:") == 0, "errors: lastError reads file:line", h.lastError());
 
     // The budget: three failures in a row stop the script, and a success in between resets the count.
+    section("errors: budget");
     ScriptHost once;
     std::string e2;
     check(once.loadString("function onUpdate(dt) error('boom') end", "@boom.lua", &e2), "errors: the doomed script loads",
           e2);
-    for (int i = 0; i < ScriptHost::kMaxErrors; ++i) once.callUpdate(0.016f);
+    for (int i = 0; i < ScriptHost::kMaxErrors; ++i) {
+        once.callUpdate(0.016f);
+        section("errors: budget, one call");
+    }
     check(once.hasFailed(), "errors: three failures in a row stop the script");
     check(once.errorCount() == ScriptHost::kMaxErrors, "errors: and it counted them",
           std::to_string(once.errorCount()));
     once.callUpdate(0.016f);
     check(once.errorCount() == ScriptHost::kMaxErrors, "errors: a stopped script is not called again");
 
+    section("errors: alternating");
     ScriptHost alternating;
     std::string e3;
     check(alternating.loadString("n = 0\nfunction onUpdate(dt) n = n + 1 if n % 2 == 1 then error('odd') end end",
@@ -144,6 +158,7 @@ static void testErrors() {
           "errors: a call that succeeds resets the budget", std::to_string(alternating.errorCount()));
 
     // A compile error is a check, not a run: it names the file and line and executes nothing.
+    section("errors: compile");
     ScriptHost compile;
     std::string bad = "local = = 1\n";
     check(!compile.compileString(bad, "@bad.lua", &err), "errors: a syntax error is reported");
@@ -382,6 +397,12 @@ int main(int argc, char** argv) {
     for (int i = 1; i < argc; ++i)
         if (std::string(argv[i]) == "--trace") trace = true;
     if (const char* env = std::getenv("UKIYO_TEST_TRACE")) trace = trace || std::string(env) != "0";
+    if (const char* logPath = std::getenv("UKIYO_TEST_LOG")) {
+        // A file, flushed on every line: the OS keeps what was written even when the process is killed, which a pipe
+        // does not always do. CI reads it back when a test dies.
+        traceLog.open(logPath, std::ios::binary | std::ios::trunc);
+        trace = trace || static_cast<bool>(traceLog);
+    }
     try {
         section("sandbox");
         testSandbox();
