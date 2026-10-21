@@ -143,8 +143,26 @@ static void installCrashReporters() {
 }
 #endif
 
+// Thrown by --max, to end a run where CI asked it to: unwinding runs the destructors, which close the Lua states and
+// let the heap be checked, instead of _Exit, which would leave the corruption undiscovered.
+struct StopEarly {};
+
+static int maxChecks = 0;   // --max: stop after this many checks
+
 static void check(bool ok, const std::string& what, const std::string& detail = {}) {
     ++checks;
+    if (maxChecks > 0 && checks >= maxChecks) {
+        if (!ok) {
+            ++failures;
+            std::printf("FAIL  %s\n", what.c_str());
+        }
+        std::fflush(stdout);
+        if (traceLog) {
+            traceLog << "MAX " << checks << "\n";
+            traceLog.flush();
+        }
+        throw StopEarly{};
+    }
     if (ok) {
         if (trace) {
             std::printf("PASS  #%d %s\n", checks, what.c_str());
@@ -511,8 +529,13 @@ int main(int argc, char** argv) {
 #ifdef _WIN32
     installCrashReporters();
 #endif
-    for (int i = 1; i < argc; ++i)
-        if (std::string(argv[i]) == "--trace") trace = true;
+    std::string only;   // --only <section>: one section, for CI to bisect a crash by
+    for (int i = 1; i < argc; ++i) {
+        const std::string arg = argv[i];
+        if (arg == "--trace") trace = true;
+        else if (arg == "--only" && i + 1 < argc) only = argv[++i];
+        else if (arg == "--max" && i + 1 < argc) maxChecks = std::atoi(argv[++i]);
+    }
     if (const char* env = std::getenv("UKIYO_TEST_TRACE")) trace = trace || std::string(env) != "0";
     if (const char* logPath = std::getenv("UKIYO_TEST_LOG")) {
         // A file, flushed on every line: the OS keeps what was written even when the process is killed, which a pipe
@@ -520,17 +543,32 @@ int main(int argc, char** argv) {
         traceLog.open(logPath, std::ios::binary | std::ios::trunc);
         trace = trace || static_cast<bool>(traceLog);
     }
+    bool completed = false;
     try {
-        section("sandbox");
-        testSandbox();
-        section("errors");
-        testErrors();
-        section("require");
-        testRequire();
-        section("runtime");
-        testRuntime();
-        section("project files");
-        testProjectFiles();
+        if (only.empty() || only == "sandbox") {
+            section("sandbox");
+            testSandbox();
+        }
+        if (only.empty() || only == "errors") {
+            section("errors");
+            testErrors();
+        }
+        if (only.empty() || only == "require") {
+            section("require");
+            testRequire();
+        }
+        if (only.empty() || only == "runtime") {
+            section("runtime");
+            testRuntime();
+        }
+        if (only.empty() || only == "project files") {
+            section("project files");
+            testProjectFiles();
+        }
+        completed = true;
+    } catch (const StopEarly&) {
+        // Asked to stop: the run's own destructors have already closed every Lua state and given the heap its chance to
+        // complain about what that section did.
     } catch (const std::exception& e) {
         // An exception in the test is a failure of the test, not a crash the next reader has to decode from an exit
         // code: say which one and exit cleanly.
@@ -542,5 +580,10 @@ int main(int argc, char** argv) {
     fs::remove_all(testRoot(), ec);
     std::printf("script: %d checks, %d failure(s)\n", checks, failures);
     std::fflush(stdout);
+    // A run that was asked to stop early says so in the trace too, where CI can read it when stdout is lost.
+    if (traceLog) {
+        traceLog << (completed ? "END " : "STOPPED ") << checks << "\n";
+        traceLog.flush();
+    }
     return failures == 0 ? 0 : 1;
 }
