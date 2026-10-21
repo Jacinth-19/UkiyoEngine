@@ -316,35 +316,43 @@ jobs:
       # does not compile, a descriptor set that does not match its layout, or a pipeline state that the driver rejects
       # fails here and nowhere else.
       - name: Run the device tests
-        env:
-          VK_ICD_FILENAMES: /usr/share/vulkan/icd.d/lvp_icd.x86_64.json
         run: |
           set -o pipefail
-          ls /usr/share/vulkan/icd.d/ || true
-          ls /usr/share/vulkan/icd.d/ | grep -q lvp || export VK_ICD_FILENAMES="$(ls /usr/share/vulkan/icd.d/*lvp* | head -1)"
+          # mesa names the manifest lvp_icd.<arch>.json; take whatever this image has rather than hardcoding the name.
+          icd="$(ls /usr/share/vulkan/icd.d/*lvp* 2>/dev/null | head -1)"
+          if [ -z "$icd" ]; then echo "::error::lavapipe is not installed"; exit 1; fi
+          export VK_ICD_FILENAMES="$icd"
           echo "ICD: $VK_ICD_FILENAMES"
           vulkaninfo --summary || true
+          failed=""
           for t in endfield_shader_test endfield_scene_test lod_gpu_test endfield_gpu_test particles_gpu_test; do
             echo "::group::$t"
-            xvfb-run -a ./build/$t 2>&1 | tee /tmp/ukiyo-gpu-$t.log
-            echo "::endgroup::"
+            if xvfb-run -a ./build/$t 2>&1 | tee /tmp/ukiyo-gpu-$t.log; then
+              echo "::endgroup::"
+            else
+              echo "::error::$t failed"
+              tail -25 /tmp/ukiyo-gpu-$t.log | while IFS= read -r line; do echo "::error::  $line"; done
+              echo "::endgroup::"
+              failed="$failed $t"
+            fi
           done
+          if [ -n "$failed" ]; then echo "::error::device tests failed:$failed"; exit 1; fi
       # The editor's own self-test, on the virtual display the engine session expects. It covers the window, the panels,
-      # the scene format round trips, play mode and the newcomponent forms, all on a real (software) device.
+      # the scene format round trips, play mode and the new component forms, all on a real (software) device.
       - name: Run the editor self-test
         env:
-          VK_ICD_FILENAMES: /usr/share/vulkan/icd.d/lvp_icd.x86_64.json
           QT_QPA_PLATFORM: xcb
         run: |
           set -o pipefail
+          export VK_ICD_FILENAMES="$(ls /usr/share/vulkan/icd.d/*lvp* | head -1)"
           xvfb-run -a -s "-screen 0 1600x1000x24" ./build/ukiyo_editor --selftest --no-splash 2>&1 | tee /tmp/ukiyo-editor-selftest.log
       # The player, end to end: a real window on the virtual display, a real device, a real model, the HUD over it. The
       # capture is then checked for content, because a black or empty frame is the failure mode a green exit code hides.
       - name: Run the player and capture a frame
         env:
-          VK_ICD_FILENAMES: /usr/share/vulkan/icd.d/lvp_icd.x86_64.json
           QT_QPA_PLATFORM: xcb
         run: |
+          export VK_ICD_FILENAMES="$(ls /usr/share/vulkan/icd.d/*lvp* | head -1)"
           mkdir -p renders
           xvfb-run -a -s "-screen 0 1280x720x24" ./build/ukiyo_player --backend vk --headless \
             --build Build/render.json --project tests/fixtures/player --shot renders/player-frame.png --seconds 1
