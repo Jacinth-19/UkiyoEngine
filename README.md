@@ -337,6 +337,7 @@ own glslang package is generated with a broken SPIRV-Tools path; everything else
 | [docs/AO.md](docs/AO.md) | the multi-bounce AO fit, where the albedo comes from, and why the post pass clamps it |
 | [docs/CONTACT_SHADOWS.md](docs/CONTACT_SHADOWS.md) | the contact-shadow march: parameters, why per pixel, and what the test pins |
 | [docs/PCSS.md](docs/PCSS.md) | percentage-closer soft shadows: the two passes, the receiver slope, the foreshortening, the numbers |
+| [docs/FLAX.md](docs/FLAX.md) | Flax 1.10–1.13 surveyed: what this engine has, what it can take, and in what order |
 | [docs/ALPHA_MIPS.md](docs/ALPHA_MIPS.md) | alpha-coverage-preserving mipmaps: the measurement, the search, and the chain upload |
 | [docs/TRAIL.md](docs/TRAIL.md) | trail ribbons: sections, the width curve and gradient, the alignment and tiling modes, the test |
 | [docs/SEARCH.md](docs/SEARCH.md) | fuzzy asset ranking and the glob grammar, and why the ranking is deliberately not "contains" |
