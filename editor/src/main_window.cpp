@@ -3981,7 +3981,8 @@ void MainWindow::addSystemsSections(QVBoxLayout* v, const std::vector<int>& mult
     f->status = new QLabel("Stopped");
     f->status->setWordWrap(true);
     QPushButton* bake = new QPushButton("Bake Navmesh");
-    bake->setToolTip("Builds a navmesh from the geometry of every instance. Play builds it too when an agent needs it.");
+    bake->setToolTip("Builds a navmesh from the geometry of every instance, terrain tiles included, at their own "
+                     "heights. Play builds it too when an agent needs it.");
     play->addRow(f->playButton);
     play->addRow(bake);
     f->bakeBar = new QProgressBar;
@@ -12789,6 +12790,27 @@ int MainWindow::runSelfTest() {
                     if (before.pixel(x, y) != after.pixel(x, y)) ++diff;
         check(diff > 500, "terrain: the tile is drawn in the frame", QString("%1 pixels differ").arg(diff));
         after.save(projectRoot_ + QStringLiteral("/renders/terrain_step2.png"));
+
+        // The navmesh bake takes the tile with it. This scene has a flat floor model, so a bake that skipped the
+        // terrain would still succeed -- at the floor's height, through the hills. The bake's input is the check.
+        {
+            QString bakeErr;
+            int navTris = 0;
+            bool baked = false;
+            std::vector<glm::vec3> navVerts;
+            runOnWorker([&] {
+                baked = worker_->bakeNavMesh(&bakeErr, &navTris);
+                navVerts = worker_->bakedNavVertices();
+            });
+            float minY = 1e9f, maxY = -1e9f;
+            for (const glm::vec3& v : navVerts) {
+                minY = std::min(minY, v.y);
+                maxY = std::max(maxY, v.y);
+            }
+            check(baked && maxY > 5.0f && minY < maxY - 5.0f,
+                  "terrain: the navmesh bake follows the tile's hills, not the floor under them",
+                  QString("%1 triangles, y %2 to %3").arg(navTris).arg(minY).arg(maxY));
+        }
 
         // Step 2: a layer's colour reaches the frame. Repaint layer 0 bright red and compare with the default colours.
         ukiyo::TerrainSettings red = ts;

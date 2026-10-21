@@ -233,6 +233,9 @@ public:
     bool bakeNavMesh(QString* error, int* triangles, std::atomic<int>* progress = nullptr);
     // A straight path on the baked navmesh, for the Inspector's path preview. Fails with a reason in error.
     bool previewPath(const glm::vec3& from, const glm::vec3& to, std::vector<glm::vec3>* path, QString* error);
+    // The geometry the last successful bake was built from (every model plus every terrain tile). It exists so a caller
+    // can say what the navmesh covers without asking Recast, and the self-test uses it to check that a hill reaches it.
+    const std::vector<glm::vec3>& bakedNavVertices() const { return navVerts_; }
     // Plays a sound file once through the editor's own audio device, outside play mode.
     bool previewSound(const std::string& path, float volume, bool loop, QString* error);
     void stopPreviewSound();

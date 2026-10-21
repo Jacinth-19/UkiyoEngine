@@ -126,3 +126,15 @@ without a device, and it is compiled by the normal CMake build so it cannot rot.
   same batch data and no colour output; it is a small renderer change, deliberately left out of this pass.
 * **Water** sits over the tile as a volume (the template enables it), but the preview tool does not draw it, so the ponds
   in the sample heightmap are not in the figure above.
+
+## 8. What the navigation bake sees
+
+A tile reaches the navmesh bake the same way it reaches the physics collider: as chunks from `buildChunk`
+(`src/engine/terrain.cpp:43`). `appendTerrainTriangles` (`src/engine/terrain.cpp:77`) walks every chunk, moves each
+vertex by the tile's origin and renumbers the indices past what the soup already holds, so a scene's models and its
+terrain arrive at Recast as one triangle soup. The editor's bake calls it per tile (`editor/src/engine_session.cpp`,
+`bakeNavMesh`) and Play builds the crowd on the same geometry, which is why an agent walking up the sample heightmap's
+hills stays on the surface instead of cutting through them at the floor's height. `tests/systems_test.cpp` checks that
+the soup carries all four chunks of the 257² sample tile, that every vertex sits on the grid at its own sample's height,
+that indices are renumbered, and that the result still spans the hills (3 m to 13 m on the ramp the test builds); the
+editor self-test bakes a scene of hills over a flat floor and asserts the bake's input reaches above 5 m.

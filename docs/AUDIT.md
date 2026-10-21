@@ -264,18 +264,19 @@ are uploaded once and never streamed; the real-time GI estimator sees only the *
 
 ### 4.10 Navigation
 
-Recast + Detour with an eight-stage bake, path queries and `dtCrowd` agents (`navigation.h:20-58`). Three limits, one of
-them serious:
+Recast + Detour with an eight-stage bake, path queries and `dtCrowd` agents (`navigation.h:20-58`). Two limits remain:
 
-* **Terrain is not in the navmesh.** The editor's own tooltip states the rule: *"Builds a navmesh from the geometry of
-  every instance"* (`main_window.cpp:3912`). `bakeNavMesh` then loops over instances and calls `worldTriangles` on each
-  *model* (`engine_session.cpp:1097-1101`). Terrain chunks are added to physics for play (§4.4) but never to the bake, so
-  an agent on sculpted ground walks off the mesh the moment the ground is terrain rather than a model.
 * **One setting set.** The bake always uses `NavMesh::Settings()` defaults (`engine_session.cpp:1107`), and those defaults
   (0.3 m radius, 1.8 m height, 45° slope, 0.4 m climb, `navigation.h:20-24`) are not exposed anywhere in the editor: the
   Navigation section has only "Max speed (m/s)" for the selected agent (`main_window.cpp:3984-3993`).
 * **No off-mesh links, area costs, multiple navmeshes, or incremental rebuild.** Play re-bakes only when `navBaked_` is
   false (`engine_session.cpp:1215`), so editing the level mid-session leaves the crowd on the old mesh.
+
+*Fixed since this audit:* the bake now takes terrain tiles as well as models. `bakeNavMesh` used to call
+`worldTriangles` on each instance's *model* only, so a scene whose ground was a tile baked the floor underneath it and
+an agent on sculpted ground walked off the mesh. `appendTerrainTriangles` (`src/engine/terrain.cpp:77`) appends every
+chunk through the same `buildChunk` the collider uses, moved to the tile's origin, and the editor self-test bakes a
+scene of hills over a flat floor and checks the input reaches above 5 m. See [TERRAIN.md](TERRAIN.md) §8.
 
 ### 4.11 Platforms and devices
 

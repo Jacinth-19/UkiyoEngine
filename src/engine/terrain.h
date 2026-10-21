@@ -180,6 +180,13 @@ inline uint32_t chunksForSize(uint32_t size, uint32_t cells) {
 // Builds chunk (cx, cz). Returns an empty mesh when the chunk is outside the grid or the map is not valid.
 ChunkMesh buildChunk(const Heightmap& map, uint32_t cx, uint32_t cz, uint32_t cells);
 
+// Appends every chunk of `map` to a triangle soup, each vertex moved by `origin` and each index renumbered past what
+// the buffers already hold. This is how a tile reaches the navmesh bake: the bake wants one soup of the whole scene,
+// while the collider adds a chunk at a time. Both come through buildChunk, so a walkable hill and a collidable one are
+// the same triangles. Tiles are placed by translation; the renderer draws them the same way.
+void appendTerrainTriangles(const Heightmap& map, const glm::vec3& origin, uint32_t cells,
+                            std::vector<glm::vec3>* vertices, std::vector<uint32_t>* indices);
+
 // Reads a raw file of size * size little-endian 16-bit values (65535 is height 1). `size` must match the file. The
 // cellSize and heightScale already in *out are kept. Returns false with *error set when the file cannot be read or
 // its length is wrong.

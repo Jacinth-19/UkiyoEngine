@@ -1123,6 +1123,12 @@ bool EngineSession::bakeNavMesh(QString* error, int* triangles, std::atomic<int>
         // The rest pose is enough for navigation. updateModel also refreshes the node world matrices.
         updateModel(*in.model, 0.0f, glm::vec3(0.0f));
         worldTriangles(*in.model, &verts, &tris);
+        // A terrain tile has no mesh of its own: without its chunks the bake only sees the floor under the hills, and
+        // every path across a valley is a straight line at the floor's height. The collider adds the same chunks, so
+        // what an agent walks on and what a body falls onto are one surface.
+        if (in.terrainGpu) {
+            ukiyo::appendTerrainTriangles(in.terrainGpu->map, in.position, ukiyo::kTerrainChunkCells, &verts, &tris);
+        }
     }
     if (tris.empty()) {
         if (error) *error = QStringLiteral("The scene has no geometry to bake.");

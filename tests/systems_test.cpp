@@ -1821,6 +1821,45 @@ static void testTerrain() {
     check(std::fabs(ramp.heightAtMetres(32.0f, 16.0f) - ramp.heightAt(64, 32)) < 1e-4f,
           "terrain: a point on a sample reads that sample's height");
 
+    // The navmesh bake takes the tile as one triangle soup. It has to carry every chunk, keep the heights the map
+    // gives, and move with the tile's origin -- a bake that skipped the terrain is the flat floor under the hills.
+    {
+        std::vector<glm::vec3> soup;
+        std::vector<uint32_t> soupIdx;
+        // Half a soup first: the appended indices must be renumbered past it, not start at zero again.
+        soup.push_back(glm::vec3(-9.0f, -9.0f, -9.0f));
+        soupIdx.push_back(0);
+        const glm::vec3 origin(100.0f, 3.0f, -50.0f);
+        appendTerrainTriangles(ramp, origin, 64, &soup, &soupIdx);
+        const size_t perChunk = size_t(65) * 65;
+        const size_t idxPerChunk = size_t(64) * 64 * 6;
+        check(soup.size() == 1 + 4 * perChunk && soupIdx.size() == 1 + 4 * idxPerChunk,
+              "terrain: the tile reaches the soup as four chunks of triangles",
+              std::to_string(soup.size()) + " vertices, " + std::to_string(soupIdx.size()) + " indices");
+        bool inRange = true;
+        for (size_t k = 1; k < soupIdx.size(); ++k) inRange = inRange && soupIdx[k] >= 1 && soupIdx[k] < soup.size();
+        check(inRange, "terrain: the appended indices are renumbered past the vertices already in the soup");
+        // Every vertex is a sample of the map, moved by the origin: x and z on the tile's grid, y from the heightmap.
+        bool placed = soup[0] == glm::vec3(-9.0f) && soup[1] == glm::vec3(100.0f, 3.0f + ramp.heightAt(0, 0), -50.0f);
+        float minY = 1e9f, maxY = -1e9f;
+        for (size_t k = 1; k < soup.size() && placed; ++k) {
+            const glm::vec3& p = soup[k];
+            // The soup is chunk by chunk, so x runs 0..64 cells inside each chunk and repeats at 64 m steps.
+            const size_t local = (k - 1) % perChunk;
+            const uint32_t chunk = uint32_t((k - 1) / perChunk);
+            const uint32_t i = uint32_t(local % 65), j = uint32_t(local / 65);
+            const int gx = int((chunk & 1u) * 64u) + int(i), gz = int((chunk >> 1) * 64u) + int(j);
+            placed = std::fabs(p.x - (100.0f + float(gx) * ramp.cellSize)) < 1e-4f &&
+                     std::fabs(p.z - (-50.0f + float(gz) * ramp.cellSize)) < 1e-4f &&
+                     std::fabs(p.y - (3.0f + ramp.heightAt(gx, gz))) < 1e-4f;
+            minY = std::min(minY, p.y);
+            maxY = std::max(maxY, p.y);
+        }
+        check(placed, "terrain: every soup vertex sits on the tile's grid at its own height");
+        check(maxY - minY > 3.0f, "terrain: the soup keeps the hills, so a bake over it is not flat",
+              std::to_string(minY) + " to " + std::to_string(maxY) + " m");
+    }
+
     // The raw file round trip. Heights come back within the 16-bit step, and a wrong size is refused.
     const std::string tmp = (std::filesystem::temp_directory_path() / "ukiyo_terrain_test.u16").string();
     std::string err;
