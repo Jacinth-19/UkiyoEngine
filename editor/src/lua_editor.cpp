@@ -35,9 +35,9 @@ const char* kBuiltins =
     "require|pcall|xpcall|error|assert|select|type|tostring|tonumber|ipairs|pairs|next|rawget|rawset|rawequal|"
     "setmetatable|getmetatable|unpack|print|string|table|math|utf8|coroutine|ukiyo|self";
 
-QColor numbersBackground() { return QColor(26, 27, 30); }
-QColor currentLine() { return QColor(255, 255, 255, 10); }
-QColor errorLine() { return QColor(120, 32, 36, 140); }
+QColor gutterColor() { return QColor(26, 27, 30); }
+QColor currentLineColor() { return QColor(255, 255, 255, 10); }
+QColor errorLineColor() { return QColor(120, 32, 36, 140); }
 
 } // namespace
 
@@ -179,7 +179,7 @@ void LuaCodeEditor::resizeEvent(QResizeEvent* event) {
 
 void LuaCodeEditor::paintLineNumbers(QPaintEvent* event) {
     QPainter painter(numbers_);
-    painter.fillRect(event->rect(), numbersBackground());
+    painter.fillRect(event->rect(), gutterColor());
     painter.setFont(font());
     QTextBlock block = firstVisibleBlock();
     int number = block.blockNumber();
@@ -215,14 +215,14 @@ void LuaCodeEditor::goToLine(int line) {
 void LuaCodeEditor::updateHighlight() {
     QVector<QTextEdit::ExtraSelection> selections;
     QTextEdit::ExtraSelection current;
-    current.format.setBackground(currentLine());
+    current.format.setBackground(currentLineColor());
     current.format.setProperty(QTextFormat::FullWidthSelection, true);
     current.cursor = textCursor();
     current.cursor.clearSelection();
     selections.push_back(current);
     if (errorLine_ > 0 && errorLine_ <= blockCount()) {
         QTextEdit::ExtraSelection bad;
-        bad.format.setBackground(errorLine());
+        bad.format.setBackground(errorLineColor());
         bad.format.setProperty(QTextFormat::FullWidthSelection, true);
         bad.cursor = QTextCursor(document()->findBlockByNumber(errorLine_ - 1));
         bad.cursor.clearSelection();
@@ -276,14 +276,14 @@ LuaEditorDialog::LuaEditorDialog(QWidget* parent, const QString& path, Checker c
     auto* save = new QPushButton(QStringLiteral("Save"), this);
     save->setObjectName(QStringLiteral("luaSave"));
     save->setShortcut(QKeySequence::Save);
-    auto* check = new QPushButton(QStringLiteral("Check"), this);
-    check->setObjectName(QStringLiteral("luaCheck"));
-    check->setToolTip(QStringLiteral("Compiles the script with the engine's own Lua host, without running it"));
+    auto* checkButton = new QPushButton(QStringLiteral("Check"), this);
+    checkButton->setObjectName(QStringLiteral("luaCheck"));
+    checkButton->setToolTip(QStringLiteral("Compiles the script with the engine's own Lua host, without running it"));
     auto* external = new QPushButton(QStringLiteral("Open in External Editor"), this);
     external->setObjectName(QStringLiteral("luaExternal"));
     external->setToolTip(QStringLiteral("Opens the file in the editor set in Preferences > Scripting"));
     bar->addWidget(save);
-    bar->addWidget(check);
+    bar->addWidget(checkButton);
     bar->addWidget(external);
     bar->addWidget(where_, 1);
     bar->addWidget(status_);
@@ -301,7 +301,7 @@ LuaEditorDialog::LuaEditorDialog(QWidget* parent, const QString& path, Checker c
         if (saveFile(&error)) status_->setText(QStringLiteral("Saved"));
         else status_->setText(error);
     });
-    connect(check, &QPushButton::clicked, this, [this] { check(); });
+    connect(checkButton, &QPushButton::clicked, this, [this] { this->check(); });
     connect(external, &QPushButton::clicked, this, [this] { openExternal(); });
 }
 

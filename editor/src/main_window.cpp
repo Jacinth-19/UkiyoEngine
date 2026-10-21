@@ -10690,7 +10690,8 @@ int MainWindow::runSelfTest() {
         world.setKeyHeld("Space", false);
         check(!world.actionDown("Jump"), "Input: a released key deactivates its action");
         err.clear();
-        check(world.script.loadString("function onUpdate(dt) if ukiyo.actionDown('Jump') then ukiyo.log('jump') end end\n", "input", &err),
+        check(world.sceneScript().loadString(
+                  "function onUpdate(dt) if ukiyo.actionDown('Jump') then ukiyo.log('jump') end end\n", "input", &err),
               "Input: a script that calls ukiyo.actionDown loads", QString::fromStdString(err));
         world.setKeyHeld("Space", true);
         world.tick(0.1f);
