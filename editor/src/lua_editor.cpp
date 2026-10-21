@@ -1,7 +1,12 @@
 #include "lua_editor.h"
 
+#include "engine/script_project.h"
+
 #include "prefs_dialog.h"
 
+#include <QAbstractItemView>
+#include <QCompleter>
+#include <QStringListModel>
 #include <QDir>
 #include <QFile>
 #include <QFileInfo>
@@ -11,6 +16,7 @@
 #include <QHBoxLayout>
 #include <QKeyEvent>
 #include <QKeySequence>
+#include <QLineEdit>
 #include <QLabel>
 #include <QMessageBox>
 #include <QPainter>
@@ -18,8 +24,11 @@
 #include <QProcess>
 #include <QPushButton>
 #include <QResizeEvent>
+#include <QScrollBar>
+#include <QShortcut>
 #include <QRegularExpression>
 #include <QTextBlock>
+#include <QTextCursor>
 #include <QTextDocument>
 #include <QTextEdit>
 #include <QVBoxLayout>
@@ -212,6 +221,63 @@ void LuaCodeEditor::goToLine(int line) {
     setFocus();
 }
 
+void LuaCodeEditor::setCompletions(const QStringList& words) {
+    if (!completer_) {
+        completer_ = new QCompleter(this);
+        completer_->setWidget(this);
+        completer_->setCompletionMode(QCompleter::PopupCompletion);
+        completer_->setCaseSensitivity(Qt::CaseInsensitive);
+        completer_->setFilterMode(Qt::MatchStartsWith);
+        completer_->setMaxVisibleItems(10);
+        // The popup's own keys (Enter, Tab, Esc, arrows) are handled by the completer; only the chosen word comes back
+        // here, and it replaces the prefix that was typed.
+        connect(completer_, QOverload<const QString&>::of(&QCompleter::activated), this,
+                [this](const QString& choice) {
+                    QTextCursor cursor = textCursor();
+                    // The prefix is on this line: replace it by moving the caret left over it.
+                    const int length = cursor.positionInBlock() - completionStart_;
+                    if (length > 0) cursor.movePosition(QTextCursor::Left, QTextCursor::KeepAnchor, length);
+                    cursor.insertText(choice);
+                    setTextCursor(cursor);
+                });
+    }
+    completionWords_ = words;
+    completer_->setModel(new QStringListModel(completionWords_, completer_));
+}
+
+QString LuaCodeEditor::wordBeforeCursor(int* start) const {
+    const QTextCursor cursor = textCursor();
+    const QString line = cursor.block().text();
+    int at = cursor.positionInBlock();
+    while (at > 0) {
+        const QChar c = line.at(at - 1);
+        if (!c.isLetterOrNumber() && c != QLatin1Char('_') && c != QLatin1Char('.')) break;
+        --at;
+    }
+    if (start) *start = at;
+    return line.mid(at, cursor.positionInBlock() - at);
+}
+
+void LuaCodeEditor::completeNow() {
+    if (!completer_) return;
+    int start = 0;
+    const QString prefix = wordBeforeCursor(&start);
+    // One or two letters match half the API; three is where a popup helps.
+    if (prefix.size() < 3) {
+        if (completer_->popup()) completer_->popup()->hide();
+        return;
+    }
+    completionStart_ = start;
+    completer_->setCompletionPrefix(prefix);
+    if (completer_->completionCount() == 0) {
+        if (completer_->popup()) completer_->popup()->hide();
+        return;
+    }
+    QRect rect = cursorRect();
+    rect.setWidth(completer_->popup()->sizeHintForColumn(0) + completer_->popup()->verticalScrollBar()->sizeHint().width() + 10);
+    completer_->complete(rect);
+}
+
 void LuaCodeEditor::updateHighlight() {
     QVector<QTextEdit::ExtraSelection> selections;
     QTextEdit::ExtraSelection current;
@@ -254,6 +320,12 @@ void LuaCodeEditor::keyPressEvent(QKeyEvent* event) {
         return;
     }
     QPlainTextEdit::keyPressEvent(event);
+    // Every printable key may have extended the word being typed; the popup follows it.
+    const QString text = event->text();
+    if (!text.isEmpty() && (text.at(0).isLetterOrNumber() || text.at(0) == QLatin1Char('_') || text.at(0) == QLatin1Char('.')))
+        completeNow();
+    else if (event->key() == Qt::Key_Backspace)
+        completeNow();
 }
 
 // --- the window ------------------------------------------------------------------------------------------------
@@ -266,6 +338,23 @@ LuaEditorDialog::LuaEditorDialog(QWidget* parent, const QString& path, Checker c
 
     editor_ = new LuaCodeEditor(this);
     editor_->setObjectName(QStringLiteral("luaEditor"));
+
+    // A find bar, hidden until Ctrl+F: find next keeps the last query.
+    findBar_ = new QWidget(this);
+    auto* findRow = new QHBoxLayout(findBar_);
+    findRow->setContentsMargins(0, 0, 0, 0);
+    findText_ = new QLineEdit(findBar_);
+    findText_->setObjectName(QStringLiteral("luaFind"));
+    findText_->setPlaceholderText(QStringLiteral("Find in script"));
+    findText_->setClearButtonEnabled(true);
+    auto* next = new QPushButton(QStringLiteral("Next"), findBar_);
+    auto* previous = new QPushButton(QStringLiteral("Previous"), findBar_);
+    auto* closeFind = new QPushButton(QStringLiteral("Close"), findBar_);
+    findRow->addWidget(findText_, 1);
+    findRow->addWidget(previous);
+    findRow->addWidget(next);
+    findRow->addWidget(closeFind);
+    findBar_->hide();
 
     auto* bar = new QHBoxLayout;
     status_ = new QLabel(this);
@@ -290,8 +379,14 @@ LuaEditorDialog::LuaEditorDialog(QWidget* parent, const QString& path, Checker c
 
     auto* layout = new QVBoxLayout(this);
     layout->setContentsMargins(8, 8, 8, 8);
+    layout->addWidget(findBar_);
     layout->addWidget(editor_, 1);
     layout->addLayout(bar);
+
+    // What the editor completes: the same table that generates the API stub.
+    QStringList words;
+    for (const std::string& word : ukiyo::script_project::completionWords()) words << QString::fromStdString(word);
+    editor_->setCompletions(words);
 
     connect(editor_, &LuaCodeEditor::cursorMoved, this, [this](int line, int column) {
         where_->setText(QStringLiteral("Line %1, column %2").arg(line).arg(column));
@@ -302,6 +397,27 @@ LuaEditorDialog::LuaEditorDialog(QWidget* parent, const QString& path, Checker c
         else status_->setText(error);
     });
     connect(checkButton, &QPushButton::clicked, this, [this] { this->check(); });
+    auto findNext = [this] {
+        if (findText_->text().isEmpty()) return;
+        if (!editor_->find(findText_->text())) {
+            // Wrap: start again from the top, the way an editor does.
+            QTextCursor cursor(editor_->document());
+            editor_->setTextCursor(cursor);
+            editor_->find(findText_->text());
+        }
+    };
+    connect(findText_, &QLineEdit::returnPressed, this, findNext);
+    connect(next, &QPushButton::clicked, this, findNext);
+    connect(previous, &QPushButton::clicked, this, [this] {
+        if (findText_->text().isEmpty()) return;
+        editor_->find(findText_->text(), QTextDocument::FindBackward);
+    });
+    connect(closeFind, &QPushButton::clicked, this, [this] {
+        findBar_->hide();
+        editor_->setFocus();
+    });
+    auto* findShortcut = new QShortcut(QKeySequence::Find, this);
+    connect(findShortcut, &QShortcut::activated, this, [this] { showFind(); });
     connect(external, &QPushButton::clicked, this, [this] { openExternal(); });
 }
 
@@ -330,27 +446,37 @@ bool LuaEditorDialog::saveFile(QString* error) {
     return true;
 }
 
-void LuaEditorDialog::check() {
+bool LuaEditorDialog::checkNow() {
     if (!checker_) {
-        status_->setText(QStringLiteral("No checker"));
-        return;
+        checkError_ = QStringLiteral("No checker: this window was opened without the engine.");
+        return false;
     }
     // Check what is on screen, not what is on disk: saving first would hide a file the user has not committed to.
-    QString error;
-    const bool ok = checker_(path_, editor_->toPlainText(), &error);
+    checkError_.clear();
+    const bool ok = checker_(path_, editor_->toPlainText(), &checkError_);
     if (ok) {
         editor_->markErrorLine(0);
-        status_->setStyleSheet(QString());
-        status_->setText(QStringLiteral("No errors"));
-        return;
+        return true;
     }
     // "path:12: message" -- mark the line and keep the message.
     const QRegularExpression re(QStringLiteral(":(\\d+):"));
-    const auto match = re.match(error);
-    if (match.hasMatch()) editor_->goToLine(match.captured(1).toInt());
-    editor_->markErrorLine(match.hasMatch() ? match.captured(1).toInt() : 0);
-    status_->setText(error);
-    status_->setStyleSheet(QStringLiteral("color: #ff8b8b;"));
+    const auto match = re.match(checkError_);
+    const int line = match.hasMatch() ? match.captured(1).toInt() : 0;
+    if (line > 0) editor_->goToLine(line);
+    editor_->markErrorLine(line);
+    return false;
+}
+
+void LuaEditorDialog::check() {
+    const bool ok = checkNow();
+    status_->setStyleSheet(ok ? QString() : QStringLiteral("color: #ff8b8b;"));
+    status_->setText(ok ? QStringLiteral("No errors") : checkError_);
+}
+
+void LuaEditorDialog::showFind() {
+    findBar_->show();
+    findText_->setFocus();
+    findText_->selectAll();
 }
 
 void LuaEditorDialog::openExternal() {

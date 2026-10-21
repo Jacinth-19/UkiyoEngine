@@ -14,7 +14,9 @@
 
 #include <functional>
 
+class QCompleter;
 class QLabel;
+class QLineEdit;
 class QPushButton;
 class QWidget;
 
@@ -58,6 +60,12 @@ public:
     void markErrorLine(int line);
     int errorLine() const { return errorLine_; }
     void goToLine(int line);
+    // The words completed while typing: the ukiyo API, the hooks and self.
+    void setCompletions(const QStringList& words);
+    // Opens the completion popup for the word being typed; public so the self-test can drive it.
+    void completeNow();
+    // What the editor will complete, for the self-test and for a future API list.
+    QStringList completions() const { return completionWords_; }
 
 signals:
     void cursorMoved(int line, int column);
@@ -69,9 +77,14 @@ protected:
 private:
     void updateLineNumberWidth();
     void updateHighlight();
+    // The word before the cursor, over [A-Za-z0-9_.], and where it starts.
+    QString wordBeforeCursor(int* start) const;
 
     QWidget* numbers_ = nullptr;
     int errorLine_ = 0;
+    QCompleter* completer_ = nullptr;
+    QStringList completionWords_;
+    int completionStart_ = 0;
 };
 
 // The window around the text: the file's name, Save, Check, and a line to say what happened.
@@ -88,6 +101,9 @@ public:
     const QString& path() const { return path_; }
 
     LuaCodeEditor* editor() const { return editor_; }
+    // Compiles the text on screen and marks the line Lua reports. Returns false when it does not compile; the self-test
+    // drives it without a worker.
+    bool checkNow();
 
 signals:
     void saved(const QString& path);
@@ -95,12 +111,16 @@ signals:
 private:
     void check();
     void openExternal();
+    void showFind();
 
     QString path_;
     Checker checker_;
     LuaCodeEditor* editor_ = nullptr;
     QLabel* status_ = nullptr;
     QLabel* where_ = nullptr;
+    QWidget* findBar_ = nullptr;
+    QLineEdit* findText_ = nullptr;
+    QString checkError_;
 };
 
 } // namespace editor

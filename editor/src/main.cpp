@@ -15,6 +15,8 @@
 #include "main_window.h"
 
 #include "lua_editor.h"
+
+#include "scripting_tools.h"
 #include "splash_screen.h"
 
 #ifndef UKIYO_ROOT
@@ -38,6 +40,7 @@ int main(int argc, char* argv[]) {
     bool noSplash = false;
     QString projectRoot;
     QString shotScript;   // --screenshot-script <file>: capture the Lua editor, for the figure in docs/LUA.md
+    bool shotTools = false;  // --screenshot-tools: capture the Scripting Tools window
     QString shotOut;      // --out <png>
     const QStringList arguments = app.arguments();
     for (int i = 1; i < arguments.size(); ++i) {
@@ -48,6 +51,8 @@ int main(int argc, char* argv[]) {
             noSplash = true;
         } else if (arg == QLatin1String("--screenshot-script") && i + 1 < arguments.size()) {
             shotScript = arguments[++i];
+        } else if (arg == QLatin1String("--screenshot-tools")) {
+            shotTools = true;
         } else if (arg == QLatin1String("--out") && i + 1 < arguments.size()) {
             shotOut = arguments[++i];
         } else if (arg == QLatin1String("--project") && i + 1 < arguments.size()) {
@@ -84,6 +89,22 @@ int main(int argc, char* argv[]) {
         const QPixmap shot = dialog.grab();
         if (shotOut.isEmpty() || !shot.save(shotOut)) {
             std::fprintf(stderr, "screenshot-script: could not write %s\n", qPrintable(shotOut));
+            return 1;
+        }
+        return 0;
+    }
+
+    // `ukiyo_editor --screenshot-tools --out <png>`: the Scripting Tools window, drawn by the program itself. The tool
+    // list is engine data, so this needs no project and no device either.
+    if (shotTools) {
+        editor::ScriptingToolsDialog tools(nullptr, QString(), nullptr);
+        tools.resize(960, 600);
+        tools.show();
+        QCoreApplication::processEvents();
+        QCoreApplication::processEvents();
+        const QPixmap shot = tools.grab();
+        if (shotOut.isEmpty() || !shot.save(shotOut)) {
+            std::fprintf(stderr, "screenshot-tools: could not write %s\n", qPrintable(shotOut));
             return 1;
         }
         return 0;

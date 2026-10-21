@@ -377,6 +377,8 @@ private:
     void reloadPlayingScripts();
     // Project > Write Script Support Files: the API stub, .luarc.json, formatter/linter config and extensions.
     void writeScriptSupportFiles();
+    // Tools > Scripting Tools: the recommended extensions, which are installed, and the editor to open them with.
+    void showScriptingTools();
     void buildGizmoToolbar();
     void setGizmoTool(gizmo::Tool tool);
     bool gizmoTarget(int* index, InstanceInfo* info);

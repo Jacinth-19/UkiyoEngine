@@ -118,6 +118,16 @@ function names, numbers, short and long strings, short and long comments — lin
 highlight, and the error line in red. `Check` compiles the text on screen, marks the line Lua reports and moves the
 cursor to it. `Save` writes the file, and the running level reloads it within a quarter second without stopping play.
 
+Three more things a code editor is expected to have:
+
+* **Completion from the API.** Typing three characters of a `ukiyo.*` name — or of `onStart`, `onUpdate`, `onContact`,
+  `self`, `require` — opens a list built from the same table that writes the stub, so what the editor offers and what the
+  engine binds cannot drift apart. `Enter` or `Tab` takes the choice; `Esc` dismisses it.
+* **Find.** `Ctrl+F` opens the find bar at the bottom of the window; `Enter` finds the next match and wraps, `Previous`
+  walks back.
+* **Indentation that follows the language.** A new line keeps the indentation, adds a level after `function`, `then`,
+  `do`, `else` and `repeat`, and `Tab` inserts four spaces, the width the project's `.editorconfig` asks for.
+
 ## External IDEs
 
 The same folder answers for any editor. `Tools > Write Script Support Files` (and every new project) writes:
@@ -129,7 +139,7 @@ The same folder answers for any editor. `Tools > Write Script Support Files` (an
 | `.editorconfig` | Every editor, and StyLua / the LuaLS formatter: 4 spaces, LF, 120 columns. |
 | `stylua.toml` | StyLua: the same values as a formatter that reads its own file. |
 | `selene.toml` | Selene: `std = "lua54"`, with `ukiyo` and `self` as known globals. |
-| `.vscode/extensions.json` | VS Code: recommends the editor, formatter, linter and debugger below. |
+| `.vscode/extensions.json` | VS Code: recommends the extensions below, generated from the engine's own tool list. |
 | `.vscode/settings.json` | VS Code: the language server's runtime and library. |
 
 The stub and `.luarc.json` are rewritten every time the API changes; the rest are only written when they are missing, so
@@ -144,10 +154,27 @@ Recommended extensions — they are the tools these files are written for:
 | **Selene** (`Kampfkarren.selene-vscode`) | VS Code, or `selene` in CI | Catches unused variables and typos in `ukiyo.*` calls before play. |
 | **EditorConfig** (`EditorConfig.EditorConfig`) | VS Code | Keeps indentation and line endings steady in every tool. |
 | **actboy168.lua-debug** | VS Code | Breakpoints against `lua54`. LuaLS alone cannot step into the engine's state. |
+| **GLSL** (`slevesque.shader`) | VS Code | Highlighting for `shaders/*.frag`, `*.vert`, `*.glsl` and the project's `*.ukshader` files, which `.vscode/settings.json` associates with GLSL. |
 
 Anything else that speaks LuaCATS works the same way, because the stub is a plain `---@meta` file and `.luarc.json` is
 the per-project configuration LuaLS reads everywhere. Neovim and Zed need no plugin list from us: point them at the
 project and they find the same files.
+
+## Tools > Scripting Tools
+
+![Scripting Tools](scripting-tools.png)
+
+*The tools window, drawn by the editor itself in CI.*
+
+A list of the same recommendations, with a "found here" column that says what this machine already has: the editor looks
+for `lua-language-server`, `stylua`, `selene` and `code` on `PATH`. A row can copy or run its install command
+(`code --install-extension sumneko.lua`), or open the tool's page. The bottom row lists the editors found on this
+machine — VS Code, VS Code Insiders, VSCodium, Zed, Neovim, Sublime Text — and **Use as External Editor** writes the
+matching command into Preferences > Scripting, so `{file}` and `{line}` are right without typing a command line by hand.
+
+The list lives in `ukiyo::script_project::toolRecommendations()` — engine code, covered by `tests/script_test.cpp`,
+which also checks that every VS Code id in it appears in the generated `.vscode/extensions.json`. Adding a tool is one
+row, and the project files, the window and the test all follow.
 
 ### VS Code, once per project
 

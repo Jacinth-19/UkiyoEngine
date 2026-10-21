@@ -13,6 +13,7 @@
 #include <cstdio>
 #include <filesystem>
 #include <fstream>
+#include <set>
 #include <string>
 #include <vector>
 
@@ -285,6 +286,53 @@ static void testProjectFiles() {
     std::ifstream stylua(fs::path(root) / "stylua.toml");
     const std::string kept((std::istreambuf_iterator<char>(stylua)), std::istreambuf_iterator<char>());
     check(kept == "-- mine\n", "project: a formatter config the project changed is kept");
+
+    // The recommendations: the editor shows this list, and .vscode/extensions.json is generated from it, so the two
+    // cannot disagree about what a project wants installed.
+    const auto& tools = script_project::toolRecommendations();
+    check(tools.size() >= 5, "tools: there is a recommendation for a language server, a formatter, a linter and more",
+          std::to_string(tools.size()));
+    bool complete = true;
+    std::string missing;
+    std::set<std::string> kinds;
+    for (const script_project::ToolRecommendation& tool : tools) {
+        if (std::string(tool.name).empty() || std::string(tool.kind).empty() || std::string(tool.url).empty() ||
+            std::string(tool.why).empty()) {
+            complete = false;
+            missing += std::string(tool.name[0] == '\0' ? "?" : tool.name) + " ";
+        }
+        kinds.insert(tool.kind);
+    }
+    check(complete, "tools: every recommendation names itself, its kind, its page and what it is for", missing);
+    for (const char* kind : {"Language server", "Formatter", "Linter", "Debugger"})
+        check(kinds.count(kind) == 1, std::string("tools: there is a ") + kind + " in the list");
+
+    std::string extensions;
+    {
+        std::ifstream file(fs::path(root) / ".vscode/extensions.json");
+        extensions.assign((std::istreambuf_iterator<char>(file)), std::istreambuf_iterator<char>());
+    }
+    int vscodeIds = 0;
+    std::set<std::string> seen;
+    for (const script_project::ToolRecommendation& tool : tools) {
+        const std::string id = tool.vscodeId;
+        if (id.empty()) continue;
+        ++vscodeIds;
+        check(seen.insert(id).second, "tools: " + id + " is recommended once");
+        check(extensions.find("\"" + id + "\"") != std::string::npos,
+              "tools: .vscode/extensions.json recommends " + id);
+        check(script_project::installCommand(tool) == "code --install-extension " + id,
+              "tools: " + id + " has a command that installs it");
+    }
+    check(vscodeIds >= 4, "tools: most recommendations are VS Code extensions", std::to_string(vscodeIds));
+    check(extensions.find("slevesque.shader") != std::string::npos,
+          "tools: the shader language is recommended too, not only Lua");
+
+    // Completion in the built-in editor comes from the same table as the stub.
+    const std::vector<std::string> words = script_project::completionWords();
+    for (const char* want : {"ukiyo.raycast", "ukiyo.setPosition", "ukiyo.Entity", "onUpdate", "self", "require"})
+        check(std::find(words.begin(), words.end(), std::string(want)) != words.end(),
+              std::string("tools: the editor completes ") + want);
 
     // The stub is Lua the engine can compile, and it documents every function the engine binds.
     ScriptHost h;

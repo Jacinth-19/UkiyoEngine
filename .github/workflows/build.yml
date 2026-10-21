@@ -234,6 +234,19 @@ jobs:
               print("FAIL: the capture has no highlighted code", file=sys.stderr)
               sys.exit(1)
           PY
+          # The Scripting Tools window: the recommendation list, drawn from the engine's own table.
+          QT_QPA_PLATFORM=offscreen ./build/ukiyo_editor --screenshot-tools --out renders/scripting-tools.png
+          python3 - <<'PY'
+          import sys
+          sys.path.insert(0, "tools")
+          from frame_check import read_png
+          width, height, channels, px = read_png("renders/scripting-tools.png")
+          buckets = {(px[i] >> 3, px[i + 1] >> 3, px[i + 2] >> 3) for i in range(0, len(px), channels)}
+          print(f"scripting tools: {width}x{height}, {len(buckets)} colours")
+          if len(buckets) < 40:
+              print("FAIL: the tools window is nearly uniform", file=sys.stderr)
+              sys.exit(1)
+          PY
       # The splash, offscreen and with real content: beat 1 (the mark) and beat 2 (the artwork, lockup, status block).
       # This is the program's own output — the identity is drawn in C++ and its assets come from tools/brand.py.
       - name: Capture splash screenshots
@@ -251,9 +264,10 @@ jobs:
           cp renders/splash.png docs/splash-capture.png
           cp renders/splash_mark.png docs/splash-mark.png
           cp renders/script-editor.png docs/script-editor.png
+          cp renders/scripting-tools.png docs/scripting-tools.png
           git config user.name "ukiyo-ci"
           git config user.email "ci@ukiyo.invalid"
-          git add docs/hub docs/splash-capture.png docs/splash-mark.png docs/script-editor.png
+          git add docs/hub docs/splash-capture.png docs/splash-mark.png docs/script-editor.png docs/scripting-tools.png
           if git diff --cached --quiet; then echo "no change"; exit 0; fi
           # actions/checkout leaves a detached HEAD, so there is no branch to push to: name the ref explicitly, and
           # rebase first in case another push landed while this job was building. The fetch names the remote-tracking

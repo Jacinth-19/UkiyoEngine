@@ -2,6 +2,8 @@
 
 #include "lua_editor.h"
 
+#include "scripting_tools.h"
+
 #include "engine/script_project.h"
 
 #include <algorithm>
@@ -158,6 +160,7 @@
 #include <QKeyEvent>
 #include <QToolButton>
 #include <QTreeView>
+#include <QTextCursor>
 #include <QTreeWidget>
 #include <QVBoxLayout>
 #include <QWheelEvent>
@@ -1978,6 +1981,7 @@ void MainWindow::buildMenus() {
     tools->addSeparator();
     // Rewrites the files every Lua editor reads: the API stub, .luarc.json, the formatter and linter config, and the
     // extension recommendations. Also runs by itself the first time a script is opened.
+    tools->addAction(uiIcon("language"), "Scripting Tools...", this, &MainWindow::showScriptingTools);
     tools->addAction(uiIcon("deployed_code"), "Write Script Support Files", this, &MainWindow::writeScriptSupportFiles);
     add(tools, "Clear Console", QKeySequence("Ctrl+L"), uiIcon("delete"), [this] {
         logs_.clear();
@@ -5866,6 +5870,32 @@ void MainWindow::writeScriptSupportFiles() {
     statusBar()->showMessage(QStringLiteral("Lua support files are up to date"), 4000);
     // .ukiyo is a hidden folder in the browser: the files are for tools, not for dragging into the scene.
     refreshBrowser();
+}
+
+void MainWindow::showScriptingTools() {
+    auto* tools = new ScriptingToolsDialog(this, projectRoot_, [this](QString* error) {
+        std::vector<std::string> written;
+        std::string err;
+        bool ok = false;
+        if (worker_) {
+            runOnWorker([&] { ok = worker_->writeScriptSupportFiles(&written, &err); });
+        } else {
+            ok = ukiyo::script_project::writeSupportFiles(projectRoot_.toStdString(), &written, &err);
+        }
+        if (!ok) {
+            if (error) *error = QString::fromStdString(err);
+            return false;
+        }
+        if (!written.empty()) {
+            refreshBrowser();
+            log(QStringLiteral("script support files: %1 written").arg(written.size()));
+        }
+        return true;
+    });
+    tools->setAttribute(Qt::WA_DeleteOnClose, true);
+    connect(tools, &ScriptingToolsDialog::externalEditorChosen, this,
+            [this](const QString& command) { log("scripts open in: " + command); });
+    tools->show();
 }
 
 void MainWindow::onBrowserActivated(const QModelIndex& index) {
@@ -11848,6 +11878,55 @@ int MainWindow::runSelfTest() {
         }
         if (savedPref.isValid()) prefs::store().setValue(key, savedPref);
         else prefs::store().remove(key);
+    }
+
+    // --- 17b. Scripting: the tools window and the Lua editor --------------------------------------------
+    {
+        ScriptingToolsDialog tools(this, projectRoot_, nullptr);
+        check(tools.toolCount() == static_cast<int>(ukiyo::script_project::toolRecommendations().size()),
+              "Scripting Tools lists every recommendation", QString::number(tools.toolCount()));
+        check(tools.findChild<QTreeWidget*>(QStringLiteral("toolsList")) != nullptr,
+              "Scripting Tools shows its recommendations in a list");
+        check(ScriptingToolsDialog::externalEditorCommand(QStringLiteral("VS Code")) ==
+                  QStringLiteral("code -g {file}:{line}"),
+              "Scripting Tools knows the VS Code command");
+        check(ScriptingToolsDialog::externalEditorCommand(QStringLiteral("Neovim")).contains(QStringLiteral("{file}")),
+              "Scripting Tools knows the Neovim command");
+
+        // A script that compiles checks clean; a syntax error marks the line Lua reports; the API completes.
+        const QString temp = QDir(QDir::tempPath()).filePath(QStringLiteral("ukiyo_selftest_script.lua"));
+        {
+            QFile file(temp);
+            if (file.open(QIODevice::WriteOnly | QIODevice::Truncate))
+                file.write("function onStart()\n    ukiyo.log(\"hi\")\nend\n");
+        }
+        LuaEditorDialog lua(this, temp, [](const QString& path, const QString& text, QString* error) {
+            ukiyo::ScriptHost host;
+            std::string message;
+            if (host.compileString(text, path.toStdString(), &message)) return true;
+            if (error) *error = QString::fromStdString(message);
+            return false;
+        });
+        QString luaError;
+        check(lua.openFile(&luaError), "the Lua editor opens a script", luaError);
+        check(lua.checkNow(), "the Lua editor checks a script that compiles");
+        lua.editor()->setPlainText(QStringLiteral("function onStart(\n"));
+        check(!lua.checkNow(), "the Lua editor reports a syntax error");
+        check(lua.editor()->errorLine() > 0, "the Lua editor marks the line Lua reports",
+              QString::number(lua.editor()->errorLine()));
+        const QStringList words = lua.editor()->completions();
+        check(words.contains(QStringLiteral("ukiyo.raycast")) && words.contains(QStringLiteral("onUpdate")) &&
+                  words.contains(QStringLiteral("self")),
+              "the Lua editor completes the API, the hooks and self", QString::number(words.size()));
+        // Typing a prefix and asking for completion must not disturb the document.
+        lua.editor()->setPlainText(QStringLiteral("local x = ukiyo.ra"));
+        QTextCursor end = lua.editor()->textCursor();
+        end.movePosition(QTextCursor::End);
+        lua.editor()->setTextCursor(end);
+        lua.editor()->completeNow();
+        check(lua.editor()->toPlainText() == QStringLiteral("local x = ukiyo.ra"),
+              "asking for completion leaves the text alone");
+        QFile::remove(temp);
     }
 
     // --- 1d. Prefab stage 3: Hierarchy rows, Inspector, per-key Apply and Revert, drag and drop --

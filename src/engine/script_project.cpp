@@ -63,16 +63,7 @@ unscoped_variables = "allow"
 multiple_statements = "allow"
 )";
 
-const char* kVscodeExtensions = R"({
-  "recommendations": [
-    "sumneko.lua",
-    "JohnnyMorganz.stylua",
-    "Kampfkarren.selene-vscode",
-    "EditorConfig.EditorConfig",
-    "actboy168.lua-debug"
-  ]
-}
-)";
+
 
 const char* kVscodeSettings = R"({
   "[lua]": {
@@ -84,7 +75,11 @@ const char* kVscodeSettings = R"({
   "Lua.workspace.library": ["Scripts/.ukiyo/lua"],
   "Lua.diagnostics.globals": ["self"],
   "files.trimTrailingWhitespace": true,
-  "files.insertFinalNewline": true
+  "files.insertFinalNewline": true,
+  "files.associations": {
+    "*.ukshader": "glsl",
+    "*.glsl": "glsl"
+  }
 }
 )";
 
@@ -104,6 +99,47 @@ bool writeFile(const fs::path& path, const std::string& text, bool onlyWhenMissi
     }
     if (wrote) *wrote = true;
     return true;
+}
+
+} // namespace
+
+const std::vector<ToolRecommendation>& toolRecommendations() {
+    // One row per tool, and `.vscode/extensions.json` is built from the rows that have a VS Code id. The executables are
+    // what the editor looks for on PATH to say "found here"; a tool that ships inside an extension has none.
+    static const std::vector<ToolRecommendation> tools{
+        {"LuaLS - Lua Language Server", "Language server", "sumneko.lua", "lua-language-server",
+         "https://luals.github.io/",
+         "Completion, hover and diagnostics for the whole ukiyo API, read from the stub this project ships."},
+        {"StyLua", "Formatter", "JohnnyMorganz.stylua", "stylua", "https://github.com/JohnnyMorganz/StyLua",
+         "One formatting style across the project, from stylua.toml: 4 spaces, 120 columns, double quotes."},
+        {"Selene", "Linter", "Kampfkarren.selene-vscode", "selene", "https://kampfkarren.github.io/selene/",
+         "Finds unused locals and unknown globals before play, with ukiyo and self declared as known."},
+        {"EditorConfig for VS Code", "Editor support", "EditorConfig.EditorConfig", "",
+         "https://editorconfig.org/",
+         "Keeps indentation and line endings steady in every editor the project is opened in."},
+        {"Lua Debug", "Debugger", "actboy168.lua-debug", "", "https://github.com/actboy168/lua-debug",
+         "Breakpoints and stepping for Lua 5.4, for the day a script is attached to the running player."},
+        {"Shader languages support (GLSL)", "File format", "slevesque.shader", "",
+         "https://marketplace.visualstudio.com/items?itemName=slevesque.shader",
+         "Highlighting for shaders/*.frag, *.vert, *.glsl and the project's *.ukshader files."},
+    };
+    return tools;
+}
+
+namespace {
+
+// `.vscode/extensions.json`, from the recommendations that are VS Code extensions.
+std::string vscodeExtensions() {
+    std::string out = "{\n  \"recommendations\": [\n";
+    bool first = true;
+    for (const ToolRecommendation& tool : toolRecommendations()) {
+        if (std::string(tool.vscodeId).empty()) continue;
+        if (!first) out += ",\n";
+        out += "    \"" + std::string(tool.vscodeId) + "\"";
+        first = false;
+    }
+    out += "\n  ]\n}\n";
+    return out;
 }
 
 } // namespace
@@ -293,7 +329,7 @@ bool writeSupportFiles(const std::string& projectRoot, std::vector<std::string>*
         {".editorconfig", kEditorConfig, true},
         {"stylua.toml", kStyLua, true},
         {"selene.toml", kSelene, true},
-        {".vscode/extensions.json", kVscodeExtensions, true},
+        {".vscode/extensions.json", vscodeExtensions(), true},
         {".vscode/settings.json", kVscodeSettings, true},
     };
     for (const Item& item : items) {
@@ -302,6 +338,20 @@ bool writeSupportFiles(const std::string& projectRoot, std::vector<std::string>*
         if (wrote && written) written->push_back(item.rel);
     }
     return true;
+}
+
+std::string installCommand(const ToolRecommendation& tool) {
+    if (std::string(tool.vscodeId).empty()) return {};
+    return std::string("code --install-extension ") + tool.vscodeId;
+}
+
+std::vector<std::string> completionWords() {
+    std::vector<std::string> words;
+    for (const ApiDoc& doc : apiDocs()) words.push_back(std::string("ukiyo.") + doc.name);
+    for (const char* hook : {"onStart", "onUpdate", "onSceneLoaded", "onDestroy", "onContact"}) words.push_back(hook);
+    words.push_back("self");
+    words.push_back("require");
+    return words;
 }
 
 } // namespace ukiyo::script_project

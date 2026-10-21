@@ -161,7 +161,9 @@ Vulkan backend and an OpenGL backend; `--backend gl` selects the latter.
   running level without stopping play. The editor ships a Lua window (highlighting, line numbers, Check, error line) and
   writes the project the files every Lua tool wants — a LuaCATS stub of the whole API, `.luarc.json`, `.editorconfig`,
   `stylua.toml`, `selene.toml` and VS Code's extension list and settings — so completion, formatting, linting and
-  debugging work in VS Code, Neovim or Zed with no setup of their own. See [docs/LUA.md](docs/LUA.md).
+  debugging work in VS Code, Neovim or Zed with no setup of their own. **Tools > Scripting Tools** shows that list,
+  says which programs this machine already has, installs an extension with one click and sets the external editor from
+  the editors it finds. See [docs/LUA.md](docs/LUA.md).
 * **Input** as action maps with Unity's `.inputactions` assets: keyboard, mouse and gamepads, 1D and 2D composites,
   press/hold/tap interactions, processors, control schemes and rebinding — and multi-player pairing in Unity's
   `PlayerInput` / `InputUser` shape, so four players share one asset and none of them shares a press. **Rebind** in

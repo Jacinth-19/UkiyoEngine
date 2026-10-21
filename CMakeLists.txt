@@ -610,6 +610,8 @@ if(UKIYO_EDITOR)
       editor/src/prefs_dialog.cpp
       editor/src/lua_editor.cpp
       editor/src/lua_editor.h
+      editor/src/scripting_tools.cpp
+      editor/src/scripting_tools.h
       editor/src/shader_graph/sg_nodes.cpp
       editor/src/shader_graph/sg_codegen.cpp
       editor/src/shader_graph/shader_graph_window.cpp
