@@ -10,7 +10,7 @@ of the operating system lives here.
 | `glfw/` | 3.4 | zlib (`glfw/LICENSE.md`) | Windowing and input; built as a subdirectory |
 | `JoltPhysics/` | (checked in) | MIT | Rigid bodies |
 | `recastnavigation/` | (checked in) | zlib | Navigation |
-| `lua/` | 5.4 | MIT | Scripting |
+| `lua/` | 5.4.9 | MIT | Scripting |
 | `meshoptimizer/`, `cgltf.h`, `stb_*.h`, `miniaudio`, `nodeeditor`, `glad`, `vk_mem_alloc.h` | (checked in) | see each header | Single-file or single-directory libraries |
 
 ## What is deliberately *not* vendored

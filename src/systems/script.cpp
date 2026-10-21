@@ -21,8 +21,18 @@ namespace {
 // Lua aborts the process when an API call fails outside any protected call, and its default panic only prints to
 // stderr, which a Windows job reads as a number. Naming the engine in the line makes the abort say what happened.
 int panicHandler(lua_State* L) {
+    static bool inPanic = false;   // a panic handler that panics is only a longer silence
     const char* msg = lua_tostring(L, -1);
     std::fprintf(stderr, "ukiyo: PANIC: unprotected Lua error: %s\n", msg ? msg : "no message");
+    if (!inPanic) {
+        // The stack is usually intact here: Lua can still walk its own frames, and the traceback names the C function
+        // that made the unprotected call.
+        inPanic = true;
+        if (lua_checkstack(L, 8)) {
+            luaL_traceback(L, L, msg, 1);
+            std::fprintf(stderr, "%s\n", lua_tostring(L, -1) ? lua_tostring(L, -1) : "(no traceback)");
+        }
+    }
     std::fflush(stderr);
     return 0;
 }

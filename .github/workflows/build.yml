@@ -624,6 +624,37 @@ jobs:
                 } else {
                   Add-Content windows-diagnosis.txt "wer: no Application Error record"
                 }
+                # A dump is the only thing a fast-fail leaves that names its own reason: the exception record carries
+                # the fast-fail code in its first parameter -- a stack cookie, an invalid argument, a bad longjmp.
+                $dump = Get-ChildItem "dumps" -Filter *.dmp -ErrorAction SilentlyContinue |
+                  Sort-Object LastWriteTime -Descending | Select-Object -First 1
+                if ($dump) {
+                  $bytes = [IO.File]::ReadAllBytes($dump.FullName)
+                  $streams = 0
+                  if ($bytes.Length -gt 32) {
+                    $streams = [BitConverter]::ToUInt32($bytes, 8)
+                    $dirRva = [BitConverter]::ToUInt32($bytes, 12)
+                  }
+                  $found = $false
+                  for ($i = 0; $i -lt $streams; $i++) {
+                    $entry = $dirRva + 12 * $i
+                    if ($entry + 12 -gt $bytes.Length) { break }
+                    if ([BitConverter]::ToUInt32($bytes, $entry) -ne 6) { continue }
+                    $stream = [BitConverter]::ToUInt32($bytes, $entry + 8)
+                    if ($stream + 48 -gt $bytes.Length) { break }
+                    $exCode = [BitConverter]::ToUInt32($bytes, $stream + 8)
+                    $info0 = [BitConverter]::ToUInt64($bytes, $stream + 40)
+                    $why = @{ 0 = "legacy GS"; 1 = "CFG"; 2 = "stack cookie"; 3 = "corrupt heap list";
+                              4 = "incorrect stack"; 5 = "invalid argument"; 6 = "GS cookie init";
+                              7 = "abort"; 8 = "range check" }
+                    Add-Content windows-diagnosis.txt "dump: exception 0x$('{0:x}' -f $exCode), fast-fail $info0 $($why[[int]$info0])"
+                    $found = $true
+                    break
+                  }
+                  if (-not $found) { Add-Content windows-diagnosis.txt "dump: $($dump.Name), no exception stream" }
+                } else {
+                  Add-Content windows-diagnosis.txt "dump: none written"
+                }
                 # Two more runs: the same last line every time is one bug in one place, a different line each time is
                 # not, and the difference decides what to do next.
                 for ($i = 1; $i -le 2; $i++) {
