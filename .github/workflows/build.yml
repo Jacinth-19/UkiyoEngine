@@ -583,52 +583,43 @@ jobs:
             Write-Host "::endgroup::"
             if ($code -ne 0) {
               Write-Host "::error::$t failed with exit code $code"
-              # The failing assertions first, then the summary line, then the tail: a test can print hundreds of PASS
-              # lines, and the interesting ones are never the last.
-              $fails = $out | Select-String -Pattern "FAIL|ERROR|error:" | Select-Object -First 10
-              if ($fails) { $fails | ForEach-Object { Write-Host "::error::  $($_.Line)" } }
-              $summary = $out | Select-String -Pattern "passed|failed|checks" | Select-Object -Last 2
-              if ($summary) { $summary | ForEach-Object { Write-Host "::error::  $($_.Line)" } }
-              # The tail is what says where a process died. Standard output of a crashed process is not always
-              # delivered, so script_test also writes its trace to a file; read whatever the file kept.
-              $tail = @()
-              if (Test-Path $traceLog) { $tail = Get-Content $traceLog -Tail 6 }
-              if ($tail.Count -eq 0) { $tail = $out | Select-Object -Last 6 }
-              $tail | ForEach-Object { Write-Host "::error::  $_" }
+              # Annotations are the only part of this log a restricted client can read, and a step's budget for them is
+              # small, so script_test's diagnosis goes to a file that the step after this one announces.
               if ($t -eq "script_test") {
+                Add-Content windows-diagnosis.txt "script_test exit code $code"
                 # A run that dies without running a handler leaves Windows Error Reporting's own record, and that
-                # record names the module, the exception code and the offset. It is the only stack a fast-fail leaves.
+                # record names the module, the exception code and the offset: the only stack a fast-fail leaves.
                 Start-Sleep -Seconds 5
-                $event = $null
-                try { $event = Get-WinEvent -FilterHashtable @{LogName='Application'; Id=1000} -MaxEvents 1 -ErrorAction Stop } catch { }
-                if ($event) {
-                  $lines = $event.Message -split "`r?`n"
-                  $module = ($lines | Where-Object { $_ -match "Faulting module name" }) -join " "
-                  $code = ($lines | Where-Object { $_ -match "Exception code" }) -join " "
-                  $offsetLine = ($lines | Where-Object { $_ -match "Fault offset" }) -join " "
-                  Write-Host "::error::  WER $module $code $offsetLine"
+                $wer = $null
+                try { $wer = Get-WinEvent -FilterHashtable @{LogName='Application'; Id=1000} -MaxEvents 1 -ErrorAction Stop } catch { }
+                if ($wer) {
+                  $werLines = $wer.Message -split "`r?`n"
+                  $werModule = ($werLines | Where-Object { $_ -match "Faulting module name" }) -join " "
+                  $werCode = ($werLines | Where-Object { $_ -match "Exception code" }) -join " "
+                  $werOffset = ($werLines | Where-Object { $_ -match "Fault offset" }) -join " "
+                  Add-Content windows-diagnosis.txt "WER: $werModule $werCode $werOffset"
                   # The offset is an RVA; the map file the linker wrote turns it back into the function that was
                   # running, which is the difference between "a stack cookie failed somewhere" and "in luaD_...".
-                  $offsetText = [regex]::Match($offsetLine, "0x([0-9a-fA-F]+)").Groups[1].Value
+                  $offsetText = [regex]::Match($werOffset, "0x([0-9a-fA-F]+)").Groups[1].Value
                   if ($offsetText -and (Test-Path "build/script_test.map")) {
                     $rva = [Convert]::ToUInt64($offsetText, 16)
-                    $best = $null
+                    $best = ""
+                    $bestAt = [Convert]::ToUInt64("0", 16)
                     $base = [Convert]::ToUInt64("0000000140000000", 16)
-                    foreach ($line in Get-Content "build/script_test.map") {
-                      $load = [regex]::Match($line, "Preferred load address is ([0-9a-fA-F]+)")
+                    foreach ($mapLine in Get-Content "build/script_test.map") {
+                      $load = [regex]::Match($mapLine, "Preferred load address is ([0-9a-fA-F]+)")
                       if ($load.Success) { $base = [Convert]::ToUInt64($load.Groups[1].Value, 16); continue }
-                      $m = [regex]::Match($line, "^\s+[0-9a-f]{4}:[0-9a-f]{8}\s+(\S+)\s+([0-9a-fA-F]{16})")
+                      $m = [regex]::Match($mapLine, "^\s+[0-9a-f]{4}:[0-9a-f]{8}\s+(\S+)\s+([0-9a-fA-F]{16})")
                       if (-not $m.Success) { continue }
                       $at = [Convert]::ToUInt64($m.Groups[2].Value, 16)
-                      if ($at -le ($base + $rva) -and (-not $best -or $at -gt $best[1])) { $best = @($m.Groups[1].Value, $at) }
+                      if ($at -le ($base + $rva) -and $at -gt $bestAt) { $bestAt = $at; $best = $m.Groups[1].Value }
                     }
                     if ($best) {
-                      $delta = ($base + $rva) - $best[1]
-                      Write-Host "::error::  script_test+0x$offsetText is $($best[0]) + 0x$('{0:x}' -f $delta)"
+                      Add-Content windows-diagnosis.txt "  script_test+0x$offsetText is $best + 0x$('{0:x}' -f (($base + $rva) - $bestAt))"
                     }
                   }
                 } else {
-                  Write-Host "::error::  no Windows Error Reporting record for the crash"
+                  Add-Content windows-diagnosis.txt "WER: no Application Error record for the crash"
                 }
                 # Two more runs: the same last line every time is one bug in one place, a different line each time is
                 # not, and the difference decides what to do next.
@@ -636,20 +627,39 @@ jobs:
                   $again = "$PWD\script_test.again$i.log"
                   $env:UKIYO_TEST_LOG = $again
                   & "./build/script_test.exe" --trace | Out-Null
-                  $againCode = $LASTEXITCODE
                   $againTail = @()
                   if (Test-Path $again) { $againTail = Get-Content $again -Tail 1 }
-                  $crash = @()
-                  if (Test-Path $again) { $crash = Get-Content $again | Select-String -Pattern "CRASH" | Select-Object -First 2 }
-                  Write-Host "::error::  rerun $i exit $againCode, last: $($againTail -join ' / ')"
-                  if ($crash) { $crash | ForEach-Object { Write-Host "::error::    $($_.Line)" } }
+                  Add-Content windows-diagnosis.txt "rerun $i exit $LASTEXITCODE, last: $($againTail -join ' / ')"
                 }
                 $env:UKIYO_TEST_LOG = $traceLog
+                if (Test-Path $traceLog) {
+                  Get-Content $traceLog -Tail 3 | ForEach-Object { Add-Content windows-diagnosis.txt "trace: $_" }
+                }
+              } else {
+                # The failing assertions first, then the summary line, then the tail: a test can print hundreds of PASS
+                # lines, and the interesting ones are never the last.
+                $fails = $out | Select-String -Pattern "FAIL|ERROR|error:" | Select-Object -First 6
+                if ($fails) { $fails | ForEach-Object { Write-Host "::error::  $($_.Line)" } }
+                $summary = $out | Select-String -Pattern "passed|failed|checks" | Select-Object -Last 2
+                if ($summary) { $summary | ForEach-Object { Write-Host "::error::  $($_.Line)" } }
+                $tail = @()
+                if (Test-Path $traceLog) { $tail = Get-Content $traceLog -Tail 6 }
+                if ($tail.Count -eq 0) { $tail = $out | Select-Object -Last 6 }
+                $tail | ForEach-Object { Write-Host "::error::  $_" }
               }
               $failed += $t
             }
           }
           if ($failed.Count -gt 0) { throw "failed: $($failed -join ', ')" }
+
+      # What the scripting test found when it died, in a step of its own: the annotations a step may write are few, and
+      # the harness that explains a Windows crash has more to say than that.
+      - name: Announce the Windows crash
+        if: always()
+        run: |
+          if (Test-Path windows-diagnosis.txt) {
+            Get-Content windows-diagnosis.txt | Select-Object -First 8 | ForEach-Object { Write-Host "::error::$_" }
+          }
 
       # The player, booting the fixture project with no window and no device (docs/PLAYER.md).
       - name: Run Player Self-Test
@@ -672,6 +682,7 @@ jobs:
             dumps/*.dmp
             *.trace.log
             script_test.again*.log
+            windows-diagnosis.txt
             build/script_test.map
             build/script_test.pdb
           if-no-files-found: warn
