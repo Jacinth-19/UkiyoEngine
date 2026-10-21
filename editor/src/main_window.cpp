@@ -7734,7 +7734,10 @@ int MainWindow::runSelfTest() {
         return before == after ? QString() : at + QStringLiteral(" changed");
     };
     QJsonObject before = dsrc.object(), after = da.object();
-    for (const char* v2 : {"version", "models", "active"}) after.remove(QString::fromLatin1(v2));
+    for (const char* v2 : {"version", "models", "active"}) {
+        before.remove(QString::fromLatin1(v2));
+        after.remove(QString::fromLatin1(v2));
+    }
     const QString loss = da.isNull() ? QStringLiteral("the saved scene is not valid JSON")
                                      : firstLoss(before, after, QStringLiteral("scene"), firstLoss);
     check(loss.isEmpty(), "scene fixture round trips without field loss (version 2 keys aside)", loss);
@@ -10205,31 +10208,44 @@ int MainWindow::runSelfTest() {
                         }
                     }
                 };
+                // A viewport is a stream: the first render after a change can still carry the previous frame, which a
+                // person watching would never notice and a count of coloured pixels does. Every shot below is the second
+                // render after its change.
+                auto shot = [&](QImage* out) {
+                    runOnWorker([&] {
+                        worker_->renderNow(cam);
+                        *out = worker_->renderNow(cam).convertToFormat(QImage::Format_RGB32);
+                    });
+                };
+                // The model's own look, before any override. Its palette is warm (a VRM character's skin and clothes
+                // count as "red" by any fixed rule), so the checks below compare against this shot rather than against
+                // an absolute red/blue dominance that only the flat test texture could satisfy.
+                QImage baseView;
+                shot(&baseView);
+                long bR = 0, bB = 0;
+                tally(baseView, bR, bB);
+
                 setNodeMaterial(meshNode, redAbs);
                 settle();
                 QImage redView;
-                runOnWorker([&] {
-                    worker_->renderNow(cam);
-                    redView = worker_->renderNow(cam).convertToFormat(QImage::Format_RGB32);
-                });
+                shot(&redView);
                 long rR = 0, rB = 0;
                 tally(redView, rR, rB);
-                check(rR > 300 && rR > 2 * rB, "11t: the viewport draws a material's texture override on the model",
-                      QString("red %1, blue %2").arg(rR).arg(rB));
+                check(rR > bR + 300, "11t: the viewport draws a material's texture override on the model",
+                      QString("override red %1, own look red %2, blue %3").arg(rR).arg(bR).arg(rB));
 
                 setNodeMaterial(meshNode, defAbs);
                 settle();
-                // A viewport is a stream. The first render after a material change may still carry the previous frame's
-                // texture, which is invisible to a person watching but not to a count of red pixels, so ask for the second.
                 QImage defView;
-                runOnWorker([&] {
-                    worker_->renderNow(cam);
-                    defView = worker_->renderNow(cam).convertToFormat(QImage::Format_RGB32);
-                });
+                shot(&defView);
                 long dR = 0, dB = 0;
                 tally(defView, dR, dB);
-                check(dB > 300 && dB > 2 * dR, "11t: the viewport draws the shader's default texture when there is no override",
-                      QString("red %1, blue %2").arg(dR).arg(dB));
+                // The override is gone when the model looks like it did before the override went on: within a tenth,
+                // because a viewport is free to be a frame behind in its exposure or AA history but not in its texture.
+                const long tolerance = std::max<long>(40, bR / 10);
+                check(std::labs(dR - bR) <= tolerance && std::labs(dB - bB) <= tolerance,
+                      "11t: the viewport draws the shader's default texture when there is no override",
+                      QString("after override red %1, blue %2; before it red %3, blue %4").arg(dR).arg(dB).arg(bR).arg(bB));
 
                 setNodeMaterial(meshNode, before);
                 settle();
@@ -12636,70 +12652,6 @@ int MainWindow::runSelfTest() {
         QFile::remove(tmpW);
     }
 
-    // --- 15b. Scene lights (item 6): authored, saved, clamped and read back ---
-    {
-        const QString one = projectRoot_ + QStringLiteral("/renders/roundtrip_test.ukscene");
-        const QString tmpLi = QDir::tempPath() + QStringLiteral("/ukiyo_selftest_lights.ukscene");
-        check(readScene(one) && lights_.empty(), "lights: a scene without lights has none");
-        QJsonObject noLights = sceneDocument();
-        check(!noLights.contains(QStringLiteral("lights")),
-              "lights: a scene without lights writes no lights key, so its file does not change");
-
-        // Add a point light through the same call the Create menu uses, and a spot.
-        addLight(1);
-        addLight(2);
-        check(lights_.size() == 2 && lights_[0].type == ukiyo::LightType::Point &&
-                  lights_[1].type == ukiyo::LightType::Spot,
-              "lights: the Create menu's two entries add a point light and a spot light");
-        bool hierarchyShowsPoint = false, hierarchyShowsSpot = false;
-        for (QTreeWidgetItemIterator it(hierarchy_); *it; ++it) {
-            const QString t = (*it)->text(0);
-            if (t.startsWith(QStringLiteral("Point Light"))) hierarchyShowsPoint = true;
-            if (t.startsWith(QStringLiteral("Spot Light"))) hierarchyShowsSpot = true;
-        }
-        check(hierarchyShowsPoint && hierarchyShowsSpot, "lights: each light gets a Hierarchy row");
-
-        // A change made on the light's page reaches the list and the document.
-        showSceneLightProperties(0);
-        QWidget* page = inspector_->widget();
-        auto* radius = page ? page->findChild<QDoubleSpinBox*>(QStringLiteral("lightRadius")) : nullptr;
-        auto* intensity = page ? page->findChild<QDoubleSpinBox*>(QStringLiteral("lightIntensity")) : nullptr;
-        check(radius && intensity, "lights: the light page has a reach and an intensity field");
-        if (radius && intensity) {
-            radius->setValue(12.5);
-            intensity->setValue(7.25);
-            check(std::fabs(lights_[0].radius - 12.5f) < 1e-4f && std::fabs(lights_[0].intensity - 7.25f) < 1e-4f,
-                  "lights: a field change is written into the scene's light");
-        }
-        QJsonObject withLights = sceneDocument();
-        const QJsonArray arr = withLights.value(QStringLiteral("lights")).toArray();
-        check(arr.size() == 2 && arr[0].toObject().value(QStringLiteral("type")).toString() == QStringLiteral("point") &&
-                  std::fabs(arr[0].toObject().value(QStringLiteral("radius")).toDouble() - 12.5) < 1e-4,
-              "lights: the document holds both lights with what the page wrote");
-
-        check(writeScene(tmpLi) && readScene(tmpLi) && lights_.size() == 2 &&
-                  std::fabs(lights_[0].radius - 12.5f) < 1e-4f,
-              "lights: the lights survive a save and reopen");
-
-        // A hand-edited file cannot ask for a light that shades nothing, or one that floods the frame; and a scene
-        // has one sun, so a second directional light is read as a point light rather than silently dropped.
-        const QJsonArray parsed =
-            scene_file::readLights(QJsonArray{QJsonObject{{QStringLiteral("type"), QStringLiteral("point")},
-                                                          {QStringLiteral("radius"), 0.0},
-                                                          {QStringLiteral("intensity"), 1000.0}},
-                                               QJsonObject{{QStringLiteral("type"), QStringLiteral("directional")}},
-                                               QJsonObject{{QStringLiteral("type"), QStringLiteral("directional")}}});
-        check(parsed.size() == 3 && parsed[0].radius >= 0.05f && parsed[0].intensity <= 64.0f &&
-                  parsed[1].type == ukiyo::LightType::Directional && parsed[2].type == ukiyo::LightType::Point,
-              "lights: out-of-range values are clamped and only one light is the sun");
-
-        // Deleting one leaves the other, and reopening a scene without lights clears the list.
-        deleteLight(0);
-        check(lights_.size() == 1 && lights_[0].type == ukiyo::LightType::Spot, "lights: Delete Light removes that light");
-        check(readScene(one) && lights_.empty(), "lights: opening a scene without lights clears them");
-        QFile::remove(tmpLi);
-    }
-
     // --- 16. Mesh LOD (item 15): the switch distances are a per-object scene setting ---
     {
         const QString one = projectRoot_ + QStringLiteral("/renders/roundtrip_test.ukscene");
@@ -12964,6 +12916,71 @@ int MainWindow::runSelfTest() {
     // --- 18. Terrain editing (item 18, steps 4 to 6): see selfTestTerrainEdits in main_window_terrain.cpp ---
     selfTestTerrainEdits(check);
 
+    // --- 19. Scene lights (item 6): authored, saved, clamped and read back. Last, because it opens scenes and
+    // opening a scene resets the terrain edits and instance indices the blocks above rely on. ---
+    {
+        const QString one = projectRoot_ + QStringLiteral("/renders/roundtrip_test.ukscene");
+        const QString tmpLi = QDir::tempPath() + QStringLiteral("/ukiyo_selftest_lights.ukscene");
+        check(readScene(one) && lights_.empty(), "lights: a scene without lights has none");
+        QJsonObject noLights = sceneDocument();
+        check(!noLights.contains(QStringLiteral("lights")),
+              "lights: a scene without lights writes no lights key, so its file does not change");
+
+        // Add a point light through the same call the Create menu uses, and a spot.
+        addLight(1);
+        addLight(2);
+        check(lights_.size() == 2 && lights_[0].type == ukiyo::LightType::Point &&
+                  lights_[1].type == ukiyo::LightType::Spot,
+              "lights: the Create menu's two entries add a point light and a spot light");
+        bool hierarchyShowsPoint = false, hierarchyShowsSpot = false;
+        for (QTreeWidgetItemIterator it(hierarchy_); *it; ++it) {
+            const QString t = (*it)->text(0);
+            if (t.startsWith(QStringLiteral("Point Light"))) hierarchyShowsPoint = true;
+            if (t.startsWith(QStringLiteral("Spot Light"))) hierarchyShowsSpot = true;
+        }
+        check(hierarchyShowsPoint && hierarchyShowsSpot, "lights: each light gets a Hierarchy row");
+
+        // A change made on the light's page reaches the list and the document.
+        showSceneLightProperties(0);
+        QWidget* page = inspector_->widget();
+        auto* radius = page ? page->findChild<QDoubleSpinBox*>(QStringLiteral("lightRadius")) : nullptr;
+        auto* intensity = page ? page->findChild<QDoubleSpinBox*>(QStringLiteral("lightIntensity")) : nullptr;
+        check(radius && intensity, "lights: the light page has a reach and an intensity field");
+        if (radius && intensity) {
+            radius->setValue(12.5);
+            intensity->setValue(7.25);
+            check(std::fabs(lights_[0].radius - 12.5f) < 1e-4f && std::fabs(lights_[0].intensity - 7.25f) < 1e-4f,
+                  "lights: a field change is written into the scene's light");
+        }
+        QJsonObject withLights = sceneDocument();
+        const QJsonArray arr = withLights.value(QStringLiteral("lights")).toArray();
+        check(arr.size() == 2 && arr[0].toObject().value(QStringLiteral("type")).toString() == QStringLiteral("point") &&
+                  std::fabs(arr[0].toObject().value(QStringLiteral("radius")).toDouble() - 12.5) < 1e-4,
+              "lights: the document holds both lights with what the page wrote");
+
+        check(writeScene(tmpLi) && readScene(tmpLi) && lights_.size() == 2 &&
+                  std::fabs(lights_[0].radius - 12.5f) < 1e-4f,
+              "lights: the lights survive a save and reopen");
+
+        // A hand-edited file cannot ask for a light that shades nothing, or one that floods the frame; and a scene
+        // has one sun, so a second directional light is read as a point light rather than silently dropped.
+        const QJsonArray parsed =
+            scene_file::readLights(QJsonArray{QJsonObject{{QStringLiteral("type"), QStringLiteral("point")},
+                                                          {QStringLiteral("radius"), 0.0},
+                                                          {QStringLiteral("intensity"), 1000.0}},
+                                               QJsonObject{{QStringLiteral("type"), QStringLiteral("directional")}},
+                                               QJsonObject{{QStringLiteral("type"), QStringLiteral("directional")}}});
+        check(parsed.size() == 3 && parsed[0].radius >= 0.05f && parsed[0].intensity <= 64.0f &&
+                  parsed[1].type == ukiyo::LightType::Directional && parsed[2].type == ukiyo::LightType::Point,
+              "lights: out-of-range values are clamped and only one light is the sun");
+
+        // Deleting one leaves the other, and reopening a scene without lights clears the list.
+        deleteLight(0);
+        check(lights_.size() == 1 && lights_[0].type == ukiyo::LightType::Spot, "lights: Delete Light removes that light");
+        check(readScene(one) && lights_.empty(), "lights: opening a scene without lights clears them");
+        QFile::remove(tmpLi);
+    }
+
     std::printf("selftest: %d passed, %d failed\n", passed, failed);
     return failed;
 }
@@ -13026,6 +13043,9 @@ namespace {
 // While a rebind is armed, the application's key events are the capture. Play mode is fed by the Game view's key
 // events (World::setKeyHeld), not by a poller, so a page that wants to hear a key has to take the same events. It
 // swallows them, so the table does not also start editing a cell on the letter that was pressed.
+// Defined below, next to the input page that also uses it; eventFilter needs it first.
+QString portableKeyForQt(int key, Qt::KeyboardModifiers mods);
+
 class RebindKeyFilter : public QObject {
 public:
     std::function<void(QKeyEvent* event)> onKey;
@@ -13080,6 +13100,11 @@ QString portableKeyForPath(const std::string& path) {
 // The path a table cell describes, assuming the keyboard when the text is just a key: the project setting is a key,
 // and the runtime binding is a path, so this is the one-way bridge between them.
 std::string pathForPortableKey(const QString& key) {
+    // A path names a control, and controls are named the way the engine spells them ("j", "space", "leftShift").
+    // Writing the portable text straight in produced "<Keyboard>/J", which resolveBindingText — correctly — rejects:
+    // the engine has no control called "J".
+    std::string control;
+    if (ukiyo::input::controlNameFromPortableKey(key.toStdString(), &control)) return "<Keyboard>/" + control;
     return "<Keyboard>/" + key.toStdString();
 }
 
