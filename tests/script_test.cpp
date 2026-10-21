@@ -134,9 +134,11 @@ static void testErrors() {
     // The budget: three failures in a row stop the script, and a success in between resets the count.
     section("errors: budget");
     ScriptHost once;
+    section("errors: budget, second host created");
     std::string e2;
-    check(once.loadString("function onUpdate(dt) error('boom') end", "@boom.lua", &e2), "errors: the doomed script loads",
-          e2);
+    const bool doomedLoaded = once.loadString("function onUpdate(dt) error('boom') end", "@boom.lua", &e2);
+    section("errors: budget, doomed script loaded");
+    check(doomedLoaded, "errors: the doomed script loads", e2);
     for (int i = 0; i < ScriptHost::kMaxErrors; ++i) {
         once.callUpdate(0.016f);
         section("errors: budget, one call");
