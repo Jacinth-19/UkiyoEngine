@@ -616,11 +616,10 @@ jobs:
                 # the check that was running.
                 $trace = @()
                 if (Test-Path $traceLog) { $trace = @(Get-Content $traceLog) }
-                $canary = $trace | Select-String -Pattern "^CRASH heap canary" | Select-Object -First 1
-                if ($canary) { Add-Content windows-diagnosis.txt "canary: $($canary.Line)" }
-                $crash = $trace | Select-String -Pattern "^CRASH exception" | Select-Object -Last 1
-                if ($crash) {
-                  Add-Content windows-diagnosis.txt "trace: $($crash.Line)"
+                # The harness's own lines: a broken canary, a double free, or the exception that killed it.
+                $crashLines = @($trace | Select-String -Pattern "^CRASH " | Select-Object -First 3)
+                if ($crashLines.Count -gt 0) {
+                  $crashLines | ForEach-Object { Add-Content windows-diagnosis.txt "crash: $($_.Line)" }
                 } elseif ($trace.Count -gt 0) {
                   Add-Content windows-diagnosis.txt "trace: no CRASH line; last was: $($trace[-1])"
                 }

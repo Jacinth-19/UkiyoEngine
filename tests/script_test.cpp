@@ -170,6 +170,10 @@ struct Entry {
 Entry table[kSlots];
 long long allocated = 0;
 long long reported = 0;
+// The last few pointers given back: enough to tell a double free from a free of something this heap never handed out,
+// which are the two ways a block leaves here without a broken canary to explain it.
+void* recentlyFreed[64] = {};
+int recentlyFreedNext = 0;
 
 unsigned slotOf(void* ptr) { return static_cast<unsigned>((reinterpret_cast<uintptr_t>(ptr) >> 4) & (kSlots - 1)); }
 
@@ -216,28 +220,39 @@ void* allocate(size_t size) {
     return raw + kGuard;
 }
 
+void note(const char* what, size_t size, const void* where) {
+    if (reported >= 8) return;
+    char line[288];
+    std::snprintf(line, sizeof line, "CRASH %s at check %d, section '%s': block of %zu bytes at %p", what, checks,
+                  lastSection, size, where);
+    std::printf("%s\n", line);
+    if (traceLog) {
+        traceLog << line << "\n";
+        traceLog.flush();
+    }
+    ++reported;
+}
+
 void release(void* ptr) {
     if (!ptr) return;
     Entry* e = findEntry(ptr);
-    if (!e) {   // not from here (a library allocating inside its own DLL, freed by its own delete)
+    if (!e) {
+        // Either a library freed something it allocated inside its own DLL, or this heap is being handed a pointer it
+        // never handed out -- a double free, or a pointer that was never a block.
+        bool seen = false;
+        for (void* freed : recentlyFreed) seen = seen || freed == ptr;
+        note(seen ? "double free" : "free of an unknown pointer", 0, ptr);
+        if (seen) return;   // do not hand a double free to the CRT: it would report corruption somewhere else
         std::free(ptr);
         return;
     }
     if (!intact(ptr, e->size)) {
         // A write past the end of this block happened. Say which block and how big, once per block.
-        if (reported < 8) {
-            char line[256];
-            std::snprintf(line, sizeof line, "CRASH heap canary broken at check %d, section '%s': block of %zu bytes",
-                          checks, lastSection, e->size);
-            std::printf("%s\n", line);
-            if (traceLog) {
-                traceLog << line << "\n";
-                traceLog.flush();
-            }
-            ++reported;
-        }
+        note("heap canary broken", e->size, ptr);
     }
     erase(ptr);
+    recentlyFreed[recentlyFreedNext] = ptr;
+    recentlyFreedNext = (recentlyFreedNext + 1) % 64;
     std::free(static_cast<unsigned char*>(ptr) - kGuard);
 }
 
@@ -247,15 +262,7 @@ void checkAll() {
     for (int i = 0; i < kSlots; ++i) {
         Entry& e = table[i];
         if (!e.ptr || intact(e.ptr, e.size)) continue;
-        char line[256];
-        std::snprintf(line, sizeof line, "CRASH heap canary broken after section '%s': block of %zu bytes", lastSection,
-                      e.size);
-        std::printf("%s\n", line);
-        if (traceLog) {
-            traceLog << line << "\n";
-            traceLog.flush();
-        }
-        ++reported;
+        note("heap canary broken", e.size, e.ptr);
         return;
     }
 }
