@@ -189,6 +189,12 @@ int main(int argc, char** argv) {
         cam.pitch = app.scene().cameraPitch;
         cam.fovY = app.scene().cameraFovY;
 
+        // The scene's lights (item 6): a scene that authors lights is shaded with them, and a key light in the scene
+        // becomes the sun. A scene that authors none keeps the engine's two stylistic fills.
+        renderer.setSceneLights(app.scene().lights);
+        std::printf("player: %zu scene light%s\n", app.scene().lights.size(),
+                    app.scene().lights.size() == 1 ? "" : "s");
+
         // Models follow the scene generation: a script's loadScene replaces every model.
         std::vector<std::unique_ptr<ukiyo::Model>> models;
         std::vector<size_t> modelForInstance;
@@ -277,10 +283,16 @@ int main(int argc, char** argv) {
             }
             if (window && glfwGetKey(window, GLFW_KEY_ESCAPE) == GLFW_PRESS) app.requestQuit();
 
-            if (app.sceneGeneration() != loadedGeneration) reloadModels();
+            if (app.sceneGeneration() != loadedGeneration) {
+                reloadModels();
+                renderer.setSceneLights(app.scene().lights);
+            }
 
             app.tick(dt);
-            if (app.sceneGeneration() != loadedGeneration) reloadModels();
+            if (app.sceneGeneration() != loadedGeneration) {
+                reloadModels();
+                renderer.setSceneLights(app.scene().lights);
+            }
 
             // Place and animate the models from the scene's world matrices.
             std::vector<ukiyo::Model*> drawList;

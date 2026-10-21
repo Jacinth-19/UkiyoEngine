@@ -313,6 +313,13 @@ add_executable(character_preview tools/character_preview.cpp src/engine/text_atl
 target_link_libraries(character_preview PRIVATE ukiyo_systems)
 target_compile_options(character_preview PRIVATE ${UKIYO_WARNINGS})
 
+# The docs figure for docs/LIGHTS.md: three authored lights on a three-sphere studio, shaded with the shipping
+# packSceneLights and mtoon.frag's ramp, falloff and cone. No GPU, so CI renders it on every push.
+add_executable(lights_preview tools/lights_preview.cpp src/engine/lights.cpp src/engine/text_atlas.cpp)
+target_include_directories(lights_preview PRIVATE ${CMAKE_SOURCE_DIR}/src ${CMAKE_SOURCE_DIR}/third_party)
+target_link_libraries(lights_preview PRIVATE glm::glm)
+target_compile_options(lights_preview PRIVATE ${UKIYO_WARNINGS})
+
 # The CPU path tracer behind docs/PATHTRACE.md and docs/pathtrace-terrain.png: the ground-truth render of the Terrain
 # Lab scene, on any CPU and with no GPU at all. STB is implemented in the tool itself, so it does not link ukiyo_core.
 add_executable(pathtrace_preview tools/pathtrace_preview.cpp src/engine/terrain.cpp)

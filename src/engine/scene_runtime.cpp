@@ -145,20 +145,25 @@ void readSettings(const json& s, RenderSettings* r) {
     if (s.contains("sunDir")) r->sunDir = vec3Of(s["sunDir"], r->sunDir);
 }
 
+// The scene's lights (item 6). Values are clamped to what the renderer accepts, exactly as the editor's reader does
+// (editor/src/scene_file.cpp), because a shipped game and the editor must shade the same file the same way. A scene
+// has one sun, so a second directional light is read as a point light rather than silently dropped.
 void readLights(const json& arr, std::vector<SceneLight>* out) {
     if (!arr.is_array()) return;
+    int directional = 0;
     for (const json& j : arr) {
         if (!j.is_object()) continue;
         SceneLight l;
         const std::string type = j.value("type", std::string("point"));
         l.type = type == "directional" ? LightType::Directional : type == "spot" ? LightType::Spot : LightType::Point;
+        if (l.type == LightType::Directional && ++directional > 1) l.type = LightType::Point;
         l.position = vec3Of(j.value("position", json::array()), l.position);
         l.direction = vec3Of(j.value("direction", json::array()), l.direction);
         l.color = vec3Of(j.value("color", json::array()), l.color);
-        l.intensity = j.value("intensity", l.intensity);
-        l.radius = j.value("radius", l.radius);
-        l.spotAngleDeg = j.value("angle", l.spotAngleDeg);
-        l.spotSoftness = j.value("softness", l.spotSoftness);
+        l.intensity = std::clamp(j.value("intensity", l.intensity), 0.0f, 64.0f);
+        l.radius = std::clamp(j.value("radius", l.radius), 0.05f, 200.0f);
+        l.spotAngleDeg = std::clamp(j.value("angle", l.spotAngleDeg), 1.0f, 179.0f);
+        l.spotSoftness = std::clamp(j.value("softness", l.spotSoftness), 0.0f, 0.95f);
         l.enabled = j.value("enabled", true);
         out->push_back(l);
     }

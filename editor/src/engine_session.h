@@ -95,6 +95,14 @@ public:
     bool addModel(const QString& path, const float position[3], float yawDeg, QString* error, int* index);
     // Project folder. Scene switches resolve their paths against it.
     void setProjectRoot(const QString& root) { projectRoot_ = root; }
+    // The scene's lights (item 6). Every render is shaded with them; a directional light in the list becomes the key
+    // light and casts the cascades. An empty list keeps the engine's two stylistic fills, so a scene that authors no
+    // lights renders exactly as it did before lights existed.
+    void setSceneLights(std::vector<ukiyo::SceneLight> lights) {
+        sceneLights_ = std::move(lights);
+        if (renderer_) renderer_->setSceneLights(sceneLights_);
+    }
+    const std::vector<ukiyo::SceneLight>& sceneLights() const { return sceneLights_; }
     // The scene's water volume (item 16), or none. Drawn by render() until it is changed.
     // It also reaches the play world's physics for buoyancy (item 17). The wave clock is the render time.
     void setWater(const ukiyo::WaterVolume* w) {
@@ -268,6 +276,7 @@ private:
     float alphaTestThreshold_ = 0.5f;
     std::unique_ptr<rhi::Device> device_;
     std::unique_ptr<Renderer> renderer_;
+    std::vector<ukiyo::SceneLight> sceneLights_;
     std::optional<ukiyo::WaterVolume> water_;
     bool audioMuted_ = false;
     void applyAudioMute();

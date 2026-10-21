@@ -2,6 +2,7 @@
 #include "engine/lights.h"
 
 #include <cmath>
+#include <cstddef>
 #include <cstdio>
 #include <vector>
 
@@ -107,6 +108,24 @@ int main() {
         same = same && again[i].posRadius == packed[i].posRadius && again[i].params.x == packed[i].params.x;
     check(same, "selection is deterministic");
 
+    // The frame block carries exactly kFrameLights of them, so a selection can never write past the array.
+    check(packSceneLights(lights, {0, 0, 0}, {0, 0, 1}, kFrameLights, packed) == kFrameLights,
+          "the selection fills the frame block's light array and no more");
+    // The function's own bound is kMaxSceneLights: asking for more must clamp to what an output array can hold, never
+    // run past it. The frame block's bound (kFrameLights) is enforced at the call site, which is the renderer, and
+    // lights.h asserts the two agree at compile time.
+    check(packSceneLights(lights, {0, 0, 0}, {0, 0, 1}, kMaxSceneLights + 16, packed) == kMaxSceneLights,
+          "asking for more than the output array holds is clamped, not overrun");
+
+    // The frame block is a std140 mirror of shaders/frame.glsl: every member 16-byte aligned, so the offsets the
+    // shader computes are the offsets the CPU writes. A light is four vec4s.
+    static_assert(sizeof(GpuLight) == 64, "a light is four vec4s");
+    static_assert(kFrameLights == 8, "shaders/frame.glsl declares lights[8]");
+    static_assert(offsetof(FrameUBO, lightParams) % 16 == 0, "lightParams is 16-byte aligned");
+    static_assert(offsetof(FrameUBO, lights) % 16 == 0, "the light array starts 16-byte aligned");
+    static_assert(offsetof(FrameUBO, lights) == offsetof(FrameUBO, lightParams) + 16, "lights follow lightParams");
+    static_assert(offsetof(FrameUBO, toonA) == offsetof(FrameUBO, lights) + sizeof(GpuLight) * kFrameLights,
+                  "toonA follows the light array");
     std::printf("lights_test: %d checks, %d failures\n", checks, failures);
     return failures ? 1 : 0;
 }

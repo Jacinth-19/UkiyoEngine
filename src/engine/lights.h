@@ -35,11 +35,12 @@ struct SceneLight {
     bool enabled = true;
 };
 
-// GpuLight is defined in gpu_types.h, next to the frame block that carries them.
-static_assert(kFrameLights <= 16, "the frame block has room for the selected lights");
-
 // How many lights a scene may author. The frame block carries kFrameLights of them; the rest are ranked out.
 constexpr int kMaxSceneLights = 16;
+
+// GpuLight is defined in gpu_types.h, next to the frame block that carries them.
+static_assert(kFrameLights <= 16, "the frame block has room for the selected lights");
+static_assert(kFrameLights <= kMaxSceneLights, "a frame carries no more lights than a scene can author");
 
 // Distance from the focus point at which a light's score reaches zero, used to drop lights that cannot contribute.
 float lightScore(const SceneLight& light, const glm::vec3& focus, const glm::vec3& forward);

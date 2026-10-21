@@ -99,6 +99,8 @@ public:
     void setPreserveAlphaCoverage(bool on) { session_.setPreserveAlphaCoverage(on); }
     void setAlphaTestThreshold(float t) { session_.setAlphaTestThreshold(t); }
     void setWater(bool on, const ukiyo::WaterVolume& w) { session_.setWater(on ? &w : nullptr); }
+    // The scene's lights (item 6). An empty list restores the engine's two stylistic fills.
+    void setSceneLights(const std::vector<ukiyo::SceneLight>& lights) { session_.setSceneLights(lights); }
     // Adds a model to the scene and makes it active. *info describes the new active model.
     bool addModel(const QString& path, const float position[3], float yawDeg, QString* error, ModelInfo* info,
                   int* index);

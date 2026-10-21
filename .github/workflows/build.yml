@@ -162,6 +162,10 @@ jobs:
       # also a runtime check - the tool drives a real CharacterVirtual for about four seconds and fails on a crash.
       - name: Render the character figure
         run: mkdir -p renders && ./build/character_preview --out renders/character.png --font editor/res/fonts/IBMPlexSansJP-Regular.ttf
+      # The figure in docs/LIGHTS.md: three authored lights, ranked by the shipping selection and shaded with the
+      # fragment shader's ramp, windowed falloff and cone. It also exercises the light packing in a real run.
+      - name: Render the lights figure
+        run: mkdir -p renders && ./build/lights_preview --out renders/lights.png --font editor/res/fonts/IBMPlexSansJP-Regular.ttf
       # The input runtime, its asset format and its actions, driven from synthetic devices: no window, no GPU, no GLFW.
       # It checks press/hold/tap/multitap, 1D and 2D composites, processors, control schemes, rebinding, and that the
       # .inputactions file the engine writes loads back byte-for-byte. docs/INPUT.md.

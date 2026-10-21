@@ -312,6 +312,12 @@ private:
     // Water volume section of the scene page (item 16). Edits push the volume to the render worker.
     void addWaterSection(QVBoxLayout* v);
     void pushWater();
+    // Scene lights (item 6). The inspector edits one light at a time; pushLights sends the list to the render thread.
+    void pushLights();
+    void showSceneLightProperties(int index);
+    void addLight(int type);          // 1 point, 2 spot
+    void deleteLight(int index);
+    void selectLightRow(int index);
     void syncCameraSpins();
     void applyCameraSpins();
     void applyNodeTransform();
@@ -573,6 +579,7 @@ private:
     QLabel* detailTitle_ = nullptr;
     QLabel* detailText_ = nullptr;
     std::optional<ukiyo::WaterVolume> water_;       // the scene's water volume (item 16), none when empty
+    std::vector<ukiyo::SceneLight> lights_;         // the scene's lights (item 6), in author order
     MaterialInspector* materialInspector_ = nullptr;   // properties of a selected .ukmat
     QLabel* detailDeps_ = nullptr;                     // "Uses" and "Used by" lines in the details pane
 

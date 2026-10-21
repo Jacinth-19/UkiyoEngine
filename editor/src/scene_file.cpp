@@ -65,6 +65,69 @@ std::vector<float> readLodSwitches(const QJsonValue& v) {
     return ukiyo::normalizeLodSwitches(raw);
 }
 
+// One light, as the scene file and the RuntimeScene reader (src/engine/scene_runtime.cpp) both spell it. A field a
+// newer writer adds is ignored by an older reader, and a field left out takes the C++ default.
+QJsonObject lightToJson(const ukiyo::SceneLight& l) {
+    auto floats = [](std::initializer_list<float> xs) {
+        QJsonArray a;
+        for (float x : xs) a.append(double(x));
+        return a;
+    };
+    QJsonObject o;
+    o["type"] = l.type == ukiyo::LightType::Directional ? "directional"
+             : l.type == ukiyo::LightType::Spot        ? "spot"
+                                                       : "point";
+    o["position"] = floats({l.position.x, l.position.y, l.position.z});
+    o["direction"] = floats({l.direction.x, l.direction.y, l.direction.z});
+    o["color"] = floats({l.color.x, l.color.y, l.color.z});
+    o["intensity"] = double(l.intensity);
+    o["radius"] = double(l.radius);
+    o["angle"] = double(l.spotAngleDeg);
+    o["softness"] = double(l.spotSoftness);
+    if (!l.enabled) o["enabled"] = false;
+    return o;
+}
+
+QJsonArray lightsToJson(const std::vector<ukiyo::SceneLight>& lights) {
+    QJsonArray a;
+    for (const ukiyo::SceneLight& l : lights) a.append(lightToJson(l));
+    return a;
+}
+
+std::vector<ukiyo::SceneLight> readLights(const QJsonValue& v) {
+    std::vector<ukiyo::SceneLight> out;
+    if (!v.isArray()) return out;
+    const QJsonArray arr = v.toArray();
+    int directional = 0;
+    for (const QJsonValue& item : arr) {
+        if (!item.isObject()) continue;
+        const QJsonObject o = item.toObject();
+        ukiyo::SceneLight l;
+        const QString type = o.value("type").toString("point");
+        l.type = type == "directional" ? ukiyo::LightType::Directional
+               : type == "spot"        ? ukiyo::LightType::Spot
+                                       : ukiyo::LightType::Point;
+        // One key light: the renderer has one sun and one set of cascades. A second directional light is read as a
+        // point light rather than silently dropped, so the scene still says what the author meant.
+        if (l.type == ukiyo::LightType::Directional && ++directional > 1) l.type = ukiyo::LightType::Point;
+        auto readVec = [](const QJsonValue& j, glm::vec3* dst) {
+            const QJsonArray a = j.toArray();
+            if (a.size() != 3) return;
+            *dst = glm::vec3(float(a[0].toDouble()), float(a[1].toDouble()), float(a[2].toDouble()));
+        };
+        readVec(o.value("position"), &l.position);
+        readVec(o.value("direction"), &l.direction);
+        readVec(o.value("color"), &l.color);
+        l.intensity = std::clamp(float(o.value("intensity").toDouble(l.intensity)), 0.0f, 64.0f);
+        l.radius = std::clamp(float(o.value("radius").toDouble(l.radius)), 0.05f, 200.0f);
+        l.spotAngleDeg = std::clamp(float(o.value("angle").toDouble(l.spotAngleDeg)), 1.0f, 179.0f);
+        l.spotSoftness = std::clamp(float(o.value("softness").toDouble(l.spotSoftness)), 0.0f, 0.95f);
+        l.enabled = o.value("enabled").toBool(true);
+        out.push_back(l);
+    }
+    return out;
+}
+
 QJsonArray lodSwitchesToJson(const std::vector<float>& switches) {
     QJsonArray a;
     for (float s : switches) a.append(double(s));

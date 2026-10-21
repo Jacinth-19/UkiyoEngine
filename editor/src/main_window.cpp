@@ -197,9 +197,11 @@ constexpr int kMaxLogLines = 2000;
 // Hierarchy item kinds. Scene nodes use their index (>= 0).
 constexpr int kItemMainCamera = -1;
 constexpr int kItemScene = -2;
-constexpr int kItemLight = -4;
+constexpr int kItemLight = -4;       // the project's sun, which always exists
 // Instance i is listed as kItemInstanceBase - i. Node rows use their index (>= 0).
 constexpr int kItemInstanceBase = -100;
+// Authored light i (item 6) is listed as kItemLightBase - i, so a row can be told from an instance row.
+constexpr int kItemLightBase = -100000;
 // Holds the label a Hierarchy row was built with, so a real edit can be told apart from a restyle.
 constexpr int kRowLabelRole = Qt::UserRole + 1;
 // Blue for prefab instances in the Hierarchy and Inspector.
@@ -909,7 +911,7 @@ void MainWindow::buildDocks() {
         const QVariant built = item->data(0, kRowLabelRole);
         if (!built.isValid() || item->text(0) == built.toString()) return;
         const int kind = item->data(0, Qt::UserRole).toInt();
-        if (kind <= kItemInstanceBase) renameInstance(kItemInstanceBase - kind, item->text(0));
+        if (kind <= kItemInstanceBase && kind > kItemLightBase) renameInstance(kItemInstanceBase - kind, item->text(0));
     });
     hierarchy_->setContextMenuPolicy(Qt::CustomContextMenu);
     connect(hierarchy_, &QWidget::customContextMenuRequested, this, [this](const QPoint& pos) {
@@ -3316,6 +3318,18 @@ void MainWindow::rebuildHierarchy() {
     light->setData(0, Qt::UserRole, kItemLight);
     light->setIcon(0, uiIcon("light_mode"));
 
+    // The scene's own lights (item 6), one row each.
+    for (int i = 0; i < static_cast<int>(lights_.size()); ++i) {
+        const ukiyo::SceneLight& l = lights_[static_cast<size_t>(i)];
+        const bool spot = l.type == ukiyo::LightType::Spot;
+        const bool key = l.type == ukiyo::LightType::Directional;
+        QTreeWidgetItem* row = new QTreeWidgetItem(
+            hierarchy_, QStringList{QStringLiteral("%1 Light %2").arg(key ? "Key" : spot ? "Spot" : "Point").arg(i + 1)});
+        row->setData(0, Qt::UserRole, kItemLightBase - i);
+        row->setIcon(0, uiIcon(key ? "sunny" : spot ? "highlight" : "lightbulb"));
+        if (!l.enabled) row->setForeground(0, QBrush(QColor(0x80, 0x80, 0x80)));
+    }
+
     if (modelReady_) {
         QTreeWidgetItem* root = new QTreeWidgetItem(hierarchy_, QStringList{sceneName_});
         root->setData(0, Qt::UserRole, kItemScene);
@@ -3395,7 +3409,7 @@ void MainWindow::updateInstanceRowMarkers() {
     QTreeWidgetItemIterator it(hierarchy_);
     while (*it) {
         const int kind = (*it)->data(0, Qt::UserRole).toInt();
-        if (kind <= kItemInstanceBase) {
+        if (kind <= kItemInstanceBase && kind > kItemLightBase) {
             const int index = kItemInstanceBase - kind;
             if (index < static_cast<int>(list.size())) {
                 QFont f = (*it)->font(0);
@@ -3412,6 +3426,17 @@ void MainWindow::selectInstanceRow(int index) {
     QTreeWidgetItemIterator it(hierarchy_);
     while (*it) {
         if ((*it)->data(0, Qt::UserRole).toInt() == kItemInstanceBase - index) {
+            hierarchy_->setCurrentItem(*it);
+            return;
+        }
+        ++it;
+    }
+}
+
+void MainWindow::selectLightRow(int index) {
+    QTreeWidgetItemIterator it(hierarchy_);
+    while (*it) {
+        if ((*it)->data(0, Qt::UserRole).toInt() == kItemLightBase - index) {
             hierarchy_->setCurrentItem(*it);
             return;
         }
@@ -3462,6 +3487,8 @@ void MainWindow::showPropertiesFor(QTreeWidgetItem* item) {
         showCameraProperties(&gameCam_, "Main Camera", "photo_camera");
     } else if (kind == kItemLight) {
         showLightProperties();
+    } else if (kind < kItemInstanceBase && kind > kItemLightBase) {
+        showSceneLightProperties(kItemLightBase - kind);
     } else if (kind == kItemScene) {
         showSceneProperties();
     } else if (kind <= kItemInstanceBase) {
@@ -4612,6 +4639,118 @@ void MainWindow::applyLightSpins() {
     markDirty();
     for (const auto& sync : settingSyncers_) sync();
     refresh();
+}
+
+void MainWindow::pushLights() {
+    const std::vector<ukiyo::SceneLight> copy = lights_;
+    runOnWorker([&] { worker_->setSceneLights(copy); });
+}
+
+// One authored light (item 6). The sun is a different page - it edits the project's key light and always exists - so
+// this page is about the lights a scene adds: position, colour, reach, and for a spot the cone.
+void MainWindow::showSceneLightProperties(int index) {
+    if (index < 0 || index >= static_cast<int>(lights_.size())) return;
+    const ukiyo::SceneLight& l = lights_[static_cast<size_t>(index)];
+    const bool spot = l.type == ukiyo::LightType::Spot;
+    Page p = makePage(QStringLiteral("%1 Light").arg(spot ? "Spot" : "Point"),
+                      spot ? "highlight" : "lightbulb");
+
+    QFormLayout* f = addSection(p.layout, "Light");
+    auto* type = new QComboBox;
+    type->setObjectName("lightType");
+    type->addItems({"Point", "Spot"});
+    type->setCurrentIndex(spot ? 1 : 0);
+    f->addRow("Type", type);
+    const float pos[3] = {l.position.x, l.position.y, l.position.z};
+    std::vector<QDoubleSpinBox*> position = vec3Row(f, "Position", pos, -500.0, 500.0, 0.1, 3);
+    const float dir[3] = {l.direction.x, l.direction.y, l.direction.z};
+    std::vector<QDoubleSpinBox*> direction = vec3Row(f, "Direction", dir, -1.0, 1.0, 0.01, 3);
+    const float col[3] = {l.color.r, l.color.g, l.color.b};
+    std::vector<QDoubleSpinBox*> color = vec3Row(f, "Colour", col, 0.0, 1.0, 0.01, 3);
+    QDoubleSpinBox* intensity = makeSpin(0.0, 64.0, 0.05, 3, l.intensity);
+    intensity->setObjectName("lightIntensity");
+    f->addRow("Intensity", intensity);
+    QDoubleSpinBox* radius = makeSpin(0.05, 200.0, 0.1, 3, l.radius);
+    radius->setObjectName("lightRadius");
+    f->addRow("Reach (m)", radius);
+    QDoubleSpinBox* angle = makeSpin(1.0, 179.0, 1.0, 1, l.spotAngleDeg);
+    angle->setObjectName("lightAngle");
+    f->addRow("Cone (deg)", angle);
+    QDoubleSpinBox* soft = makeSpin(0.0, 0.95, 0.01, 2, l.spotSoftness);
+    soft->setObjectName("lightSoftness");
+    f->addRow("Cone softness", soft);
+    QCheckBox* on = new QCheckBox("On");
+    on->setChecked(l.enabled);
+    f->addRow(on);
+
+    auto apply = [this, index, position, direction, color, intensity, radius, angle, soft, on, type] {
+        if (index < 0 || index >= static_cast<int>(lights_.size())) return;
+        ukiyo::SceneLight& w = lights_[static_cast<size_t>(index)];
+        w.type = type->currentIndex() == 1 ? ukiyo::LightType::Spot : ukiyo::LightType::Point;
+        w.position = glm::vec3(float(position[0]->value()), float(position[1]->value()), float(position[2]->value()));
+        w.direction = glm::vec3(float(direction[0]->value()), float(direction[1]->value()), float(direction[2]->value()));
+        w.color = glm::vec3(float(color[0]->value()), float(color[1]->value()), float(color[2]->value()));
+        w.intensity = float(intensity->value());
+        w.radius = float(radius->value());
+        w.spotAngleDeg = float(angle->value());
+        w.spotSoftness = float(soft->value());
+        w.enabled = on->isChecked();
+        markDirty();
+        pushLights();
+        refresh();
+    };
+    for (QDoubleSpinBox* sp : position) connect(sp, QOverload<double>::of(&QDoubleSpinBox::valueChanged), this, apply);
+    for (QDoubleSpinBox* sp : direction) connect(sp, QOverload<double>::of(&QDoubleSpinBox::valueChanged), this, apply);
+    for (QDoubleSpinBox* sp : color) connect(sp, QOverload<double>::of(&QDoubleSpinBox::valueChanged), this, apply);
+    connect(intensity, QOverload<double>::of(&QDoubleSpinBox::valueChanged), this, apply);
+    connect(radius, QOverload<double>::of(&QDoubleSpinBox::valueChanged), this, apply);
+    connect(angle, QOverload<double>::of(&QDoubleSpinBox::valueChanged), this, apply);
+    connect(soft, QOverload<double>::of(&QDoubleSpinBox::valueChanged), this, apply);
+    connect(on, &QCheckBox::toggled, this, apply);
+    connect(type, QOverload<int>::of(&QComboBox::currentIndexChanged), this, apply);
+
+    QLabel* hint = new QLabel("Reach is where the light has fallen to nothing. A scene with lights is lit by them "
+                              "instead of the engine's two fill lights; one directional light in a scene becomes the "
+                              "sun and casts the shadows.");
+    hint->setWordWrap(true);
+    hint->setObjectName("hint");
+    f->addRow(hint);
+
+    QPushButton* del = new QPushButton(uiIcon("delete"), QStringLiteral("Delete Light"));
+    del->setObjectName("lightDelete");
+    connect(del, &QPushButton::clicked, this, [this, index] { deleteLight(index); });
+    p.layout->addWidget(del);
+    p.layout->addStretch(1);
+    setInspectorPage(p.widget);
+}
+
+void MainWindow::addLight(int type) {
+    ukiyo::SceneLight l;
+    l.type = type == 2 ? ukiyo::LightType::Spot : ukiyo::LightType::Point;
+    // In front of the camera, at eye height: a light added from the menu is visible where the author is looking.
+    const glm::vec3 eye = gameCam_.eye();
+    const glm::vec3 fwd = glm::normalize(gameCam_.target - eye + glm::vec3(0.0f, 1e-4f, 0.0f));
+    l.position = eye + fwd * 2.0f;
+    l.direction = fwd;
+    l.color = type == 2 ? glm::vec3(1.0f, 0.92f, 0.78f) : glm::vec3(0.55f, 0.75f, 1.0f);
+    l.intensity = 3.0f;
+    l.radius = 6.0f;
+    lights_.push_back(l);
+    beginEdit();
+    markDirty();
+    pushLights();
+    rebuildHierarchy();
+    selectLightRow(static_cast<int>(lights_.size()) - 1);
+}
+
+void MainWindow::deleteLight(int index) {
+    if (index < 0 || index >= static_cast<int>(lights_.size())) return;
+    beginEdit();
+    lights_.erase(lights_.begin() + index);
+    markDirty();
+    pushLights();
+    rebuildHierarchy();
+    showPropertiesFor(nullptr);
 }
 
 // Writes the camera values into the spin boxes. Blocked so it does not feed back into the camera.
@@ -6063,6 +6202,7 @@ QJsonObject MainWindow::sceneDocument() {
     root["gameCamera"] = cameraJson(gameCam_);
     root["nodes"] = nodes;
     if (water_) root["water"] = scene_file::waterToJson(*water_);
+    if (!lights_.empty()) root["lights"] = scene_file::lightsToJson(lights_);
 
     return root;
 }
@@ -6241,7 +6381,7 @@ int MainWindow::selectedInstance() const {
     const QTreeWidgetItem* cur = hierarchy_->currentItem();
     if (!cur) return -1;
     const int kind = cur->data(0, Qt::UserRole).toInt();
-    return kind <= kItemInstanceBase ? kItemInstanceBase - kind : -1;
+    return kind <= kItemInstanceBase && kind > kItemLightBase ? kItemInstanceBase - kind : -1;
 }
 
 void MainWindow::copyInstance(int index) {
@@ -6904,6 +7044,11 @@ void MainWindow::renameInstance(int index, const QString& name) {
 QMenu* MainWindow::hierarchyContextMenu(QTreeWidgetItem* item) {
     QMenu* menu = new QMenu(this);
     const int kind = item ? item->data(0, Qt::UserRole).toInt() : kItemScene;
+    if (item && kind < kItemInstanceBase && kind > kItemLightBase) {
+        const int index = kItemLightBase - kind;
+        menu->addAction(uiIcon("delete"), QStringLiteral("Delete Light"), this, [this, index] { deleteLight(index); });
+        return menu;
+    }
     if (item && kind <= kItemInstanceBase) {
         const int index = kItemInstanceBase - kind;
         menu->addAction(uiIcon("edit"), QStringLiteral("Rename"), this, [this, item] {
@@ -6928,6 +7073,8 @@ QMenu* MainWindow::hierarchyContextMenu(QTreeWidgetItem* item) {
     create->addAction(QStringLiteral("Empty Object"), this, [this] { createEmptyObject(); });
     create->addAction(QStringLiteral("Terrain..."), this, [this] { createTerrainObject(); });
     create->addAction(QStringLiteral("Model..."), this, [this] { addModelDialog(); });
+    create->addAction(uiIcon("lightbulb"), QStringLiteral("Point Light"), this, [this] { addLight(1); });
+    create->addAction(uiIcon("highlight"), QStringLiteral("Spot Light"), this, [this] { addLight(2); });
     create->addAction(QStringLiteral("Prefab..."), this, [this] {
         const QString path = QFileDialog::getOpenFileName(this, QStringLiteral("Add Prefab"), projectRoot_ + "/assets",
                                                           QStringLiteral("Ukiyo Prefab (*.ukprefab)"));
@@ -6979,6 +7126,9 @@ bool MainWindow::applySceneDocument(const QJsonObject& root, const QString& sour
     // Water (item 16) belongs to the scene. A document without it has none, so opening or undoing clears it.
     water_ = parsed.hasWater ? std::optional<ukiyo::WaterVolume>(parsed.water) : std::nullopt;
     pushWater();
+    // Scene lights (item 6) belong to the scene too, for the same reason.
+    lights_ = scene_file::readLights(root.value("lights"));
+    pushLights();
 
     // Undo and redo keep the view the user is looking at. Opening a scene uses the saved camera.
     const bool keepView = (source == QStringLiteral("undo") || source == QStringLiteral("redo"));
@@ -12484,6 +12634,70 @@ int MainWindow::runSelfTest() {
         // Opening a scene without water clears the volume and the worker's copy.
         check(readScene(one) && !water_.has_value(), "water: opening a scene without water clears the volume");
         QFile::remove(tmpW);
+    }
+
+    // --- 15b. Scene lights (item 6): authored, saved, clamped and read back ---
+    {
+        const QString one = projectRoot_ + QStringLiteral("/renders/roundtrip_test.ukscene");
+        const QString tmpLi = QDir::tempPath() + QStringLiteral("/ukiyo_selftest_lights.ukscene");
+        check(readScene(one) && lights_.empty(), "lights: a scene without lights has none");
+        QJsonObject noLights = sceneDocument();
+        check(!noLights.contains(QStringLiteral("lights")),
+              "lights: a scene without lights writes no lights key, so its file does not change");
+
+        // Add a point light through the same call the Create menu uses, and a spot.
+        addLight(1);
+        addLight(2);
+        check(lights_.size() == 2 && lights_[0].type == ukiyo::LightType::Point &&
+                  lights_[1].type == ukiyo::LightType::Spot,
+              "lights: the Create menu's two entries add a point light and a spot light");
+        bool hierarchyShowsPoint = false, hierarchyShowsSpot = false;
+        for (QTreeWidgetItemIterator it(hierarchy_); *it; ++it) {
+            const QString t = (*it)->text(0);
+            if (t.startsWith(QStringLiteral("Point Light"))) hierarchyShowsPoint = true;
+            if (t.startsWith(QStringLiteral("Spot Light"))) hierarchyShowsSpot = true;
+        }
+        check(hierarchyShowsPoint && hierarchyShowsSpot, "lights: each light gets a Hierarchy row");
+
+        // A change made on the light's page reaches the list and the document.
+        showSceneLightProperties(0);
+        QWidget* page = inspector_->widget();
+        auto* radius = page ? page->findChild<QDoubleSpinBox*>(QStringLiteral("lightRadius")) : nullptr;
+        auto* intensity = page ? page->findChild<QDoubleSpinBox*>(QStringLiteral("lightIntensity")) : nullptr;
+        check(radius && intensity, "lights: the light page has a reach and an intensity field");
+        if (radius && intensity) {
+            radius->setValue(12.5);
+            intensity->setValue(7.25);
+            check(std::fabs(lights_[0].radius - 12.5f) < 1e-4f && std::fabs(lights_[0].intensity - 7.25f) < 1e-4f,
+                  "lights: a field change is written into the scene's light");
+        }
+        QJsonObject withLights = sceneDocument();
+        const QJsonArray arr = withLights.value(QStringLiteral("lights")).toArray();
+        check(arr.size() == 2 && arr[0].toObject().value(QStringLiteral("type")).toString() == QStringLiteral("point") &&
+                  std::fabs(arr[0].toObject().value(QStringLiteral("radius")).toDouble() - 12.5) < 1e-4,
+              "lights: the document holds both lights with what the page wrote");
+
+        check(writeScene(tmpLi) && readScene(tmpLi) && lights_.size() == 2 &&
+                  std::fabs(lights_[0].radius - 12.5f) < 1e-4f,
+              "lights: the lights survive a save and reopen");
+
+        // A hand-edited file cannot ask for a light that shades nothing, or one that floods the frame; and a scene
+        // has one sun, so a second directional light is read as a point light rather than silently dropped.
+        const QJsonArray parsed =
+            scene_file::readLights(QJsonArray{QJsonObject{{QStringLiteral("type"), QStringLiteral("point")},
+                                                          {QStringLiteral("radius"), 0.0},
+                                                          {QStringLiteral("intensity"), 1000.0}},
+                                               QJsonObject{{QStringLiteral("type"), QStringLiteral("directional")}},
+                                               QJsonObject{{QStringLiteral("type"), QStringLiteral("directional")}}});
+        check(parsed.size() == 3 && parsed[0].radius >= 0.05f && parsed[0].intensity <= 64.0f &&
+                  parsed[1].type == ukiyo::LightType::Directional && parsed[2].type == ukiyo::LightType::Point,
+              "lights: out-of-range values are clamped and only one light is the sun");
+
+        // Deleting one leaves the other, and reopening a scene without lights clears the list.
+        deleteLight(0);
+        check(lights_.size() == 1 && lights_[0].type == ukiyo::LightType::Spot, "lights: Delete Light removes that light");
+        check(readScene(one) && lights_.empty(), "lights: opening a scene without lights clears them");
+        QFile::remove(tmpLi);
     }
 
     // --- 16. Mesh LOD (item 15): the switch distances are a per-object scene setting ---

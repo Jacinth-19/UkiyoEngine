@@ -109,6 +109,27 @@ int main() {
     check(s.lights[0].enabled, "a light defaults to enabled");
     check(!s.lights[1].enabled, "an explicit enabled:false loads");
 
+    // A hand-edited file cannot ask for a light the renderer would misread: the runtime clamps the same values the
+    // editor's reader does, and only one light in a scene is the sun.
+    {
+        const std::string clampedPath = sb.write("Scenes/clamped.ukscene",
+            R"({"format": "ukiyo-scene", "model": "assets/Seed-san.vrm",
+                "lights": [{"type": "point", "radius": 0, "intensity": 900, "angle": -5, "softness": 4},
+                           {"type": "directional", "direction": [0, -1, 0]},
+                           {"type": "directional"},
+                           {"type": "spot", "radius": 5000, "angle": 400}]})");
+        RuntimeScene c;
+        std::string cerr;
+        check(loadRuntimeScene(clampedPath, sb.root.string(), &c, &cerr), "a scene with out-of-range lights loads");
+        check(c.lights.size() == 4, "every light in the array is an instance");
+        check(c.lights[0].radius >= 0.05f && c.lights[0].intensity <= 64.0f && c.lights[0].spotAngleDeg >= 1.0f &&
+                  c.lights[0].spotSoftness <= 0.95f,
+              "out-of-range light values are clamped");
+        check(c.lights[1].type == LightType::Directional && c.lights[2].type == LightType::Point,
+              "one directional light is the sun and a second is read as a point light");
+        check(c.lights[3].radius <= 200.0f && c.lights[3].spotAngleDeg <= 179.0f, "a huge reach and cone are clamped");
+    }
+
     check(!s.settings.shadows, "a render setting out of the file wins over the default");
     check(near(s.settings.ssao, 0.7f), "a float render setting loads");
     check(s.settings.tonemap == 3, "an int render setting loads");

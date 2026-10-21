@@ -12,6 +12,7 @@
 #include <QStringList>
 
 #include "engine/terrain.h"
+#include "engine/lights.h"
 #include "engine/water.h"
 #include "systems/components.h"
 
@@ -60,6 +61,12 @@ void readFloats(const QJsonValue& v, float* out, int n);
 // to the ranges the renderer accepts, so a hand-edited file cannot break the surface.
 void parseWater(const QJsonObject& root, ukiyo::WaterVolume* out, bool* present);
 QJsonObject waterToJson(const ukiyo::WaterVolume& v);
+
+// The optional \"lights\" array of a scene (item 6): authored point and spot lights, plus at most one directional key
+// light. Values are clamped to what the renderer accepts, so a hand-edited file cannot produce a light that shades
+// nothing or one that floods the frame. A scene with no \"lights\" keeps the engine's two stylistic fills.
+std::vector<ukiyo::SceneLight> readLights(const QJsonValue& v);
+QJsonArray lightsToJson(const std::vector<ukiyo::SceneLight>& lights);
 
 // The optional \"lod\" array of an instance (item 15): switch distances in metres. Bad values are dropped.
 std::vector<float> readLodSwitches(const QJsonValue& v);

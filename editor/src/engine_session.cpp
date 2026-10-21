@@ -54,6 +54,7 @@ bool EngineSession::init(QString* error) {
         cfg.headless = true;
         device_ = rhi::createDevice(rhi::Backend::Vulkan, cfg, nullptr);
         renderer_ = std::make_unique<Renderer>(*device_);
+        renderer_->setSceneLights(sceneLights_);
     } catch (const std::exception& e) {
         if (error) *error = QString::fromStdString(e.what());
         return false;
