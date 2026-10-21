@@ -11822,7 +11822,8 @@ int MainWindow::runSelfTest() {
         QLineEdit* search = dlg.findChild<QLineEdit*>(QStringLiteral("prefsSearch"));
         QComboBox* view = dlg.findChild<QComboBox*>();
         QPushButton* reset = dlg.findChild<QPushButton*>(QStringLiteral("prefsReset"));
-        check(cats && cats->count() == 3, "Preferences lists three categories",
+        // General, Content Browser, Scripting, Shortcuts.
+        check(cats && cats->count() == 4, "Preferences lists its four categories",
               cats ? QString::number(cats->count()) : QString("missing"));
         check(search != nullptr, "Preferences has a search box, as Project Settings does");
         check(!dlg.findChildren<QToolButton*>(QStringLiteral("foldoutHeader")).isEmpty(),
