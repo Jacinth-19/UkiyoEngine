@@ -7548,15 +7548,46 @@ int MainWindow::runSelfTest() {
     const int nodesOut = da.object().value(QStringLiteral("nodes")).toArray().size();
     check(nodesSrc == nodesOut, "scene node count survives the round trip",
           QString("fixture %1, saved %2").arg(nodesSrc).arg(nodesOut));
-    // The fixture is version 1. Saving it upgrades it to version 2 (models, active); nothing else may change.
-    auto withoutV2Keys = [](QJsonObject o) {
-        o.remove(QStringLiteral("version"));
-        o.remove(QStringLiteral("models"));
-        o.remove(QStringLiteral("active"));
-        return o;
+    // The fixture is version 1. Saving it upgrades it to version 2 (models, active) and writes every setting the writer
+    // knows about, which a v1 file did not have to carry. "No field loss" therefore means: every field the file *has*
+    // comes back with the same value. A field a newer writer adds is not a loss, and comparing whole documents would
+    // fail on it forever.
+    auto firstLoss = [](const QJsonValue& before, const QJsonValue& after, const QString& at,
+                        auto&& self) -> QString {
+        if (before.isObject()) {
+            if (!after.isObject()) return at + QStringLiteral(" is no longer an object");
+            const QJsonObject a = before.toObject(), b = after.toObject();
+            for (auto it = a.begin(); it != a.end(); ++it) {
+                if (!b.contains(it.key())) return at + QLatin1Char('/') + it.key() + QStringLiteral(" was dropped");
+                const QString d = self(it.value(), b.value(it.key()), at + QLatin1Char('/') + it.key(), self);
+                if (!d.isEmpty()) return d;
+            }
+            return QString();
+        }
+        if (before.isArray()) {
+            if (!after.isArray()) return at + QStringLiteral(" is no longer an array");
+            const QJsonArray a = before.toArray(), b = after.toArray();
+            if (a.size() != b.size()) return at + QStringLiteral(" changed length (%1 to %2)").arg(a.size()).arg(b.size());
+            for (int i = 0; i < a.size(); ++i) {
+                const QString d = self(a[i], b[i], at + QStringLiteral("[%1]").arg(i), self);
+                if (!d.isEmpty()) return d;
+            }
+            return QString();
+        }
+        if (before.isDouble() && after.isDouble()) {
+            const double x = before.toDouble(), y = after.toDouble();
+            // Floats are stored as floats; a value that survives as a float may move in its last bits, not more.
+            if (std::fabs(x - y) > 1e-6 * std::max(1.0, std::fabs(x)))
+                return at + QStringLiteral(" changed (%1 to %2)").arg(x, 0, 'g', 12).arg(y, 0, 'g', 12);
+            return QString();
+        }
+        return before == after ? QString() : at + QStringLiteral(" changed");
     };
-    check(!da.isNull() && withoutV2Keys(dsrc.object()) == withoutV2Keys(da.object()),
-          "scene fixture round trips without field loss (version 2 keys aside)");
+    QJsonObject before = dsrc.object(), after = da.object();
+    for (const char* v2 : {"version", "models", "active"}) after.remove(QString::fromLatin1(v2));
+    const QString loss = da.isNull() ? QStringLiteral("the saved scene is not valid JSON")
+                                     : firstLoss(before, after, QStringLiteral("scene"), firstLoss);
+    check(loss.isEmpty(), "scene fixture round trips without field loss (version 2 keys aside)", loss);
     check(da.object().value(QStringLiteral("version")).toInt() == 2 &&
               da.object().value(QStringLiteral("models")).toArray().size() == 1,
           "v1 fixture saves as a version 2 scene with one model");
@@ -8799,39 +8830,52 @@ int MainWindow::runSelfTest() {
                 out.sort();
                 return out;
             };
-            check(wrote && visible().size() == made.size(), "the test folder holds five files",
+            // QFileSystemModel lists a folder on its own thread, so a check that runs one event loop turn after
+            // navigateTo can read a half-built folder. Wait until the list stops changing (or three seconds pass) and
+            // report what it settled on: on a loaded CI runner that is the difference between a real result and a race.
+            auto settled = [&] {
+                QStringList last = visible();
+                for (int i = 0; i < 150; ++i) {
+                    QCoreApplication::processEvents(QEventLoop::AllEvents, 20);
+                    const QStringList now = visible();
+                    if (now == last && !now.isEmpty()) return now;
+                    last = now;
+                }
+                return last;
+            };
+            check(wrote && settled().size() == made.size(), "the test folder holds five files",
                   QString::number(visible().size()));
             fsSearch_->setText(QStringLiteral("sword"));
             settle();
-            check(visible() == QStringList{"Brass Sword.vrm", "Sword Idle.ukscene", "Sword.png"},
-                  "a word keeps every name that contains it", visible().join(QStringLiteral(", ")));
+            check(settled() == QStringList{"Brass Sword.vrm", "Sword Idle.ukscene", "Sword.png"},
+                  "a word keeps every name that contains it", settled().join(QStringLiteral(", ")));
             fsSearch_->setText(QStringLiteral("*.vrm"));
             settle();
-            check(visible() == QStringList{"Brass Sword.vrm", "Hero.vrm"}, "a glob keeps one type of file",
-                  visible().join(QStringLiteral(", ")));
+            check(settled() == QStringList{"Brass Sword.vrm", "Hero.vrm"}, "a glob keeps one type of file",
+                  settled().join(QStringLiteral(", ")));
             fsSearch_->setText(QStringLiteral("sword *.vrm"));
             settle();
-            check(visible() == QStringList{"Brass Sword.vrm"}, "a word and a glob narrow each other",
-                  visible().join(QStringLiteral(", ")));
+            check(settled() == QStringList{"Brass Sword.vrm"}, "a word and a glob narrow each other",
+                  settled().join(QStringLiteral(", ")));
             fsSearch_->setText(QStringLiteral("s?ord.png"));
             settle();
-            check(visible() == QStringList{"Sword.png"}, "a single-character wildcard works", visible().join(QStringLiteral(", ")));
+            check(settled() == QStringList{"Sword.png"}, "a single-character wildcard works", settled().join(QStringLiteral(", ")));
             fsSearch_->setText(QStringLiteral("Sword*{vrm,png}"));
             settle();
-            check(visible() == QStringList{"Sword.png"}, "a brace set picks between endings",
-                  visible().join(QStringLiteral(", ")));
+            check(settled() == QStringList{"Sword.png"}, "a brace set picks between endings",
+                  settled().join(QStringLiteral(", ")));
             fsSearch_->setText(QStringLiteral("hero.vrm"));
             settle();
-            check(visible() == QStringList{"Hero.vrm"}, "a dot is a literal, not a wildcard", visible().join(QStringLiteral(", ")));
+            check(settled() == QStringList{"Hero.vrm"}, "a dot is a literal, not a wildcard", settled().join(QStringLiteral(", ")));
             fsSearch_->setText(QStringLiteral("nomatch*"));
             settle();
-            check(visible().isEmpty(), "a query nothing matches shows an empty grid");
+            check(settled().isEmpty(), "a query nothing matches shows an empty grid");
             fsSearch_->setText(savedQuery);
             browserKind_ = 2;
             updateBrowserFilter();
             fsSearch_->setText(QStringLiteral("*.vrm"));
             settle();
-            check(visible() == QStringList{"Brass Sword.vrm", "Hero.vrm"},
+            check(settled() == QStringList{"Brass Sword.vrm", "Hero.vrm"},
                   "the type button and a glob agree with each other", visible().join(QStringLiteral(", ")));
             browserKind_ = savedKind;
             updateBrowserFilter();
@@ -10014,7 +10058,10 @@ int MainWindow::runSelfTest() {
                 setNodeMaterial(meshNode, redAbs);
                 settle();
                 QImage redView;
-                runOnWorker([&] { redView = worker_->renderNow(cam).convertToFormat(QImage::Format_RGB32); });
+                runOnWorker([&] {
+                    worker_->renderNow(cam);
+                    redView = worker_->renderNow(cam).convertToFormat(QImage::Format_RGB32);
+                });
                 long rR = 0, rB = 0;
                 tally(redView, rR, rB);
                 check(rR > 300 && rR > 2 * rB, "11t: the viewport draws a material's texture override on the model",
@@ -10022,8 +10069,13 @@ int MainWindow::runSelfTest() {
 
                 setNodeMaterial(meshNode, defAbs);
                 settle();
+                // A viewport is a stream. The first render after a material change may still carry the previous frame's
+                // texture, which is invisible to a person watching but not to a count of red pixels, so ask for the second.
                 QImage defView;
-                runOnWorker([&] { defView = worker_->renderNow(cam).convertToFormat(QImage::Format_RGB32); });
+                runOnWorker([&] {
+                    worker_->renderNow(cam);
+                    defView = worker_->renderNow(cam).convertToFormat(QImage::Format_RGB32);
+                });
                 long dR = 0, dB = 0;
                 tally(defView, dR, dB);
                 check(dB > 300 && dB > 2 * dR, "11t: the viewport draws the shader's default texture when there is no override",
@@ -10407,8 +10459,9 @@ int MainWindow::runSelfTest() {
                 check(inputStatus->text().contains(QStringLiteral("Listening for")), "Input: Rebind waits for a key");
                 QKeyEvent press(QEvent::KeyPress, Qt::Key_J, Qt::NoModifier);
                 QApplication::sendEvent(inputTable, &press);
-                check(inputTable->item(r, 1) && inputTable->item(r, 1)->text() == QStringLiteral("J"),
-                      "Input: the key that was pressed fills the row");
+                const QString cell = inputTable->item(r, 1) ? inputTable->item(r, 1)->text() : QStringLiteral("<none>");
+                check(cell == QStringLiteral("J"), "Input: the key that was pressed fills the row",
+                      QStringLiteral("cell: \"%1\", status: \"%2\"").arg(cell, inputStatus->text()));
                 bool rebound = false;
                 for (const engine::InputAction& a : projSettings_.inputActions)
                     if (a.name == "Dash" && a.key == "<Keyboard>/j") rebound = true;
