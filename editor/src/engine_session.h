@@ -247,6 +247,18 @@ public:
     std::vector<ukiyo::ParticleInstance> particleSamples() const;
     // Compiles a Lua script without running it. Returns false with the Lua message, which includes the line.
     bool checkScript(const std::string& path, QString* error) const;
+    // Compiles text that is not saved yet: the code editor checks what is on screen. `path` names the chunk, so the
+    // message reads "path:line: ..." exactly as it would from a file.
+    bool checkScriptText(const std::string& path, const std::string& text, QString* error) const;
+    // Rewrites the Lua support files for this project (the API stub, .luarc.json, and the editor configuration files
+    // that are missing). `written` receives the project-relative paths that changed.
+    bool writeScriptSupportFiles(std::vector<std::string>* written, QString* error) const;
+    // The scripts the running world has, for the Play page and the editor's script list.
+    const std::vector<ukiyo::ScriptInfo>& playScripts() const;
+    // Re-reads every script from disk while play is running. Each script keeps its place in the frame, so saving a file
+    // from any editor changes the running level without stopping it. Returns false with the first error, and adds it to
+    // the play warnings.
+    bool reloadScripts(QString* error);
     bool navMeshBaked() const { return navBaked_; }
     // Starts play mode: builds a World from the components. Entities are named "instance<N>", and the
     // listener follows the active instance. Fails with a message if the setup cannot run.

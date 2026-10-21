@@ -1,5 +1,7 @@
 #include "engine_session.h"
 
+#include "engine/script_project.h"
+
 #include "anim_file.h"
 #include "player/hud_layout.h"
 #include "scene_file.h"
@@ -1221,6 +1223,53 @@ bool EngineSession::checkScript(const std::string& path, QString* error) const {
     return false;
 }
 
+bool EngineSession::checkScriptText(const std::string& path, const std::string& text, QString* error) const {
+    ScriptHost host;
+    // The search paths are the ones Play uses, so a require() in the file resolves the same way here.
+    host.setSearchPaths({QDir(projectRoot_).filePath(QStringLiteral("Scripts")).toStdString(),
+                         QDir(projectRoot_).filePath(QStringLiteral("assets")).toStdString()});
+    std::string msg;
+    if (host.compileString(text, path, &msg)) return true;
+    if (error) *error = QString::fromStdString(msg);
+    return false;
+}
+
+bool EngineSession::writeScriptSupportFiles(std::vector<std::string>* written, QString* error) const {
+    std::string msg;
+    if (!script_project::writeSupportFiles(projectRoot_.toStdString(), written, &msg)) {
+        if (error) *error = QString::fromStdString(msg);
+        return false;
+    }
+    return true;
+}
+
+const std::vector<ukiyo::ScriptInfo>& EngineSession::playScripts() const {
+    static const std::vector<ukiyo::ScriptInfo> none;
+    return world_ ? world_->scripts.scripts() : none;
+}
+
+bool EngineSession::reloadScripts(QString* error) {
+    if (!world_) return false;
+    bool ok = true;
+    for (size_t i = 0; i < instances_.size(); ++i) {
+        const SystemsComponents& c = instances_[i].components;
+        if (!c.script.enabled || c.script.path.empty()) continue;
+        std::string err;
+        // reload() keeps the script's turn in the order and runs its onStart again with the new code.
+        if (!world_->scripts.reload(entityName(i), &err)) {
+            playWarnings_.push_back("script: " + err);
+            if (ok && error) *error = QString::fromStdString(err);
+            ok = false;
+            continue;
+        }
+        if (ScriptHost* host = world_->scripts.find(entityName(i)); host && host->hasFailed())
+            playWarnings_.push_back("script: " + entityName(i) + ": " + host->lastError());
+        // The reloaded chunk has to hear that the scene is already running, or onSceneLoaded never runs again.
+        if (ScriptHost* host = world_->scripts.find(entityName(i))) host->callSceneLoaded();
+    }
+    return ok;
+}
+
 bool EngineSession::startPlay(QString* error) {
     stopPlay();
     if (instances_.empty()) {
@@ -1228,20 +1277,8 @@ bool EngineSession::startPlay(QString* error) {
         return false;
     }
     bool anyAgent = false;
-    int scripts = 0;
-    size_t scriptOwner = 0;
-    for (size_t i = 0; i < instances_.size(); ++i) {
-        if (instances_[i].components.agent.enabled) anyAgent = true;
-        if (instances_[i].components.script.enabled) {
-            ++scripts;
-            scriptOwner = i;
-        }
-    }
-    // One script engine runs per scene in this version. Refuse rather than silently drop scripts.
-    if (scripts > 1) {
-        if (error) *error = QStringLiteral("Only one instance can run a script in play mode. Disable the others.");
-        return false;
-    }
+    for (const Instance& in : instances_)
+        if (in.components.agent.enabled) anyAgent = true;
     if (anyAgent && !navBaked_ && !bakeNavMesh(error, nullptr)) return false;
 
     auto world = std::make_unique<World>(false);   // silent when the machine has no audio device
@@ -1345,12 +1382,19 @@ bool EngineSession::startPlay(QString* error) {
     if (active >= 0 && active < static_cast<int>(instances_.size()))
         world->entity("listener").position = instances_[active].position;
 
-    if (scripts == 1) {
+    // One script per instance, all of them: a level with two actors runs two scripts. A script that does not compile
+    // is reported and the scene keeps running, as it does for a sound that will not load; the editor's Play page
+    // shows the warning, so a typo does not take the whole level down.
+    {
+        std::vector<std::string> roots{QDir(projectRoot_).filePath(QStringLiteral("Scripts")).toStdString(),
+                                       QDir(projectRoot_).filePath(QStringLiteral("assets")).toStdString()};
+        world->setScriptSearchPaths(roots);
+    }
+    for (size_t i = 0; i < instances_.size(); ++i) {
+        const SystemsComponents& c = instances_[i].components;
+        if (!c.script.enabled || c.script.path.empty()) continue;
         std::string err;
-        if (!world->loadScript(instances_[scriptOwner].components.script.path, &err)) {
-            if (error) *error = QString::fromStdString("Script: " + err);
-            return false;
-        }
+        if (!world->loadScriptFor(entityName(i), c.script.path, &err)) playWarnings_.push_back("script: " + err);
     }
 
     // Locomotion clips drive the active instance's model. Other instances keep their rest pose.
@@ -1372,7 +1416,7 @@ bool EngineSession::startPlay(QString* error) {
 
     // onSceneLoaded runs once the world is set up. Its errors are reported with the other play warnings.
     world->notifySceneLoaded();
-    if (world->script.hasFailed()) playWarnings_.push_back("onSceneLoaded: " + world->script.lastError());
+    if (world->scripts.anyFailed()) playWarnings_.push_back("script: " + world->scripts.lastError());
 
     world_ = std::move(world);
     world_->physics.setWater(water_ ? &*water_ : nullptr);
@@ -1433,15 +1477,6 @@ bool EngineSession::switchScene(const QString& path, QString* error) {
         if (error) *error = abs + QStringLiteral(" has no models");
         return false;
     }
-    // Same rule as Play: one script per scene.
-    int scripts = 0;
-    for (const scene_file::SceneEntry& e : contents.entries)
-        if (e.components.script.enabled) ++scripts;
-    if (scripts > 1) {
-        if (error) *error = QStringLiteral("Only one instance can run a script in play mode. Disable the others.");
-        return false;
-    }
-
     // Every model is read before anything changes, so a missing file leaves the running scene alone.
     std::vector<std::unique_ptr<Model>> models;
     for (const scene_file::SceneEntry& e : contents.entries) {

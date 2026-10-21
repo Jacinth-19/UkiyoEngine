@@ -7,11 +7,14 @@
 #include <QFile>
 #include <QFileInfo>
 #include <QMessageBox>
+#include <QPixmap>
 #include <QPointer>
 #include <QTextStream>
 
 #include "icons.h"
 #include "main_window.h"
+
+#include "lua_editor.h"
 #include "splash_screen.h"
 
 #ifndef UKIYO_ROOT
@@ -34,6 +37,8 @@ int main(int argc, char* argv[]) {
     bool selfTest = false;
     bool noSplash = false;
     QString projectRoot;
+    QString shotScript;   // --screenshot-script <file>: capture the Lua editor, for the figure in docs/LUA.md
+    QString shotOut;      // --out <png>
     const QStringList arguments = app.arguments();
     for (int i = 1; i < arguments.size(); ++i) {
         const QString& arg = arguments[i];
@@ -41,6 +46,10 @@ int main(int argc, char* argv[]) {
             selfTest = true;
         } else if (arg == QLatin1String("--no-splash")) {
             noSplash = true;
+        } else if (arg == QLatin1String("--screenshot-script") && i + 1 < arguments.size()) {
+            shotScript = arguments[++i];
+        } else if (arg == QLatin1String("--out") && i + 1 < arguments.size()) {
+            shotOut = arguments[++i];
         } else if (arg == QLatin1String("--project") && i + 1 < arguments.size()) {
             projectRoot = arguments[++i];
         } else if (arg.startsWith(QLatin1String("--project="))) {
@@ -57,6 +66,27 @@ int main(int argc, char* argv[]) {
                                  QStringLiteral("The project folder does not exist:\n\n") + projectRoot);
             return 2;
         }
+    }
+
+    // `ukiyo_editor --screenshot-script <file> --out <png>`: the built-in Lua editor, drawn by the program itself.
+    // It runs before the engine starts, so it needs neither a device nor a project: the dialog is a widget.
+    if (!shotScript.isEmpty()) {
+        editor::LuaEditorDialog dialog(nullptr, shotScript, nullptr);
+        QString error;
+        if (!dialog.openFile(&error)) {
+            std::fprintf(stderr, "screenshot-script: %s\n", qPrintable(error));
+            return 1;
+        }
+        dialog.resize(1000, 760);
+        dialog.show();
+        QCoreApplication::processEvents();
+        QCoreApplication::processEvents();
+        const QPixmap shot = dialog.grab();
+        if (shotOut.isEmpty() || !shot.save(shotOut)) {
+            std::fprintf(stderr, "screenshot-script: could not write %s\n", qPrintable(shotOut));
+            return 1;
+        }
+        return 0;
     }
 
     // The splash covers the window while the engine starts. A self-test has no one to look at it.

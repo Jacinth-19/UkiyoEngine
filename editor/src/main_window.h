@@ -18,6 +18,7 @@
 
 #include <QCheckBox>
 #include <QDockWidget>
+#include <QHash>
 #include <QPointer>
 #include <functional>
 #include "scene_gizmo.h"
@@ -80,6 +81,7 @@ inline const QString kTerrainUndoKey = QStringLiteral("terrainUndo");
 
 namespace editor {
 
+class LuaEditorDialog;
 class MaterialInspector;
 
 // One rendered view. The Scene view accepts mouse input to move the camera.
@@ -369,6 +371,12 @@ private:
     void createTerrainObject();
     void renameInstance(int index, const QString& name);
     QMenu* hierarchyContextMenu(QTreeWidgetItem* item);
+    // The built-in Lua editor. A script already open is brought forward; one that is not is opened and read.
+    void openScriptEditor(const QString& path);
+    // Saves coming from any editor reload the running level (debounced), so an external IDE works during Play.
+    void reloadPlayingScripts();
+    // Project > Write Script Support Files: the API stub, .luarc.json, formatter/linter config and extensions.
+    void writeScriptSupportFiles();
     void buildGizmoToolbar();
     void setGizmoTool(gizmo::Tool tool);
     bool gizmoTarget(int* index, InstanceInfo* info);
@@ -496,6 +504,8 @@ private:
     QByteArray factoryLayout_;                 // dock arrangement at startup, used by Default
     std::vector<ShortcutEntry> shortcuts_;
     PreferencesDialog* prefsDialog_ = nullptr;
+    QHash<QString, QDialog*> scriptEditors_;   // path -> open editor; cleared when one closes
+    QTimer* scriptReload_ = nullptr;                          // debounces the script folder watcher
     bool showColliders_ = false;             // Scene view overlay for physics colliders. Not saved.
     std::vector<glm::vec3> navPreview_;      // Scene view overlay: the last agent path preview. Not saved.
     bool bakeInFlight_ = false;              // a navmesh bake is running on the render thread

@@ -1,5 +1,9 @@
 #include "main_window.h"
 
+#include "lua_editor.h"
+
+#include "engine/script_project.h"
+
 #include <algorithm>
 #include <functional>
 
@@ -1535,6 +1539,24 @@ QWidget* MainWindow::buildProjectBrowser() {
         updateBrowserDetails(fsList_->currentIndex());   // the details pane draws its preview once per selection
     });
     connect(shaderWatch, &QFileSystemWatcher::directoryChanged, this, [watchShaders] { watchShaders(); });
+    // Scripts, wherever they are saved from: this editor, an external IDE, or git. A save during Play reloads every
+    // script; the engine keeps each script's place in the frame, so the level carries on. The pause keeps a burst of
+    // saves (an IDE writing a file twice) to one reload.
+    auto* scriptWatch = new QFileSystemWatcher(this);
+    scriptReload_ = new QTimer(this);
+    scriptReload_->setSingleShot(true);
+    scriptReload_->setInterval(250);
+    connect(scriptReload_, &QTimer::timeout, this, [this] { reloadPlayingScripts(); });
+    auto watchScripts = [scriptWatch, assets, this] {
+        const QStringList dirs{assets, projectRoot_ + QStringLiteral("/Scripts")};
+        for (const QString& dir : dirs)
+            if (QFileInfo(dir).isDir() && !scriptWatch->directories().contains(dir)) scriptWatch->addPath(dir);
+    };
+    watchScripts();
+    connect(scriptWatch, &QFileSystemWatcher::directoryChanged, this, [this, watchScripts](const QString&) {
+        watchScripts();   // a folder created after startup joins the watch
+        scriptReload_->start();
+    });
     // Shader edits reach the scene: changed shaders and materials are rebuilt on the worker.
     connect(shaderWatch, &QFileSystemWatcher::fileChanged, this, [this](const QString&) {
         RenderWorker* w = worker_;
@@ -1953,6 +1975,10 @@ void MainWindow::buildMenus() {
 
     QMenu* tools = menuBar()->addMenu("&Tools");
     tools->addAction("Benchmark Scene", this, &MainWindow::startBenchmark);
+    tools->addSeparator();
+    // Rewrites the files every Lua editor reads: the API stub, .luarc.json, the formatter and linter config, and the
+    // extension recommendations. Also runs by itself the first time a script is opened.
+    tools->addAction(uiIcon("deployed_code"), "Write Script Support Files", this, &MainWindow::writeScriptSupportFiles);
     add(tools, "Clear Console", QKeySequence("Ctrl+L"), uiIcon("delete"), [this] {
         logs_.clear();
         rebuildConsole();
@@ -3683,7 +3709,7 @@ struct SystemsForm {
     QPointer<QDoubleSpinBox> actSpeed, actAmp, actOffset;
     std::array<QPointer<QDoubleSpinBox>, 3> actAxis;
     QPointer<QDoubleSpinBox> bodyHalf[3], audioVolume;
-    QPointer<QPushButton> previewSound, pathButton, reloadScript;
+    QPointer<QPushButton> previewSound, pathButton, reloadScript, editScript;
     QPointer<QLabel> pathStatus;
     QPointer<QProgressBar> bakeBar;
     QPointer<QListWidget> scriptErrors;
@@ -4173,14 +4199,25 @@ void MainWindow::addSystemsSections(QVBoxLayout* v, const std::vector<int>& mult
     f->scriptPick->addItem(QStringLiteral("Pick a script..."));
     {
         QStringList found;
-        QDirIterator it(projectRoot_ + QStringLiteral("/assets"), {QStringLiteral("*.lua")}, QDir::Files,
-                        QDirIterator::Subdirectories);
-        while (it.hasNext()) found << it.next();
+        // Scripts/ first: that is where a project's own code lives and what require() looks in. assets/ is scanned too,
+        // because a script that travels with a model or a prefab can sit beside it.
+        for (const QString& root : {projectRoot_ + QStringLiteral("/Scripts"), projectRoot_ + QStringLiteral("/assets")}) {
+            QDirIterator it(root, {QStringLiteral("*.lua")}, QDir::Files, QDirIterator::Subdirectories);
+            while (it.hasNext()) found << it.next();
+        }
         found.sort();
-        for (const QString& p : found) f->scriptPick->addItem(QDir(projectRoot_).relativeFilePath(p), p);
-        if (found.isEmpty()) f->scriptPick->setItemText(0, QStringLiteral("No scripts in Assets"));
+        for (const QString& p : found) {
+            // The hidden support folder is for editors, not for attaching to an object.
+            if (p.contains(QStringLiteral("/.ukiyo/"))) continue;
+            f->scriptPick->addItem(QDir(projectRoot_).relativeFilePath(p), p);
+        }
+        if (f->scriptPick->count() == 1) f->scriptPick->setItemText(0, QStringLiteral("No scripts in Scripts or Assets"));
     }
     script->addRow(QStringLiteral("Pick"), f->scriptPick);
+    f->editScript = new QPushButton(QStringLiteral("Edit Script"));
+    f->editScript->setObjectName(QStringLiteral("editScript"));
+    f->editScript->setToolTip(QStringLiteral("Opens the script in the built-in editor: Lua highlighting, Check, and Open in External Editor"));
+    script->addRow(f->editScript);
     f->reloadScript = new QPushButton(QStringLiteral("Check and Reload Script"));
     f->reloadScript->setObjectName(QStringLiteral("reloadScript"));
     f->reloadScript->setToolTip(QStringLiteral("Compiles the script and lists any errors with their lines. If Play is running, it restarts so the new script runs."));
@@ -4419,6 +4456,18 @@ void MainWindow::addSystemsSections(QVBoxLayout* v, const std::vector<int>& mult
         });
         f->status->setText(started ? QStringLiteral("Script checked and reloaded. Playing.") : perr);
         f->playButton->setText(started ? QStringLiteral("Stop Systems") : QStringLiteral("Play Systems"));
+    });
+    connect(f->editScript, &QPushButton::clicked, this, [this, f] {
+        QString path = f->scriptPath->text().trimmed();
+        if (path.isEmpty()) {
+            // Nothing chosen yet: edit whatever the picker names, or say so.
+            path = f->scriptPick->currentData().toString();
+            if (path.isEmpty()) {
+                statusBar()->showMessage(QStringLiteral("Choose a script first"), 4000);
+                return;
+            }
+        }
+        openScriptEditor(path);
     });
     connect(browseScript, &QPushButton::clicked, this, [this, f] {
         const QString path = QFileDialog::getOpenFileName(this, "Choose a script", projectRoot_, "Lua (*.lua)");
@@ -5743,6 +5792,82 @@ void MainWindow::browserContextMenu(QAbstractItemView* view, const QPoint& pos) 
     menu.exec(view->viewport()->mapToGlobal(pos));
 }
 
+// --- Scripts ----------------------------------------------------------------------------------------
+
+void MainWindow::openScriptEditor(const QString& path) {
+    if (path.isEmpty()) return;
+    const QString abs = QDir::cleanPath(QFileInfo(path).isAbsolute() ? path : projectRoot_ + QStringLiteral("/") + path);
+    if (!QFileInfo::exists(abs)) {
+        log("no such script: " + abs);
+        return;
+    }
+    // A project that has no support files yet gets them the first time a script is opened, so an external editor
+    // opened from here (or from the file manager) already understands the API.
+    if (!QFileInfo::exists(projectRoot_ + QStringLiteral("/Scripts/.ukiyo/lua/ukiyo.lua"))) writeScriptSupportFiles();
+    if (!prefs::boolean(QStringLiteral("scripting/builtinEditor"), true)) {
+        QString opened;
+        if (openInExternalEditor(abs, QString(), &opened)) log("opened " + abs + " in " + opened);
+        else log(opened);
+        return;
+    }
+    if (QDialog* open = scriptEditors_.value(abs)) {
+        open->raise();
+        open->activateWindow();
+        return;
+    }
+    auto* dialog = new LuaEditorDialog(
+        this, abs, [this](const QString& file, const QString& text, QString* error) {
+            bool ok = false;
+            runOnWorker([&] { ok = worker_ && worker_->checkScriptText(file, text, error); });
+            return ok;
+        });
+    QString error;
+    if (!dialog->openFile(&error)) {
+        log(error);
+        delete dialog;
+        return;
+    }
+    dialog->setAttribute(Qt::WA_DeleteOnClose, true);
+    scriptEditors_.insert(abs, dialog);
+    connect(dialog, &LuaEditorDialog::saved, this,
+            [this](const QString& file) { log("saved " + file); });
+    connect(dialog, &QDialog::destroyed, this, [this, abs] { scriptEditors_.remove(abs); });
+    dialog->show();
+    dialog->raise();
+}
+
+void MainWindow::reloadPlayingScripts() {
+    bool running = false;
+    runOnWorker([&] { running = worker_->playing(); });
+    if (!running) return;
+    QString error;
+    bool ok = false;
+    runOnWorker([&] { ok = worker_->reloadScripts(&error); });
+    log(ok ? "scripts reloaded" : "script error: " + error);
+    if (!ok) statusBar()->showMessage(error, 6000);
+}
+
+void MainWindow::writeScriptSupportFiles() {
+    std::vector<std::string> written;
+    std::string errorStd;
+    QString error;
+    bool ok = false;
+    if (worker_) runOnWorker([&] { ok = worker_->writeScriptSupportFiles(&written, &error); });
+    else ok = ukiyo::script_project::writeSupportFiles(projectRoot_.toStdString(), &written, &errorStd);
+    if (!ok) {
+        log("could not write the script support files: " + error);
+        statusBar()->showMessage(QStringLiteral("Could not write the script support files"), 5000);
+        return;
+    }
+    QStringList names;
+    for (const std::string& f : written) names << QString::fromStdString(f);
+    log(QStringLiteral("script support files: %1 written").arg(names.size()));
+    if (!names.isEmpty()) log("  " + names.join(", "));
+    statusBar()->showMessage(QStringLiteral("Lua support files are up to date"), 4000);
+    // .ukiyo is a hidden folder in the browser: the files are for tools, not for dragging into the scene.
+    refreshBrowser();
+}
+
 void MainWindow::onBrowserActivated(const QModelIndex& index) {
     const QModelIndex source = fsFilter_ ? fsFilter_->mapToSource(index) : index;
     const QString path = fsModel_->filePath(source);
@@ -5756,6 +5881,8 @@ void MainWindow::onBrowserActivated(const QModelIndex& index) {
         markDirty();
     } else if (suffix == "glb" && path.contains("/anim/")) {
         loadAnimLibrary(path);
+    } else if (suffix == "lua") {
+        openScriptEditor(path);
     } else {
         log("no editor for " + path);
     }

@@ -112,6 +112,7 @@ PreferencesDialog::PreferencesDialog(std::vector<ShortcutEntry> shortcuts, QWidg
     } entries[] = {
         {"tune", "General", buildGeneral()},
         {"folder", "Content Browser", buildBrowser()},
+        {"terminal", "Scripting", buildScripting()},
         {"keyboard", "Shortcuts", buildShortcuts()},
     };
     for (const auto& e : entries) {
@@ -172,6 +173,7 @@ void PreferencesDialog::resetPreferences() {
         if (auto* cb = qobject_cast<QCheckBox*>(w)) cb->setChecked(fallback.toBool());
         else if (auto* combo = qobject_cast<QComboBox*>(w)) combo->setCurrentIndex(fallback.toInt());
         else if (auto* slider = qobject_cast<QSlider*>(w)) slider->setValue(fallback.toInt());
+        else if (auto* line = qobject_cast<QLineEdit*>(w)) line->setText(fallback.toString());
     }
     emit changed();
 }
@@ -221,6 +223,40 @@ QWidget* PreferencesDialog::buildBrowser() {
 
     prefCheck(form, QStringLiteral("Show hidden files"), QStringLiteral("browser/hidden"), false,
               [this] { emit changed(); });
+    v->addStretch(1);
+    return wrapPage(content);
+}
+
+QWidget* PreferencesDialog::buildScripting() {
+    QWidget* content = new QWidget;
+    QVBoxLayout* v = new QVBoxLayout(content);
+    v->setContentsMargins(12, 12, 12, 12);
+
+    QFormLayout* editor = section(v, QStringLiteral("Lua Editor"));
+    prefCheck(editor, QStringLiteral("Open .lua files in the built-in editor"), QStringLiteral("scripting/builtinEditor"),
+              true, [this] { emit changed(); });
+
+    QLineEdit* command = new QLineEdit(prefs::text(QStringLiteral("scripting/externalEditor"),
+                                                   QStringLiteral("code -g {file}:{line}")));
+    command->setPlaceholderText(QStringLiteral("code -g {file}:{line}"));
+    tagPref(command, QStringLiteral("scripting/externalEditor"), QStringLiteral("code -g {file}:{line}"));
+    connect(command, &QLineEdit::editingFinished, this, [this, command] {
+        prefs::set(QStringLiteral("scripting/externalEditor"), command->text().trimmed());
+        emit changed();
+    });
+    editor->addRow(QStringLiteral("External editor command"), command);
+    editor->addRow(new QLabel(QStringLiteral(
+        "Used by Open in External Editor. {file} is the path and {line} the line to jump to; a command without "
+        "{file} gets the path appended, so \"zed\" works.")));
+
+    QFormLayout* project = section(v, QStringLiteral("Project Files"));
+    project->addRow(new QLabel(QStringLiteral(
+        "Tools > Write Script Support Files writes the API stub (Scripts/.ukiyo/lua/ukiyo.lua), .luarc.json for "
+        "LuaLS, .editorconfig, stylua.toml, selene.toml, and .vscode/extensions.json with the recommended "
+        "extensions. They are also written when a project is created.")));
+    project->addRow(new QLabel(QStringLiteral(
+        "Recommended: LuaLS (sumneko.lua) for completion from the stub, StyLua for formatting, Selene for linting, "
+        "EditorConfig, and actboy168.lua-debug for breakpoints.")));
     v->addStretch(1);
     return wrapPage(content);
 }

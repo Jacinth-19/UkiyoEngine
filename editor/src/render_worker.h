@@ -171,6 +171,14 @@ public:
     float masterVolume() const { return session_.masterVolume(); }
     std::vector<ukiyo::ParticleInstance> particleSamples() const { return session_.particleSamples(); }
     bool checkScript(const QString& path, QString* error) const { return session_.checkScript(path.toStdString(), error); }
+    bool checkScriptText(const QString& path, const QString& text, QString* error) const {
+        return session_.checkScriptText(path.toStdString(), text.toStdString(), error);
+    }
+    bool writeScriptSupportFiles(std::vector<std::string>* written, QString* error) const {
+        return session_.writeScriptSupportFiles(written, error);
+    }
+    std::vector<ukiyo::ScriptInfo> playScripts() const { return session_.playScripts(); }
+    bool reloadScripts(QString* error) { return session_.reloadScripts(error); }
     bool navMeshBaked() const { return session_.navMeshBaked(); }
     bool startPlay(QString* error) {
         const bool ok = session_.startPlay(error);
