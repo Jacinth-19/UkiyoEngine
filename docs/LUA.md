@@ -155,7 +155,7 @@ Recommended extensions — they are the tools these files are written for:
 | **StyLua** (`JohnnyMorganz.stylua`) | VS Code, or `stylua --lsp` | One formatting style across the project, from `stylua.toml`. |
 | **Selene** (`Kampfkarren.selene-vscode`) | VS Code, or `selene` in CI | Catches unused variables and typos in `ukiyo.*` calls before play. |
 | **EditorConfig** (`EditorConfig.EditorConfig`) | VS Code | Keeps indentation and line endings steady in every tool. |
-| **actboy168.lua-debug** | VS Code | Breakpoints against `lua54`. LuaLS alone cannot step into the engine's state. |
+| **Lua Debug** (`actboy168.lua-debug`) | VS Code | Breakpoints against `lua54`, once the engine exposes a debug entry point (see below). |
 | **GLSL** (`slevesque.shader`) | VS Code | Highlighting for `shaders/*.frag`, `*.vert`, `*.glsl` and the project's `*.ukshader` files, which `.vscode/settings.json` associates with GLSL. |
 
 Anything else that speaks LuaCATS works the same way, because the stub is a plain `---@meta` file and `.luarc.json` is
@@ -200,11 +200,16 @@ entry point exists; breakpoints in LuaLS's own debugger are not wired to the eng
 
 ```sh
 cmake --build build --target script_test && ./build/script_test
-# script: 80 checks, 0 failure(s)
+# script: 112 checks, 0 failure(s)
 ```
 
 It covers the sandbox (what a script can and cannot reach), `require()` (cache, dotted names, `init.lua`, cycles,
 traversal, missing files), error reporting (file, line, traceback, the three-strike budget), the per-entity runtime
-(load, update, contacts fanned out to every script, reload, removal, a script that does not compile), and the support
-files (every bound function is in the stub, every stub declaration is bound, the stub parses as Lua, the rewrite policy).
+(load, update, contacts fanned out to every script, reload, removal, a script that does not compile), the support files
+(every bound function is in the stub, every stub declaration is bound, the stub parses as Lua, the rewrite policy), and
+the recommendations (each row complete, one of each kind, every VS Code id in the generated file, an install command).
 CI runs it in the `build` job on Linux and in the `windows` job on MSVC.
+
+In CI it runs with `--trace`: every check is printed with its number and flushed line by line, and the same trace is
+written to `UKIYO_TEST_LOG`. A native test that dies leaves no summary, and a crashed process on Windows was seen to
+lose the last lines of a redirected stdout — a file is what survives.
