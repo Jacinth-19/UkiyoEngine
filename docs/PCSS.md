@@ -83,9 +83,10 @@ wall and over-softens on a floor has this bug, and no amount of tap tuning fixes
 | off | `mode` 0 / 1 / 2 | `frame.shadowSoft.y` |
 
 The shader takes both scales from the cascade's own matrix rather than from a constant, so a cascade whose box changes
-size with the camera keeps the same penumbra in metres. The cost is 48 dependent-not-coherent texel fetches per pixel
-near a shadow edge, three more than the 3×3 tent filter's four gathers; the engine leaves PCSS on by default and the
-settings below turn it off.
+size with the camera keeps the same penumbra in metres. The cost is 48 texel fetches per pixel near a shadow edge —
+16 for the blocker search and 32 for the filter — against the 3×3 tent filter's four gathers, and a pixel that finds no
+blocker pays only the 16. The engine leaves PCSS on by default; the settings above turn it off, and `--no-pcss` does it
+per run.
 
 ## 4. Numbers
 
