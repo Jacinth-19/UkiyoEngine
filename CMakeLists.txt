@@ -207,6 +207,7 @@ add_library(ukiyo_core STATIC
   src/engine/hud_renderer.cpp
   src/engine/build_manifest.cpp
   src/engine/scene_runtime.cpp
+  src/player/hud_layout.cpp
   src/engine/face.cpp
   src/engine/model.cpp
   src/engine/pmx_glb.cpp
@@ -451,7 +452,7 @@ target_compile_options(project_test PRIVATE ${UKIYO_WARNINGS})
 # ---- Player -----------------------------------------------------------------
 # The shipped game: manifest, scenes, World, HUD. It is deliberately thin, because everything it does beyond opening a
 # window lives in PlayerApp, which the player_test covers without a device.
-add_executable(ukiyo_player src/player/main.cpp src/player/player_app.cpp src/player/hud_layout.cpp)
+add_executable(ukiyo_player src/player/main.cpp src/player/player_app.cpp)
 target_link_libraries(ukiyo_player PRIVATE ukiyo_systems ukiyo_core)
 target_include_directories(ukiyo_player PRIVATE ${CMAKE_SOURCE_DIR}/src ${CMAKE_SOURCE_DIR}/third_party)
 # glfw3.h includes GL/gl.h unless told not to; the player never makes a GL call itself.
@@ -513,7 +514,7 @@ target_compile_options(character_test PRIVATE ${UKIYO_WARNINGS})
 
 # The player's own logic, with the real World, physics, Lua and audio (device-free): the whole boot, tick and scene
 # switch path, on a temporary project.
-add_executable(player_test tests/player_test.cpp src/player/player_app.cpp src/player/hud_layout.cpp)
+add_executable(player_test tests/player_test.cpp src/player/player_app.cpp)
 target_link_libraries(player_test PRIVATE ukiyo_systems ukiyo_core)
 target_compile_definitions(player_test PRIVATE GLFW_INCLUDE_NONE)
 target_compile_options(player_test PRIVATE ${UKIYO_WARNINGS})

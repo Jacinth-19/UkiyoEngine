@@ -350,6 +350,8 @@ private:
     std::string clipBeforePlay_;
     std::unique_ptr<ParticleRenderer> particles_;
     void drawParticleOverlay(const OrbitCamera& cam);
+    // Walks the capsule characters from the game view's WASD during play (item 4).
+    void drivePlayCharacters(float dt);
     // The HUD over play mode: title, frame statistics and the first play warning, from the same layout the player uses.
     void drawPlayHud();
     void setHudVisible(bool on) { hudVisible_ = on; }

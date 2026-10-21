@@ -1,6 +1,7 @@
 #include "engine_session.h"
 
 #include "anim_file.h"
+#include "player/hud_layout.h"
 #include "scene_file.h"
 
 #include <algorithm>
