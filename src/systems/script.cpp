@@ -2,6 +2,7 @@
 
 #include "engine/vfs.h"
 
+#include <cstdio>
 #include <cstdlib>
 #include <cstring>
 #include <fstream>
@@ -16,6 +17,15 @@ extern "C" {
 namespace ukiyo {
 
 namespace {
+
+// Lua aborts the process when an API call fails outside any protected call, and its default panic only prints to
+// stderr, which a Windows job reads as a number. Naming the engine in the line makes the abort say what happened.
+int panicHandler(lua_State* L) {
+    const char* msg = lua_tostring(L, -1);
+    std::fprintf(stderr, "ukiyo: PANIC: unprotected Lua error: %s\n", msg ? msg : "no message");
+    std::fflush(stderr);
+    return 0;
+}
 
 // The message handler that turns "path:3: message" into that plus the call stack. Every protected call goes through it,
 // so a script that throws from inside a required module still says where.
@@ -135,6 +145,7 @@ ScriptHost::ScriptHost() {
         lastError_ = error_.message = "could not create a Lua state";
         return;
     }
+    lua_atpanic(L_, panicHandler);
     // Open only the libraries that do no file, process, or package access.
     luaL_requiref(L_, "_G", luaopen_base, 1);
     lua_pop(L_, 1);

@@ -580,9 +580,11 @@ jobs:
               # The tail is what says where a process died. Standard output of a crashed process is not always
               # delivered, so script_test also writes its trace to a file; read whatever the file kept.
               $tail = @()
-              if (Test-Path $traceLog) { $tail = Get-Content $traceLog -Tail 10 }
-              if ($tail.Count -eq 0) { $tail = $out | Select-Object -Last 10 }
+              if (Test-Path $traceLog) { $tail = Get-Content $traceLog -Tail 6 }
+              if ($tail.Count -eq 0) { $tail = $out | Select-Object -Last 6 }
               $tail | ForEach-Object { Write-Host "::error::  $_" }
+              # stderr carries Lua's panic line when an API call fails outside a protected call.
+              $out | Select-Object -Last 4 | ForEach-Object { Write-Host "::error::  $($_.Line)" }
               $failed += $t
             }
           }
