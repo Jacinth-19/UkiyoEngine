@@ -153,7 +153,15 @@ Vulkan backend and an OpenGL backend; `--backend gl` selects the latter.
 
 * **Jolt** rigid bodies and character controllers, colliders written by the editor.
 * **Recast/Detour** navigation and pathfinding.
-* **Lua** scripting with a bound world API; prefabs, scenes and materials are JSON.
+* **Lua** scripting: Lua 5.4 in a sandbox, one state per object, so every object in a level runs its own script with its
+  own globals. Five hooks (`onStart`, `onUpdate`, `onContact`, `onSceneLoaded`, `onDestroy`), a 23-function `ukiyo`
+  table for position, physics, sound, particles, raycasts, animation parameters, local players and scene loads, and a
+  `require()` that reads `Scripts/` and `assets/` with a per-world cache. Errors name the file and line and carry a
+  traceback; the level keeps running. Saving a script from the built-in editor **or an external IDE** reloads the
+  running level without stopping play. The editor ships a Lua window (highlighting, line numbers, Check, error line) and
+  writes the project the files every Lua tool wants — a LuaCATS stub of the whole API, `.luarc.json`, `.editorconfig`,
+  `stylua.toml`, `selene.toml` and VS Code's extension list and settings — so completion, formatting, linting and
+  debugging work in VS Code, Neovim or Zed with no setup of their own. See [docs/LUA.md](docs/LUA.md).
 * **Input** as action maps with Unity's `.inputactions` assets: keyboard, mouse and gamepads, 1D and 2D composites,
   press/hold/tap interactions, processors, control schemes and rebinding — and multi-player pairing in Unity's
   `PlayerInput` / `InputUser` shape, so four players share one asset and none of them shares a press. **Rebind** in
@@ -322,6 +330,7 @@ own glslang package is generated with a broken SPIRV-Tools path; everything else
 | [docs/TRAIL.md](docs/TRAIL.md) | trail ribbons: sections, the width curve and gradient, the alignment and tiling modes, the test |
 | [docs/SEARCH.md](docs/SEARCH.md) | fuzzy asset ranking and the glob grammar, and why the ranking is deliberately not "contains" |
 | [docs/FILESYSTEM.md](docs/FILESYSTEM.md) | the browser's wheel zoom (the 32–224 ladder) and glob search, and the Android/Windows/Linux CI matrix |
+| [docs/LUA.md](docs/LUA.md) | the sandbox, the hooks and the API, require(), errors, the built-in Lua editor, and the files an external IDE reads |
 
 ## Credits
 

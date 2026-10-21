@@ -124,6 +124,13 @@ jobs:
         run: |
           set -o pipefail
           ./build/browser_zoom_test 2>&1 | tee /tmp/ukiyo-test-browser_zoom_test.log
+      # The scripting system: the sandbox, require(), error reporting, the per-entity Lua runtime, and the files a
+      # project needs for an external editor. The API stub is compiled as Lua by the test, so a stub that does not
+      # parse fails here (docs/LUA.md).
+      - name: Run Scripting Test
+        run: |
+          set -o pipefail
+          ./build/script_test 2>&1 | tee /tmp/ukiyo-test-script_test.log
       # The figure in docs/TRAIL.md, from the same ribbon triangles the renderer uploads. Writing it also checks that
       # the tool still runs after a change to Trail, not merely that it compiles.
       - name: Render the trail figure
@@ -205,6 +212,28 @@ jobs:
       # The launcher's pages, grabbed offscreen: downloadable as the screenshots artifact and used by the docs.
       - name: Capture hub screenshots
         run: QT_QPA_PLATFORM=offscreen ./build/ukiyo_hub --screenshots renders
+      # The built-in Lua editor, drawn by the editor itself: the figure in docs/LUA.md. It runs before the engine
+      # starts, so the offscreen platform is enough and no device is needed. The picture is checked for the syntax
+      # colours, because a blank dialog would still save a PNG.
+      - name: Capture the Lua editor
+        run: |
+          mkdir -p renders
+          QT_QPA_PLATFORM=offscreen ./build/ukiyo_editor --screenshot-script tools/script_editor_demo.lua \
+            --out renders/script-editor.png
+          python3 - <<'PY'
+          import sys
+          sys.path.insert(0, "tools")
+          from frame_check import read_png
+          width, height, channels, px = read_png("renders/script-editor.png")
+          buckets = {(px[i] >> 3, px[i + 1] >> 3, px[i + 2] >> 3) for i in range(0, len(px), channels)}
+          # The keyword colour from lua_editor.cpp: 255, 121, 198.
+          keyword = sum(1 for i in range(0, len(px), channels)
+                        if px[i] > 200 and px[i + 1] < 160 and px[i + 2] > 150)
+          print(f"script editor: {width}x{height}, {len(buckets)} colours, {keyword} keyword pixels")
+          if len(buckets) < 64 or keyword < 200:
+              print("FAIL: the capture has no highlighted code", file=sys.stderr)
+              sys.exit(1)
+          PY
       # The splash, offscreen and with real content: beat 1 (the mark) and beat 2 (the artwork, lockup, status block).
       # This is the program's own output — the identity is drawn in C++ and its assets come from tools/brand.py.
       - name: Capture splash screenshots
@@ -221,9 +250,10 @@ jobs:
           # background, so the splash *screen* is a separate file.
           cp renders/splash.png docs/splash-capture.png
           cp renders/splash_mark.png docs/splash-mark.png
+          cp renders/script-editor.png docs/script-editor.png
           git config user.name "ukiyo-ci"
           git config user.email "ci@ukiyo.invalid"
-          git add docs/hub docs/splash-capture.png docs/splash-mark.png
+          git add docs/hub docs/splash-capture.png docs/splash-mark.png docs/script-editor.png
           if git diff --cached --quiet; then echo "no change"; exit 0; fi
           # actions/checkout leaves a detached HEAD, so there is no branch to push to: name the ref explicitly, and
           # rebase first in case another push landed while this job was building. The fetch names the remote-tracking
@@ -508,7 +538,7 @@ jobs:
       - name: Run the portable tests
         run: |
           $failed = @()
-          foreach ($t in @("systems_test", "network_test", "project_test", "vgeom_test", "motion_test", "gi_test", "input_test", "trail_test", "search_test", "browser_zoom_test", "ao_test",
+          foreach ($t in @("systems_test", "script_test", "network_test", "project_test", "vgeom_test", "motion_test", "gi_test", "input_test", "trail_test", "search_test", "browser_zoom_test", "ao_test",
                     "contact_shadow_test", "alpha_mips_test", "transform_test", "lights_test", "save_test",
                     "manifest_test", "scene_runtime_test", "hud_test", "character_test", "player_test")) {
             Write-Host "::group::$t"
