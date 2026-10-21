@@ -392,6 +392,19 @@ target_include_directories(contact_shadow_preview PRIVATE ${CMAKE_SOURCE_DIR}/sr
 target_link_libraries(contact_shadow_preview PRIVATE glm::glm)
 target_compile_options(contact_shadow_preview PRIVATE ${UKIYO_WARNINGS})
 
+# Percentage-closer soft shadows (docs/PCSS.md): penumbra width from the light's size, the blocker's distance and the
+# receiver's, shaped like the two-pass loop shaders/shadow_sample.glsl runs on the shadow map.
+add_executable(pcss_test tests/pcss_test.cpp)
+target_include_directories(pcss_test PRIVATE ${CMAKE_SOURCE_DIR}/src ${CMAKE_SOURCE_DIR}/third_party)
+target_link_libraries(pcss_test PRIVATE glm::glm)
+target_compile_options(pcss_test PRIVATE ${UKIYO_WARNINGS})
+
+# The figure in docs/PCSS.md: the same scene under a hard map, a swept fixed-radius PCF and PCSS, against 64-ray truth.
+add_executable(pcss_preview tools/pcss_preview.cpp)
+target_include_directories(pcss_preview PRIVATE ${CMAKE_SOURCE_DIR}/src ${CMAKE_SOURCE_DIR}/third_party ${CMAKE_SOURCE_DIR}/tools)
+target_link_libraries(pcss_preview PRIVATE glm::glm)
+target_compile_options(pcss_preview PRIVATE ${UKIYO_WARNINGS})
+
 # Alpha-coverage-preserving mipmaps (docs/ALPHA_MIPS.md): the chain builder the model loader runs, on the CPU.
 add_executable(alpha_mips_test tests/alpha_mips_test.cpp src/engine/texture_mips.cpp)
 target_include_directories(alpha_mips_test PRIVATE ${CMAKE_SOURCE_DIR}/src ${CMAKE_SOURCE_DIR}/third_party)

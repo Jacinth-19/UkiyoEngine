@@ -53,7 +53,10 @@ struct FrameUBO {                 // set 0, binding 0 (frame.glsl)
     glm::vec4 waterDeep;    // water: rgb deep colour, w 1 = camera is under the volume
     glm::vec4 waterWaveD[4]; // water: per wave xy unit direction, z wavelength, w amplitude
     glm::vec4 waterWaveS[4]; // water: per wave x speed multiplier, y steepness
+    glm::vec4 shadowSoft;    // PCSS (docs/PCSS.md): x sun disc tangent, y 1 = soft shadows on, z search radius (m),
+                             // w max penumbra (m)
 };
+static_assert(sizeof(FrameUBO) % 16 == 0, "FrameUBO is std140: every member is a vec4 or a mat4");
 
 struct MaterialUBO {              // set 1, binding 8 (material.glsl)
     glm::vec4 baseColor{1.0f};

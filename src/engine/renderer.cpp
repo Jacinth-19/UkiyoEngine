@@ -672,6 +672,12 @@ void Renderer::render(const OrbitCamera& cam, const std::vector<Model*>& models,
     for (int c = 0; c < 3; ++c) f.shadowMatrix[c] = fitCascade(cam, aspect, ranges[c], ranges[c + 1], Lsun);
     f.cascadeSplits = glm::vec4(kSplits[0], kSplits[1], kSplits[2], 0.0f);
     f.shadowParams = glm::vec4(s.shadows ? 1.0f : 0.0f, 1.0f / float(kShadowAtlas), 0.02f, 0.0008f);
+    // Percentage-closer soft shadows ride in their own vec4: the sun's angular radius, the switch, the search radius and
+    // the cap. Left zero when the feature is off, which is the shader's test (docs/PCSS.md).
+    f.shadowSoft = (s.shadows && s.pcss)
+                        ? glm::vec4(std::max(s.pcssSunTanRadius, 1e-4f), 1.0f, std::max(s.pcssSearchRadius, 1e-3f),
+                                    std::max(s.pcssMaxPenumbra, 1e-3f))
+                        : glm::vec4(0.0f);
     f.screenParams = glm::vec4(float(intW_), float(intH_), time, float(frameIndex));
 
     // Scene lights: rank the point and spot lights against the camera's focus and pack the best ones. A camera looking

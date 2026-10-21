@@ -114,6 +114,10 @@ void readSettings(const json& s, RenderSettings* r) {
         if (s.contains(key) && s[key].is_number_integer()) dst = s[key].get<int>();
     };
     b("shadows", r->shadows);
+    b("pcss", r->pcss);
+    f("pcssSunTanRadius", r->pcssSunTanRadius);
+    f("pcssSearchRadius", r->pcssSearchRadius);
+    f("pcssMaxPenumbra", r->pcssMaxPenumbra);
     b("vgeom", r->vgeom);
     b("sky", r->sky);
     b("grid", r->grid);

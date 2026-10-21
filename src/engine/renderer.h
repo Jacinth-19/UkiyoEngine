@@ -29,6 +29,13 @@ namespace ukiyo {
 struct RenderSettings {
     int aaMode = 3;                 // 0 off, 1 FXAA, 2 SSAA 2x, 3 SSAA 2x + FXAA, 4 TAA (FXAA on reset frames)
     bool shadows = true;
+    // Percentage-closer soft shadows (docs/PCSS.md): the shadow edge's width comes from the sun's disc, the blocker's
+    // distance and the receiver's, instead of from a fixed filter radius. Costs 48 shadow-map taps per pixel where the
+    // pixel is near a shadow edge; off falls back to the 3x3 tent filter.
+    bool pcss = true;
+    float pcssSunTanRadius = 0.02f;    // the sun's angular radius as a tangent; 0.00465 is the real sun, 0.02 reads well
+    float pcssSearchRadius = 0.25f;    // metres across the receiver the blocker search reads
+    float pcssMaxPenumbra = 0.5f;      // metres; wider than this reads as a smudge, not a shadow
     bool depthPrepass = true;       // opaque toon draws write depth before the colour pass
     bool frustumCull = true;        // colour passes skip static draws outside the camera frustum
     bool vgeom = true;              // virtual geometry (item 21) for static primitives that have a tree

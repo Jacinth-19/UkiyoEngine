@@ -106,6 +106,12 @@ jobs:
         run: |-
           set -o pipefail
           ./build/contact_shadow_test 2>&1 | tee /tmp/ukiyo-test-contact_shadow_test.log
+      # Percentage-closer soft shadows: the blocker search and the penumbra it sizes, against the analytic disc-light
+      # visibility of a straight edge, on one gap and across three (docs/PCSS.md).
+      - name: Run PCSS Test
+        run: |-
+          set -o pipefail
+          ./build/pcss_test 2>&1 | tee /tmp/ukiyo-test-pcss_test.log
       # Alpha-coverage-preserving mipmaps (GH-104289): the chain builder the model loader runs, on cut-outs whose
       # coverage can be measured exactly (docs/ALPHA_MIPS.md).
       - name: Run Alpha Mipmap Test
@@ -141,6 +147,10 @@ jobs:
       # The contact-shadow figure, and the numbers its caption quotes.
       - name: Render the contact shadow figure
         run: mkdir -p renders && ./build/contact_shadow_preview renders/contact-shadows.png 1600 1000
+      # The PCSS figure, and the numbers its caption quotes: the fixed filter swept and handed its best radius, PCSS
+      # measured against 64 rays over the sun's disc.
+      - name: Render the PCSS figure
+        run: mkdir -p renders && ./build/pcss_preview renders/pcss.png 1600 1000
       # The alpha-coverage figure, and the per-level coverage its caption quotes.
       - name: Render the alpha mipmap figure
         run: mkdir -p renders && ./build/alpha_mips_preview renders/alpha-mips.png 1600 1000
@@ -565,7 +575,7 @@ jobs:
           }
           $failed = @()
           foreach ($t in @("systems_test", "script_test", "network_test", "project_test", "vgeom_test", "motion_test", "gi_test", "input_test", "trail_test", "search_test", "browser_zoom_test", "ao_test",
-                    "contact_shadow_test", "alpha_mips_test", "transform_test", "lights_test", "save_test",
+                    "contact_shadow_test", "pcss_test", "alpha_mips_test", "transform_test", "lights_test", "save_test",
                     "manifest_test", "scene_runtime_test", "hud_test", "character_test", "player_test")) {
             Write-Host "::group::$t"
             # script_test keeps a trace in a file as well as on stdout: a process that dies on Windows has been seen to

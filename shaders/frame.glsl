@@ -43,4 +43,8 @@ UBO(0, 0) FrameBlock {
     vec4 waterDeep;      // water: rgb deep colour, w 1 = camera is under the volume
     vec4 waterWaveD[4];  // water: per wave xy unit direction, z wavelength, w amplitude
     vec4 waterWaveS[4];  // water: per wave x speed multiplier, y steepness
+    // PCSS (docs/PCSS.md). x is the sun's angular radius as a tangent: 0.00465 for the real sun, larger for a stylised
+    // one. y turns it on; z is the radius in metres the blocker search reads; w caps the penumbra so a distant caster
+    // smears rather than covers the screen. A vec4 at the end of the block, as std140 requires of every addition.
+    vec4 shadowSoft;     // x sun tan radius, y 1 = on, z search radius (m), w max penumbra (m)
 } frame;

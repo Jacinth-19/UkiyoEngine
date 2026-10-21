@@ -144,6 +144,7 @@ Options parseArgs(int argc, char** argv) {
         else if (a == "--target-y") o.targetY = float(std::atof(next().c_str()));
         else if (a == "--aa") o.settings.aaMode = std::atoi(next().c_str());
         else if (a == "--no-shadows") o.settings.shadows = false;
+        else if (a == "--no-pcss") o.settings.pcss = false;   // a fixed 3x3 tent instead of soft shadows
         else if (a == "--no-grid") o.settings.grid = false;
         else if (a == "--no-bloom") o.settings.bloom = false;
         else if (a == "--no-outlines") o.settings.outlines = false;

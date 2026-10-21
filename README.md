@@ -44,6 +44,8 @@ Plus the offline tools, which are part of the build rather than a separate scrip
 | Alpha-coverage-preserving mipmaps (GH-104289): one fixed mip level per column, the plain box filter on the top row and the preserved chain below it. Coverage holds at 0.37 instead of collapsing to 0.007, so the cut-out does not dissolve ([docs/ALPHA_MIPS.md](docs/ALPHA_MIPS.md)). | The 131 072-triangle Terrain Lab tile built into a virtual-geometry cluster tree, cut at 1 px and 8 px ([docs/VGEOM.md](docs/VGEOM.md)). |
 | ![Grass scatter](docs/grass-scatter-preview.png) | ![Project browser zoom and glob search](docs/browser-qol.png) |
 | Grass scatter over the terrain, drawn by `grass_scatter_preview` from the same bands the engine uses ([docs/GRASS.md](docs/GRASS.md)). | The Project browser's two new gestures (GH-119103): six of the thirteen thumbnail stops drawn at their real pixel size, and eight glob queries run through the engine's matcher against the asset list above them — 23 matches, computed by `browser_qol_preview` ([docs/FILESYSTEM.md](docs/FILESYSTEM.md)). |
+| ![PCSS](docs/pcss.png) | |
+| Percentage-closer soft shadows (Flax 1.13): one shadow map filtered three ways — the map's own single tap, a fixed-radius PCF swept and handed its best radius, and PCSS — each measured against 64 rays over the sun's disc, with the visibility along a floor line crossing the crate's shadow edge at the bottom right. Mean error in the penumbra: 0.266 hard, 0.066 for the tuned fixed filter, 0.055 for PCSS ([docs/PCSS.md](docs/PCSS.md)). | |
 
 The hub is the first thing anyone sees, so it is checked like a screen and not like a build artifact: CI captures its
 three pages offscreen with `ukiyo_hub --screenshots renders` and commits them to `docs/hub/`. The images below are the
@@ -143,6 +145,12 @@ Vulkan backend and an OpenGL backend; `--backend gl` selects the latter.
   growing bias and a thickness that keeps the result at contact scale instead of turning into a second shadow map. No per-
   light target, no dispatch, no blur: one loop in `effects.frag`, on the pixels whose normal faces the sun. The figure's
   frame darkens 86 % of its contact band and touches 0.43 % of the lit pixels ([docs/CONTACT_SHADOWS.md](docs/CONTACT_SHADOWS.md)).
+* **Percentage-closer soft shadows** (Flax 1.13's PCSS): the shadow edge's width comes from the light, not from a
+  constant — a blocker search reads the shadow map's average occluder distance, and the penumbra is `2 tanRadius × gap`
+  wide. Contact hardens for free, a plank and a wall in the same shadow map get different edges, and a fixed-radius
+  filter cannot do either: at equal cost, PCSS is 16 % closer to a 64-ray ground truth than the fixed filter at its
+  *swept best* radius, and 2.9× closer across three gaps that must share one filter. In `src/engine/pcss.h` and
+  `shaders/shadow_sample.glsl`, 16 + 32 taps ([docs/PCSS.md](docs/PCSS.md)).
 * **Trails** in Godot 4.8's `Trail3D` shape: a ribbon of quads accumulated as an object moves, limited by lifetime or
   path length, shaped by a width curve and a colour gradient, billboarded or pinned to a ground plane, with stretch,
   tiling and pinned UVs. The geometry is plain CPU code (`src/engine/trail.cpp`) so the test measures it without a GPU;
@@ -328,6 +336,7 @@ own glslang package is generated with a broken SPIRV-Tools path; everything else
 | [docs/INPUT.md](docs/INPUT.md) | action maps, the `.inputactions` format, the Unity semantics kept, the CI test |
 | [docs/AO.md](docs/AO.md) | the multi-bounce AO fit, where the albedo comes from, and why the post pass clamps it |
 | [docs/CONTACT_SHADOWS.md](docs/CONTACT_SHADOWS.md) | the contact-shadow march: parameters, why per pixel, and what the test pins |
+| [docs/PCSS.md](docs/PCSS.md) | percentage-closer soft shadows: the two passes, the receiver slope, the foreshortening, the numbers |
 | [docs/ALPHA_MIPS.md](docs/ALPHA_MIPS.md) | alpha-coverage-preserving mipmaps: the measurement, the search, and the chain upload |
 | [docs/TRAIL.md](docs/TRAIL.md) | trail ribbons: sections, the width curve and gradient, the alignment and tiling modes, the test |
 | [docs/SEARCH.md](docs/SEARCH.md) | fuzzy asset ranking and the glob grammar, and why the ranking is deliberately not "contains" |
