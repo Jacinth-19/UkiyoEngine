@@ -9044,13 +9044,17 @@ int MainWindow::runSelfTest() {
             fsSearch_->setText(QStringLiteral("nomatch*"));
             settle();
             check(settled().isEmpty(), "a query nothing matches shows an empty grid");
-            fsSearch_->setText(savedQuery);
-            browserKind_ = 2;
+            // 1 is Models in the button's list (All, Models, Textures, Audio, Folders): the same set "*.vrm" names.
+            fsSearch_->setText(QString());
+            browserKind_ = 1;
             updateBrowserFilter();
+            settle();
+            check(settled() == QStringList{"Brass Sword.vrm", "Hero.vrm"}, "the type button keeps just the models",
+                  settled().join(QStringLiteral(", ")));
             fsSearch_->setText(QStringLiteral("*.vrm"));
             settle();
             check(settled() == QStringList{"Brass Sword.vrm", "Hero.vrm"},
-                  "the type button and a glob agree with each other", visible().join(QStringLiteral(", ")));
+                  "the type button and a glob agree with each other", settled().join(QStringLiteral(", ")));
             browserKind_ = savedKind;
             updateBrowserFilter();
             fsSearch_->setText(savedQuery);
