@@ -593,14 +593,11 @@ jobs:
                 $wer = $null
                 try { $wer = Get-WinEvent -FilterHashtable @{LogName='Application'; Id=1000} -MaxEvents 1 -ErrorAction Stop } catch { }
                 if ($wer) {
-                  $werLines = $wer.Message -split "`r?`n"
-                  $werModule = ($werLines | Where-Object { $_ -match "Faulting module name" }) -join " "
-                  $werCode = ($werLines | Where-Object { $_ -match "Exception code" }) -join " "
+                  $werLines = $wer.Message -split "`r?`n" | Where-Object { $_.Trim() -ne "" }
                   $werOffset = ($werLines | Where-Object { $_ -match "Fault offset" }) -join " "
-                  Add-Content windows-diagnosis.txt "WER: $werModule $werCode $werOffset"
+                  $offsetText = [regex]::Match($werOffset, "0x([0-9a-fA-F]+)").Groups[1].Value
                   # The offset is an RVA; the map file the linker wrote turns it back into the function that was
                   # running, which is the difference between "a stack cookie failed somewhere" and "in luaD_...".
-                  $offsetText = [regex]::Match($werOffset, "0x([0-9a-fA-F]+)").Groups[1].Value
                   if ($offsetText -and (Test-Path "build/script_test.map")) {
                     $rva = [Convert]::ToUInt64($offsetText, 16)
                     $best = ""
@@ -615,11 +612,14 @@ jobs:
                       if ($at -le ($base + $rva) -and $at -gt $bestAt) { $bestAt = $at; $best = $m.Groups[1].Value }
                     }
                     if ($best) {
-                      Add-Content windows-diagnosis.txt "  script_test+0x$offsetText is $best + 0x$('{0:x}' -f (($base + $rva) - $bestAt))"
+                      Add-Content windows-diagnosis.txt "fault: script_test+0x$offsetText is $best + 0x$('{0:x}' -f (($base + $rva) - $bestAt))"
+                    } else {
+                      Add-Content windows-diagnosis.txt "fault: no map symbol for script_test+0x$offsetText"
                     }
                   }
+                  $werLines | Select-Object -First 4 | ForEach-Object { Add-Content windows-diagnosis.txt "wer: $_" }
                 } else {
-                  Add-Content windows-diagnosis.txt "WER: no Application Error record for the crash"
+                  Add-Content windows-diagnosis.txt "wer: no Application Error record"
                 }
                 # Two more runs: the same last line every time is one bug in one place, a different line each time is
                 # not, and the difference decides what to do next.
@@ -633,7 +633,7 @@ jobs:
                 }
                 $env:UKIYO_TEST_LOG = $traceLog
                 if (Test-Path $traceLog) {
-                  Get-Content $traceLog -Tail 3 | ForEach-Object { Add-Content windows-diagnosis.txt "trace: $_" }
+                  Get-Content $traceLog -Tail 2 | ForEach-Object { Add-Content windows-diagnosis.txt "trace: $_" }
                 }
               } else {
                 # The failing assertions first, then the summary line, then the tail: a test can print hundreds of PASS
@@ -658,7 +658,7 @@ jobs:
         if: always()
         run: |
           if (Test-Path windows-diagnosis.txt) {
-            Get-Content windows-diagnosis.txt | Select-Object -First 8 | ForEach-Object { Write-Host "::error::$_" }
+            Get-Content windows-diagnosis.txt | Select-Object -First 10 | ForEach-Object { Write-Host "::error::$_" }
           }
 
       # The player, booting the fixture project with no window and no device (docs/PLAYER.md).
