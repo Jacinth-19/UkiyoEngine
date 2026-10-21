@@ -556,7 +556,11 @@ jobs:
                     "contact_shadow_test", "alpha_mips_test", "transform_test", "lights_test", "save_test",
                     "manifest_test", "scene_runtime_test", "hud_test", "character_test", "player_test")) {
             Write-Host "::group::$t"
-            $out = & "./build/$t.exe" 2>&1
+            # script_test gets --trace: it prints the name of every check as it runs, flushed line by line, so a
+            # crash that leaves no summary still says which check it died in.
+            $testArgs = @()
+            if ($t -eq "script_test") { $testArgs = @("--trace") }
+            $out = & "./build/$t.exe" @testArgs 2>&1
             $code = $LASTEXITCODE
             $out | ForEach-Object { Write-Host $_ }
             Write-Host "::endgroup::"

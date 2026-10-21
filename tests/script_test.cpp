@@ -11,6 +11,7 @@
 #include <algorithm>
 #include <cmath>
 #include <cstdio>
+#include <cstdlib>
 #include <exception>
 #include <filesystem>
 #include <fstream>
@@ -30,9 +31,19 @@ namespace fs = std::filesystem;
 static int failures = 0;
 static int checks = 0;
 
+// Every check's name as it runs, off by default. A crash leaves no summary, and a CI runner writes a redirected
+// stdout in blocks, so the trace is flushed on every line: the last line it wrote is the check that killed it.
+static bool trace = false;
+
 static void check(bool ok, const std::string& what, const std::string& detail = {}) {
     ++checks;
-    if (ok) return;
+    if (ok) {
+        if (trace) {
+            std::printf("PASS  %s\n", what.c_str());
+            std::fflush(stdout);
+        }
+        return;
+    }
     ++failures;
     std::printf("FAIL  %s", what.c_str());
     if (!detail.empty()) std::printf("  -- %s", detail.c_str());
@@ -367,7 +378,10 @@ static void testProjectFiles() {
     check(everyDocIsBound, "project: every documented function is one the engine binds", unbound);
 }
 
-int main() {
+int main(int argc, char** argv) {
+    for (int i = 1; i < argc; ++i)
+        if (std::string(argv[i]) == "--trace") trace = true;
+    if (const char* env = std::getenv("UKIYO_TEST_TRACE")) trace = trace || std::string(env) != "0";
     try {
         section("sandbox");
         testSandbox();
