@@ -558,6 +558,25 @@ void World::attachAgent(const std::string& name, float maxSpeed) {
     e.agent = nav.addAgent(e.position, maxSpeed);
 }
 
+bool World::attachCharacter(const std::string& name, const CharacterSettings& settings) {
+    Entity& e = entity(name);
+    e.character = physics.addCharacter(e.position, settings);
+    return e.character != 0;
+}
+
+void World::setCharacterVelocity(const std::string& name, const glm::vec3& planarVelocity, bool jump) {
+    Entity* e = findEntity(name);
+    if (!e || e->character == 0) return;
+    e->characterVelocity = planarVelocity;
+    e->characterJump = e->characterJump || jump;
+}
+
+bool World::characterState(const std::string& name, CharacterState* out) const {
+    const auto it = entities_.find(name);
+    if (it == entities_.end() || it->second.character == 0) return false;
+    return physics.characterState(it->second.character, out);
+}
+
 void World::setEntityPosition(const std::string& name, const glm::vec3& p) {
     Entity& e = entity(name);
     e.position = p;
@@ -609,6 +628,21 @@ AudioEngine::SoundId World::soundFor(const std::string& path) {
     const AudioEngine::SoundId id = audio.load(path);
     if (id) sounds_[path] = id;
     return id;
+}
+
+void World::updateCharacters(float dt) {
+    for (auto& [name, e] : entities_) {
+        if (e.character == 0) continue;
+        CharacterState st;
+        if (!physics.moveCharacter(e.character, e.characterVelocity, e.characterJump, dt, &st)) continue;
+        e.position = st.position;
+        e.grounded = st.grounded;
+        e.characterJump = false;
+        // The capsule turns to face the way it is walking, which is what the animation and the camera read.
+        if (glm::length(glm::vec2(e.characterVelocity.x, e.characterVelocity.z)) > 0.1f)
+            e.yawDeg = glm::degrees(std::atan2(e.characterVelocity.x, e.characterVelocity.z));
+        physics.setCharacterYaw(e.character, glm::radians(e.yawDeg));
+    }
 }
 
 void World::syncEntities() {
@@ -779,6 +813,7 @@ void World::tick(float dt) {
     dt *= timeScale_;
     script.callUpdate(dt);
     physics.step(dt);
+    updateCharacters(dt);
     dispatchContacts();
     nav.update(dt);
     syncEntities();

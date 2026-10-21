@@ -39,6 +39,16 @@ void readComponents(const json& c, SystemsComponents* out) {
         out->body.mass = b.value("mass", 1.0f);
         out->body.halfExtents = vec3Of(b.value("halfExtents", json::array()), glm::vec3(0.5f));
     }
+    if (c.contains("character") && c["character"].is_object()) {
+        const json& ch = c["character"];
+        out->character.enabled = true;
+        out->character.radius = ch.value("radius", out->character.radius);
+        out->character.height = ch.value("height", out->character.height);
+        out->character.maxSlopeDeg = ch.value("maxSlope", out->character.maxSlopeDeg);
+        out->character.stepHeight = ch.value("stepHeight", out->character.stepHeight);
+        out->character.jumpSpeed = ch.value("jump", out->character.jumpSpeed);
+        out->character.speed = ch.value("speed", out->character.speed);
+    }
     if (c.contains("agent") && c["agent"].is_object()) {
         out->agent.enabled = true;
         out->agent.maxSpeed = c["agent"].value("maxSpeed", 3.5f);

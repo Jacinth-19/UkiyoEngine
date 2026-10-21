@@ -146,7 +146,7 @@ jobs:
       - name: Run Player Tests
         run: |
           set -o pipefail
-          for t in transform_test lights_test save_test manifest_test scene_runtime_test hud_test player_test; do
+          for t in transform_test lights_test save_test manifest_test scene_runtime_test hud_test character_test player_test; do
             echo "::group::$t"
             ./build/$t 2>&1 | tee /tmp/ukiyo-test-$t.log
             echo "::endgroup::"
@@ -276,6 +276,90 @@ jobs:
   # ccache is deliberately not used here: its MSVC support is young (it has to stay away from /Zi debug info and PDBs),
   # and a cache broken by a runner image update is worse than no cache. Qt and the Vulkan SDK are cached instead, and
   # the Ninja build compiles in parallel.
+  # The device-facing half of the engine, on a software Vulkan driver (lavapipe) and a virtual X display. The editor,
+  # the player's windowed path and the GPU tests need a device that the plain Linux job has no way to give them, which is
+  # why they went unrun for so long. mesa's lavapipe is a complete Vulkan 1.3 implementation in software: slow, but it
+  # compiles every pipeline and executes every draw, which is exactly what a shader or a pipeline bug needs.
+  gpu:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Set up ccache
+        uses: hendrikmuhs/ccache-action@v1.2
+        with:
+          key: linux-gpu
+          max-size: 2G
+      - name: Install a software Vulkan driver and a virtual display
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y cmake g++ ccache libvulkan-dev vulkan-tools glslang-tools glslang-dev python3 \
+            qt6-base-dev qt6-base-dev-tools libqt6opengl6-dev qt6-tools-dev qt6-tools-dev-tools xvfb \
+            mesa-vulkan-drivers libgl1-mesa-dri \
+            libx11-dev libxrandr-dev libxinerama-dev libxcursor-dev libxi-dev libxext-dev
+          # lavapipe is the CPU Vulkan implementation. Its ICD manifest is what tells the loader to use it.
+          ls /usr/share/vulkan/icd.d/
+      - name: Configure CMake
+        run: |
+          cmake -B build -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_C_COMPILER_LAUNCHER=ccache -DCMAKE_CXX_COMPILER_LAUNCHER=ccache
+      - name: Build
+        run: |
+          set -o pipefail
+          cmake --build build --parallel 4 2>&1 | tee build.log
+      - name: Annotate compile errors
+        if: failure()
+        run: |
+          grep -E "error:|Error [0-9]" build.log | head -40 | while IFS= read -r line; do
+            echo "::error::${line//'%'/'%25'}"
+          done
+      # Every one of these creates a headless Vulkan device, compiles its pipelines and runs a real draw. A shader that
+      # does not compile, a descriptor set that does not match its layout, or a pipeline state that the driver rejects
+      # fails here and nowhere else.
+      - name: Run the device tests
+        env:
+          VK_ICD_FILENAMES: /usr/share/vulkan/icd.d/lvp_icd.x86_64.json
+        run: |
+          set -o pipefail
+          ls /usr/share/vulkan/icd.d/ || true
+          ls /usr/share/vulkan/icd.d/ | grep -q lvp || export VK_ICD_FILENAMES="$(ls /usr/share/vulkan/icd.d/*lvp* | head -1)"
+          echo "ICD: $VK_ICD_FILENAMES"
+          vulkaninfo --summary || true
+          for t in endfield_shader_test endfield_scene_test lod_gpu_test endfield_gpu_test particles_gpu_test; do
+            echo "::group::$t"
+            xvfb-run -a ./build/$t 2>&1 | tee /tmp/ukiyo-gpu-$t.log
+            echo "::endgroup::"
+          done
+      # The editor's own self-test, on the virtual display the engine session expects. It covers the window, the panels,
+      # the scene format round trips, play mode and the newcomponent forms, all on a real (software) device.
+      - name: Run the editor self-test
+        env:
+          VK_ICD_FILENAMES: /usr/share/vulkan/icd.d/lvp_icd.x86_64.json
+          QT_QPA_PLATFORM: xcb
+        run: |
+          set -o pipefail
+          xvfb-run -a -s "-screen 0 1600x1000x24" ./build/ukiyo_editor --selftest --no-splash 2>&1 | tee /tmp/ukiyo-editor-selftest.log
+      # The player, end to end: a real window on the virtual display, a real device, a real model, the HUD over it. The
+      # capture is then checked for content, because a black or empty frame is the failure mode a green exit code hides.
+      - name: Run the player and capture a frame
+        env:
+          VK_ICD_FILENAMES: /usr/share/vulkan/icd.d/lvp_icd.x86_64.json
+          QT_QPA_PLATFORM: xcb
+        run: |
+          mkdir -p renders
+          xvfb-run -a -s "-screen 0 1280x720x24" ./build/ukiyo_player --backend vk --headless \
+            --build Build/render.json --project tests/fixtures/player --shot renders/player-frame.png --seconds 1
+          ls -la renders/player-frame.png
+          python3 tools/frame_check.py renders/player-frame.png
+      - name: Upload the player frame and the logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: gpu-logs
+          path: |
+            renders/player-frame.png
+            /tmp/ukiyo-gpu-*.log
+            /tmp/ukiyo-editor-selftest.log
+
   windows:
     runs-on: windows-2022
     defaults:
@@ -398,7 +482,7 @@ jobs:
           $failed = @()
           foreach ($t in @("systems_test", "network_test", "project_test", "vgeom_test", "motion_test", "gi_test", "input_test", "trail_test", "search_test", "browser_zoom_test", "ao_test",
                     "contact_shadow_test", "alpha_mips_test", "transform_test", "lights_test", "save_test",
-                    "manifest_test", "scene_runtime_test", "hud_test", "player_test")) {
+                    "manifest_test", "scene_runtime_test", "hud_test", "character_test", "player_test")) {
             Write-Host "::group::$t"
             $out = & "./build/$t.exe" 2>&1
             $code = $LASTEXITCODE

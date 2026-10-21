@@ -211,6 +211,19 @@ int main() {
     check(near(sc.emitter.settings.colorEnd.x, 1.0f), "the emitter's end colour loads");
     check(sc.action.enabled && sc.action.pingPong && near(sc.action.amplitude, 0.5f), "action loads");
 
+    // The capsule character (item 4) is a component like any other: it loads from the scene and keeps its defaults.
+    const std::string chr = sb.write("Scenes/Character.ukscene", R"({
+      "format": "ukiyo-scene",
+      "models": [{"path": "a.vrm", "components": {"character": {"radius": 0.35, "height": 1.7, "speed": 5}}}]
+    })");
+    RuntimeScene ch;
+    check(loadRuntimeScene(chr, sb.root.string(), &ch, &error), "a character component loads");
+    check(ch.instances[0].components.character.enabled, "the character is enabled");
+    check(std::fabs(ch.instances[0].components.character.radius - 0.35f) < 1e-5f, "the character's radius loads");
+    check(std::fabs(ch.instances[0].components.character.height - 1.7f) < 1e-5f, "the character's height loads");
+    check(std::fabs(ch.instances[0].components.character.speed - 5.0f) < 1e-5f, "the character's speed loads");
+    check(std::fabs(ch.instances[0].components.character.stepHeight - 0.4f) < 1e-5f, "an omitted field keeps its default");
+
     // Refusals: each one is a file the player must reject with a readable reason rather than boot half a game.
     RuntimeScene bad;
     error.clear();

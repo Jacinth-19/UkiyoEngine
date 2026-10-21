@@ -5,6 +5,7 @@
 
 #include <atomic>
 #include <memory>
+#include <set>
 #include <optional>
 
 #include "systems/audio.h"
@@ -14,6 +15,7 @@
 #include <map>
 #include <set>
 #include <memory>
+#include <set>
 #include <string>
 #include <vector>
 
@@ -21,6 +23,8 @@
 #include <QString>
 
 #include "engine/anim.h"
+#include "engine/hud.h"
+#include "engine/text_atlas.h"
 #include "engine/camera.h"
 #include "engine/model.h"
 #include "engine/project_settings.h"
@@ -333,10 +337,27 @@ private:
     std::vector<Placement> playStart_;   // placements before play, restored by stopPlay
     std::vector<glm::vec3> playLast_;    // entity positions after the previous tick
     std::vector<float> playSpeed_;       // horizontal speed per instance, fed to the animation machines
+    // Instances with a capsule character (item 4), and the walk speed each was authored with. Driven from the game
+    // view's WASD in play mode.
+    struct PlayCharacter {
+        int instance = -1;
+        float speed = 4.0f;
+    };
+    std::vector<PlayCharacter> playCharacters_;
+    std::set<std::string> playKeys_;   // keys held during play, in portable key text, for the character input
+    float playCamYaw_ = 0.0f;          // the game view's yaw from the last render, for camera-relative walking
     std::vector<std::string> playWarnings_;
     std::string clipBeforePlay_;
     std::unique_ptr<ParticleRenderer> particles_;
     void drawParticleOverlay(const OrbitCamera& cam);
+    // The HUD over play mode: title, frame statistics and the first play warning, from the same layout the player uses.
+    void drawPlayHud();
+    void setHudVisible(bool on) { hudVisible_ = on; }
+    bool hudVisible() const { return hudVisible_; }
+    FontAtlas hudFont_;
+    HudCanvas hudCanvas_;
+    bool hudFontTried_ = false;
+    bool hudVisible_ = true;
     int active_ = -1;
     Model* activeModel() const;
 

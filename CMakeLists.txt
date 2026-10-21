@@ -505,6 +505,12 @@ target_include_directories(scene_runtime_test PRIVATE ${CMAKE_SOURCE_DIR}/src)
 target_link_libraries(scene_runtime_test PRIVATE glm::glm nlohmann_json::nlohmann_json)
 target_compile_options(scene_runtime_test PRIVATE ${UKIYO_WARNINGS})
 
+# The capsule character (item 4), through the situations that define a controller: landing, walking, a wall, a step, a
+# slope too steep to climb, a jump, and two characters that must not share state.
+add_executable(character_test tests/character_test.cpp)
+target_link_libraries(character_test PRIVATE ukiyo_systems)
+target_compile_options(character_test PRIVATE ${UKIYO_WARNINGS})
+
 # The player's own logic, with the real World, physics, Lua and audio (device-free): the whole boot, tick and scene
 # switch path, on a temporary project.
 add_executable(player_test tests/player_test.cpp src/player/player_app.cpp)

@@ -8,6 +8,7 @@
 #pragma once
 
 #include <cstdint>
+#include <set>
 #include <string>
 #include <vector>
 
@@ -87,6 +88,7 @@ public:
 private:
     bool loadScene(const std::string& relativePath, std::string* error);
     void buildWorld();
+    void driveCharacter(float dt);
     void syncInstancesFromWorld();
 
     BuildManifest manifest_;
@@ -105,6 +107,8 @@ private:
     bool quit_ = false;
     std::vector<std::string> warnings_;
     std::string notification_;
+    int characterIndex_ = -1;          // the instance the player controls, or -1
+    std::set<std::string> keys_;       // keys held this frame, in Qt's portable text
 };
 
 // Maps a GLFW key (its name as printed by glfwGetKeyName, plus the special keys) to Qt's portable key text, which is

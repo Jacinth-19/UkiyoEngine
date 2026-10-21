@@ -1,0 +1,38 @@
+{
+  "format": "ukiyo-scene",
+  "version": 2,
+  "models": [
+    {
+      "name": "Seed",
+      "path": "../../../assets/Seed-san.vrm",
+      "position": [
+        0,
+        0,
+        0
+      ],
+      "components": {
+        "character": {
+          "radius": 0.3,
+          "height": 1.6,
+          "speed": 3
+        }
+      }
+    }
+  ],
+  "settings": {
+    "shadows": true,
+    "ssao": 0.4,
+    "tonemap": 3
+  },
+  "gameCamera": {
+    "target": [
+      0,
+      1.0,
+      0
+    ],
+    "distance": 3.2,
+    "yaw": 0.4,
+    "pitch": 0.12,
+    "fovY": 0.6
+  }
+}

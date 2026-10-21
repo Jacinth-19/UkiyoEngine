@@ -48,6 +48,10 @@ struct Entity {
     float yawDeg = 0.0f;
     PhysicsWorld::Handle body = PhysicsWorld::kNone;   // driven by physics when set
     int agent = -1;                                    // driven by the navmesh crowd when >= 0
+    CharacterHandle character = 0;                     // driven by the capsule controller when set
+    glm::vec3 characterVelocity{0.0f};                 // planar metres per second, set by the game each frame
+    bool characterJump = false;                        // one-shot: a jump was requested this frame
+    bool grounded = true;                              // the character's ground state after the last move
     std::unique_ptr<AnimStateMachine> anim;
     std::string clip;
     EntityAction action;                               // spin or ping-pong, when on                                  // last clip the state machine asked for
@@ -68,6 +72,11 @@ public:
     void attachDynamicBox(const std::string& name, const glm::vec3& halfExtents, float mass);
     // A navmesh agent drives the entity once a navmesh is built.
     void attachAgent(const std::string& name, float maxSpeed = 3.5f);
+    // A capsule character drives the entity (item 4). The capsule stands on the entity's current position.
+    bool attachCharacter(const std::string& name, const CharacterSettings& settings = CharacterSettings());
+    // The game's input for this frame: a planar velocity in metres per second and an optional jump.
+    void setCharacterVelocity(const std::string& name, const glm::vec3& planarVelocity, bool jump = false);
+    bool characterState(const std::string& name, CharacterState* out) const;
     void setEntityPosition(const std::string& name, const glm::vec3& p);
     void setParam(const std::string& name, const std::string& param, float value);
     // Starts a spin or ping-pong on an entity. `rest` and `restYaw` are where it starts from.
@@ -139,6 +148,7 @@ public:
 
 private:
     void syncEntities();
+    void updateCharacters(float dt);
     // Runs onContact(event) for each contact the last physics step raised. Body changes made there are deferred.
     void dispatchContacts();
     void updateAnimation(float dt);

@@ -70,6 +70,13 @@ bool PlayerApp::loadScene(const std::string& relativePath, std::string* error) {
     if (!world.empty())
         for (size_t i = 0; i < instances_.size(); ++i) instances_[i].world = world[i];
 
+    characterIndex_ = -1;
+    for (size_t i = 0; i < instances_.size(); ++i)
+        if (instances_[i].components.character.enabled) {
+            characterIndex_ = static_cast<int>(i);
+            break;
+        }
+    keys_.clear();
     buildWorld();
     ++generation_;
     playTime_ = 0.0;
@@ -115,6 +122,15 @@ void PlayerApp::buildWorld() {
                 e.body = world_->physics.addStaticBox(in.position, c.body.box ? c.body.halfExtents : glm::vec3(c.body.radius));
             }
         }
+        if (c.character.enabled) {
+            CharacterSettings cs;
+            cs.radius = c.character.radius;
+            cs.height = c.character.height;
+            cs.maxSlopeDeg = c.character.maxSlopeDeg;
+            cs.stepHeight = c.character.stepHeight;
+            cs.jumpSpeed = c.character.jumpSpeed;
+            world_->attachCharacter(in.name, cs);
+        }
         if (c.agent.enabled) world_->attachAgent(in.name, c.agent.maxSpeed);
         if (c.emitter.enabled) world_->vfx.spawn(c.emitter.settings, in.position);
         if (c.action.enabled) {
@@ -154,7 +170,10 @@ void PlayerApp::buildWorld() {
 }
 
 void PlayerApp::setKey(const std::string& key, bool down) {
-    if (world_ && !key.empty()) world_->setKeyHeld(key, down);
+    if (key.empty()) return;
+    if (down) keys_.insert(key);
+    else keys_.erase(key);
+    if (world_) world_->setKeyHeld(key, down);
 }
 
 void PlayerApp::syncInstancesFromWorld() {
@@ -188,6 +207,7 @@ void PlayerApp::tick(float dt) {
     for (size_t i = 0; i < instances_.size(); ++i)
         if (instances_[i].components.anim.enabled) world_->setParam(instances_[i].name, "speed", speed_[i]);
 
+    driveCharacter(dt);
     world_->tick(dt);
 
     // A script's loadScene replaces the scene between frames.
@@ -279,6 +299,27 @@ bool PlayerApp::loadGame(const std::string& path, std::string* error) {
     double t = 0.0;
     if (save.getFloat("playTime", &t)) playTime_ = t;
     return true;
+}
+
+void PlayerApp::driveCharacter(float dt) {
+    if (characterIndex_ < 0 || !world_) return;
+    const PlayerInstance& in = instances_[static_cast<size_t>(characterIndex_)];
+    const CharacterComponent& c = in.components.character;
+    const bool w = keys_.count("W") != 0;
+    const bool s = keys_.count("S") != 0;
+    const bool d = keys_.count("D") != 0;
+    const bool a = keys_.count("A") != 0;
+    // Camera-relative movement: yaw 0 looks from +Z at the target, so forward is -Z at yaw 0.
+    const float yaw = scene_.cameraYaw;
+    const glm::vec3 forward(-std::sin(yaw), 0.0f, -std::cos(yaw));
+    const glm::vec3 right(std::cos(yaw), 0.0f, -std::sin(yaw));
+    glm::vec3 dir = forward * (w ? 1.0f : 0.0f) - forward * (s ? 1.0f : 0.0f) + right * (d ? 1.0f : 0.0f) -
+                    right * (a ? 1.0f : 0.0f);
+    const float len = glm::length(dir);
+    if (len > 1e-4f) dir = dir / len * c.speed;
+    const bool jump = keys_.count("Space") != 0;
+    world_->setCharacterVelocity(in.name, dir, jump);
+    (void)dt;
 }
 
 int PlayerApp::scriptsRunning() const {

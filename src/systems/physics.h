@@ -12,6 +12,30 @@ namespace ukiyo {
 
 struct WaterVolume;
 
+// A capsule character (item 4) moved by Jolt's CharacterVirtual: it slides along walls, climbs steps up to stepHeight
+// and stands on slopes up to maxSlopeDeg. It is kinematic, not a rigid body: a rigid body cannot stand still on a slope
+// without jitter, and cannot climb a step at all. This is the controller a third-person or first-person player uses.
+struct CharacterSettings {
+    float radius = 0.3f;        // metres
+    float height = 1.8f;        // metres, including both caps
+    float maxSlopeDeg = 50.0f;  // steeper ground is a wall
+    float stepHeight = 0.4f;    // the tallest ledge the character walks up
+    float stickToFloor = 0.35f; // downward snap that keeps it on a slope instead of hopping down it
+    float jumpSpeed = 5.0f;     // metres per second at the moment of a jump (about 1.2 m of height)
+    float mass = 70.0f;         // used for the push it applies to dynamic bodies
+};
+
+using CharacterHandle = uint32_t;   // 0 is "no character", like PhysicsWorld::Handle
+
+struct CharacterState {
+    glm::vec3 position{0.0f};       // the feet
+    glm::vec3 velocity{0.0f};       // metres per second, after the last move
+    glm::vec3 groundNormal{0.0f, 1.0f, 0.0f};
+    bool grounded = false;
+    bool onSteepGround = false;     // touching a slope too steep to stand on
+};
+
+
 class PhysicsWorld {
 public:
     using Handle = uint32_t;
@@ -81,6 +105,22 @@ public:
     // Turns collisions between two bodies off (enabled = false) or on again. Only new contacts are blocked: a pair
     // that already touches separates when it moves apart. Call it on the main thread, not from a contact callback.
     void setPairEnabled(Handle a, Handle b, bool enabled);
+
+    // ---- Character (item 4) -----------------------------------------------------------------------------------
+    // A capsule character moved by Jolt's CharacterVirtual. See CharacterSettings and CharacterState above.
+    // `feet` is the ground point the capsule stands on.
+    CharacterHandle addCharacter(const glm::vec3& feet, const CharacterSettings& settings = CharacterSettings());
+    void removeCharacter(CharacterHandle h);
+    bool hasCharacter(CharacterHandle h) const;
+
+    // Moves the character by `planarVelocity` for dt, under gravity, jumping when `jump` is set and it is grounded.
+    // The vertical velocity is kept across calls, so a jump arcs. Returns false for an unknown handle.
+    bool moveCharacter(CharacterHandle h, const glm::vec3& planarVelocity, bool jump, float dt,
+                       CharacterState* out = nullptr);
+    bool characterState(CharacterHandle h, CharacterState* out) const;
+    // Faces the character along yaw (radians about +Y). The capsule is round, but the direction is what scripts and
+    // the animation use, and a character standing on a moving platform must keep it.
+    void setCharacterYaw(CharacterHandle h, float yawRadians);
 
     // First hit along the ray within maxDistance. Returns false when nothing is hit.
     bool raycast(const glm::vec3& origin, const glm::vec3& direction, float maxDistance, glm::vec3* hit,

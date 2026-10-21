@@ -220,6 +220,51 @@ end
         check(game.hudText(0, 0).warning.empty(), "clearing the notification clears the HUD warning");
     }
 
+    // The capsule character (item 4): a character component makes an instance walkable. W walks it forward along the
+    // camera's yaw, Space jumps, and the instance's world matrix follows the capsule.
+    {
+        sb.write("Scenes/Char.ukscene", R"({
+          "format": "ukiyo-scene",
+          "models": [
+            {"name": "CharGround", "empty": true, "position": [0, -0.5, 0],
+             "components": {"body": {"dynamic": false, "box": true, "halfExtents": [12, 0.5, 12]}}},
+            {"name": "Hero", "empty": true, "position": [0, 0, 0],
+             "components": {"character": {"radius": 0.3, "height": 1.8, "speed": 3, "jump": 5}}}
+          ],
+          "gameCamera": {"yaw": 0, "distance": 6}
+        })");
+        sb.write("Build/char.json", buildManifestJson(makeManifest({"Scenes/Char.ukscene"}, "")));
+        PlayerApp hero(false);
+        check(hero.start("Build/char.json", sb.str(), &error), "the character scene boots: " + error);
+        check(hero.instances().size() == 2, "the character scene has both instances");
+        for (int i = 0; i < 30; ++i) hero.tick(1.0f / 60.0f);   // settle onto the ground
+        const float z0 = hero.instances()[1].world[3].z;
+        hero.setKey("W", true);
+        for (int i = 0; i < 60; ++i) hero.tick(1.0f / 60.0f);
+        hero.setKey("W", false);
+        const float z1 = hero.instances()[1].world[3].z;
+        check(z1 < z0 - 2.0f, "W walks the character forward (dz = " + std::to_string(z1 - z0) + ")");
+        check(hero.instances()[1].world[3].y < 0.2f && hero.instances()[1].world[3].y > -0.2f,
+              "the character stays on the ground while walking");
+
+        // Jump: Space leaves the ground and lands again.
+        float peak = 0.0f;
+        bool airborne = false;
+        hero.setKey("Space", true);
+        for (int i = 0; i < 20; ++i) {
+            hero.tick(1.0f / 60.0f);
+            peak = std::max(peak, hero.instances()[1].world[3].y);
+            CharacterState st;
+            if (hero.world()->characterState("Hero", &st) && !st.grounded) airborne = true;
+        }
+        hero.setKey("Space", false);
+        check(airborne, "Space jumps the character off the ground");
+        check(peak > 0.3f, "the jump rises (peak " + std::to_string(peak) + " m)");
+        for (int i = 0; i < 120; ++i) hero.tick(1.0f / 60.0f);
+        CharacterState landed;
+        check(hero.world()->characterState("Hero", &landed) && landed.grounded, "the character lands again");
+    }
+
     // Quitting and stopping.
     scripted.requestQuit();
     check(!scripted.running(), "requestQuit stops the loop");

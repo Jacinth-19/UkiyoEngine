@@ -3626,6 +3626,8 @@ private:
 struct SystemsForm {
     QPointer<QComboBox> instance;
     QPointer<QCheckBox> bodyOn, bodyDynamic, agentOn, audioOn, audioLoop, audioStart, animOn, scriptOn, emitOn;
+    QPointer<QCheckBox> charOn;
+    QPointer<QDoubleSpinBox> charRadius, charHeight, charSlope, charStep, charJump, charSpeed;
     QPointer<QDoubleSpinBox> bodyRadius, bodyMass, agentSpeed, animWalkSpeed, animRunSpeed, emitRate, emitLife,
         emitSizeStart, emitSizeEnd;
     QPointer<QSpinBox> emitMax;
@@ -3664,6 +3666,13 @@ bool sameBody(const ukiyo::SystemsComponents& a, const ukiyo::SystemsComponents&
     return a.body.enabled == b.body.enabled && a.body.dynamic == b.body.dynamic &&
            a.body.radius == b.body.radius && a.body.mass == b.body.mass &&
            a.body.box == b.body.box && a.body.halfExtents == b.body.halfExtents;
+}
+bool sameCharacter(const ukiyo::SystemsComponents& a, const ukiyo::SystemsComponents& b) {
+    const ukiyo::CharacterComponent& x = a.character;
+    const ukiyo::CharacterComponent& y = b.character;
+    return x.enabled == y.enabled && x.radius == y.radius && x.height == y.height &&
+           x.maxSlopeDeg == y.maxSlopeDeg && x.stepHeight == y.stepHeight && x.jumpSpeed == y.jumpSpeed &&
+           x.speed == y.speed;
 }
 bool sameAgent(const ukiyo::SystemsComponents& a, const ukiyo::SystemsComponents& b) {
     return a.agent.enabled == b.agent.enabled && a.agent.maxSpeed == b.agent.maxSpeed;
@@ -3719,6 +3728,15 @@ void fillForm(SystemsForm& f, const ukiyo::SystemsComponents& c) {
         f.bodyShape->setCurrentIndex(c.body.box ? 1 : 0);
     }
     for (int k = 0; k < 3; ++k) set(f.bodyHalf[k].data(), double(c.body.halfExtents[k]));
+    if (f.charOn) {
+        check(f.charOn, c.character.enabled);
+        set(f.charRadius.data(), double(c.character.radius));
+        set(f.charHeight.data(), double(c.character.height));
+        set(f.charSlope.data(), double(c.character.maxSlopeDeg));
+        set(f.charStep.data(), double(c.character.stepHeight));
+        set(f.charJump.data(), double(c.character.jumpSpeed));
+        set(f.charSpeed.data(), double(c.character.speed));
+    }
     check(f.agentOn, c.agent.enabled);
     set(f.agentSpeed.data(), double(c.agent.maxSpeed));
     check(f.audioOn, c.audio.enabled);
@@ -3766,6 +3784,15 @@ ukiyo::SystemsComponents readForm(const SystemsForm& f) {
     c.body.mass = float(f.bodyMass->value());
     c.body.box = f.bodyShape->currentIndex() == 1;
     c.body.halfExtents = glm::vec3(float(f.bodyHalf[0]->value()), float(f.bodyHalf[1]->value()), float(f.bodyHalf[2]->value()));
+    if (f.charOn) {
+        c.character.enabled = f.charOn->isChecked();
+        c.character.radius = float(f.charRadius->value());
+        c.character.height = float(f.charHeight->value());
+        c.character.maxSlopeDeg = float(f.charSlope->value());
+        c.character.stepHeight = float(f.charStep->value());
+        c.character.jumpSpeed = float(f.charJump->value());
+        c.character.speed = float(f.charSpeed->value());
+    }
     c.agent.enabled = f.agentOn->isChecked();
     c.agent.maxSpeed = float(f.agentSpeed->value());
     c.audio.enabled = f.audioOn->isChecked();
@@ -3859,6 +3886,7 @@ void MainWindow::addSystemsSections(QVBoxLayout* v, const std::vector<int>& mult
             } else {
                 // Only the systems the user changed are copied. Every other system keeps this object's own values.
                 if (!sameBody(was, after)) cur.body = after.body;
+                if (!sameCharacter(was, after)) cur.character = after.character;
                 if (!sameAgent(was, after)) cur.agent = after.agent;
                 if (!sameAudio(was, after)) cur.audio = after.audio;
                 if (!sameScript(was, after)) cur.script = after.script;
@@ -3981,6 +4009,32 @@ void MainWindow::addSystemsSections(QVBoxLayout* v, const std::vector<int>& mult
         viewport_->update();
     });
     addRemove(body, QStringLiteral("body"), [](ukiyo::SystemsComponents& c) { c.body = ukiyo::SystemsComponents{}.body; });
+
+    // The capsule character (item 4). A separate section from Physics because it replaces the rigid body: a character
+    // is kinematic, so a player would not enable both on one instance.
+    QFormLayout* character = addSection(v, "Character");
+    f->charOn = enableRow(character);
+    f->charOn->setToolTip(QStringLiteral("A capsule controller the player walks with: steps up ledges, slides along walls, "
+                                         "stands on slopes. It replaces the rigid body for this instance."));
+    f->charRadius = makeSpin(0.15, 2.0, 0.05, 2, 0.3);
+    resetRow(character, QStringLiteral("Radius (m)"), QStringLiteral("charRadius"), f->charRadius,
+             [f, defaults] { f->charRadius->setValue(defaults.character.radius); });
+    f->charHeight = makeSpin(0.5, 4.0, 0.1, 2, 1.8);
+    resetRow(character, QStringLiteral("Height (m)"), QStringLiteral("charHeight"), f->charHeight,
+             [f, defaults] { f->charHeight->setValue(defaults.character.height); });
+    f->charSlope = makeSpin(5.0, 89.0, 1.0, 0, 50.0);
+    resetRow(character, QStringLiteral("Max slope (deg)"), QStringLiteral("charSlope"), f->charSlope,
+             [f, defaults] { f->charSlope->setValue(defaults.character.maxSlopeDeg); });
+    f->charStep = makeSpin(0.0, 1.0, 0.05, 2, 0.4);
+    resetRow(character, QStringLiteral("Step height (m)"), QStringLiteral("charStep"), f->charStep,
+             [f, defaults] { f->charStep->setValue(defaults.character.stepHeight); });
+    f->charJump = makeSpin(0.0, 15.0, 0.5, 2, 5.0);
+    resetRow(character, QStringLiteral("Jump speed (m/s)"), QStringLiteral("charJump"), f->charJump,
+             [f, defaults] { f->charJump->setValue(defaults.character.jumpSpeed); });
+    f->charSpeed = makeSpin(0.5, 20.0, 0.5, 2, 4.0);
+    resetRow(character, QStringLiteral("Walk speed (m/s)"), QStringLiteral("charSpeed"), f->charSpeed,
+             [f, defaults] { f->charSpeed->setValue(defaults.character.speed); });
+    addRemove(character, QStringLiteral("character"), [](ukiyo::SystemsComponents& c) { c.character = ukiyo::SystemsComponents{}.character; });
 
     QFormLayout* nav = addSection(v, "Navigation");
     f->agentOn = enableRow(nav);
@@ -4177,7 +4231,8 @@ void MainWindow::addSystemsSections(QVBoxLayout* v, const std::vector<int>& mult
     addComponent->setToolTip(QStringLiteral("Turns on a system for this instance"));
     QMenu* addMenu = new QMenu(addComponent);
     const std::vector<std::pair<QString, QCheckBox*>> systems = {
-        {QStringLiteral("Physics"), f->bodyOn}, {QStringLiteral("Navigation"), f->agentOn},
+        {QStringLiteral("Physics"), f->bodyOn}, {QStringLiteral("Character"), f->charOn},
+        {QStringLiteral("Navigation"), f->agentOn},
         {QStringLiteral("Audio"), f->audioOn}, {QStringLiteral("Animation"), f->animOn},
         {QStringLiteral("Script"), f->scriptOn}, {QStringLiteral("Particles"), f->emitOn}, {QStringLiteral("Actions"), f->actOn}};
     for (const auto& [label, box] : systems) {
@@ -4209,6 +4264,10 @@ void MainWindow::addSystemsSections(QVBoxLayout* v, const std::vector<int>& mult
     auto write = [apply] { apply(nullptr); };
     // Every control writes on change. Anything that changes the scene is undone by Play's stop anyway.
     auto onChange = [write] { write(); };
+    connect(f->charOn, &QCheckBox::toggled, this, onChange);
+    for (QDoubleSpinBox* w : {f->charRadius.data(), f->charHeight.data(), f->charSlope.data(), f->charStep.data(),
+                              f->charJump.data(), f->charSpeed.data()})
+        connect(w, QOverload<double>::of(&QDoubleSpinBox::valueChanged), this, onChange);
     for (QCheckBox* w : {f->bodyOn.data(), f->bodyDynamic.data(), f->agentOn.data(), f->audioOn.data(),
                          f->audioLoop.data(), f->audioStart.data(), f->animOn.data(), f->scriptOn.data(),
                          f->emitOn.data(), f->actOn.data(), f->actEase.data()})

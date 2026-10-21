@@ -108,8 +108,21 @@ struct ActionComponent {
     float startOffset = 0.0f;   // seconds the entity stays at rest before the action starts
 };
 
+// A capsule character controller (item 4): the instance becomes a walkable player character. It is an alternative to
+// BodyComponent, not an addition — a character is kinematic and does not fall under Jolt's rigid body rules.
+struct CharacterComponent {
+    bool enabled = false;
+    float radius = 0.3f;
+    float height = 1.8f;
+    float maxSlopeDeg = 50.0f;
+    float stepHeight = 0.4f;
+    float jumpSpeed = 5.0f;
+    float speed = 4.0f;        // metres per second at full stick
+};
+
 struct SystemsComponents {
     BodyComponent body;
+    CharacterComponent character;
     AgentComponent agent;
     AudioComponent audio;
     AnimComponent anim;
@@ -118,7 +131,7 @@ struct SystemsComponents {
     ActionComponent action;
 
     bool any() const {
-        return body.enabled || agent.enabled || audio.enabled || anim.enabled || script.enabled ||
+        return body.enabled || character.enabled || agent.enabled || audio.enabled || anim.enabled || script.enabled ||
                emitter.enabled || action.enabled;
     }
 };

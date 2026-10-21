@@ -7,6 +7,7 @@
 #include <cmath>
 #include <cstdlib>
 #include <limits>
+#include <cstdio>
 #include <cstring>
 
 #include <glm/gtc/matrix_transform.hpp>
@@ -1065,6 +1066,27 @@ QImage EngineSession::render(const OrbitCamera& cam, float time, float dt, const
     renderer_->setGrass(grass);
     renderer_->render(cam, models, time, frame_++, s);
     drawParticleOverlay(cam);
+    if (playing() && hudVisible_) {
+        drawPlayHud();
+        // The player's layout reads the size from the canvas, so the screen is set here rather than at load time.
+        hudCanvas_.setScreen(float(device_->backbufferWidth()), float(device_->backbufferHeight()));
+        PlayerHudText text;
+        std::string title = "Play mode";
+        if (active_ >= 0 && active_ < static_cast<int>(instances_.size())) {
+            const Instance& act = instances_[static_cast<size_t>(active_)];
+            title = act.name.empty() ? "instance" + std::to_string(active_) : act.name;
+            title += "   play mode";
+        }
+        text.title = title;
+        char stats[160];
+        std::snprintf(stats, sizeof(stats), "%u draws   %.1fk tris   %d entities", renderer_->lastDrawCalls(),
+                      double(renderer_->lastTriangles()) / 1000.0, playingEntities());
+        text.stats = stats;
+        text.hint = "WASD walk   Space jump   Esc stop";
+        if (!playWarnings_.empty()) text.warning = playWarnings_.front();
+        drawPlayerHud(hudCanvas_, text, 1.0f);
+        renderer_->drawHud(hudCanvas_.vertices(), device_->backbufferWidth(), device_->backbufferHeight());
+    }
     device_->endFrame(true);
     std::vector<uint8_t> px = device_->takeCapture();
 
@@ -1268,6 +1290,17 @@ bool EngineSession::startPlay(QString* error) {
                 e.body = world->physics.addStaticBox(in.position, c.body.box ? c.body.halfExtents : glm::vec3(c.body.radius));
             }
         }
+        if (c.character.enabled) {
+            // The capsule character (item 4). In play mode, WASD walks it relative to the game camera and Space jumps.
+            CharacterSettings cs;
+            cs.radius = c.character.radius;
+            cs.height = c.character.height;
+            cs.maxSlopeDeg = c.character.maxSlopeDeg;
+            cs.stepHeight = c.character.stepHeight;
+            cs.jumpSpeed = c.character.jumpSpeed;
+            world->attachCharacter(name, cs);
+            playCharacters_.push_back({static_cast<int>(i), c.character.speed});
+        }
         if (c.agent.enabled) world->attachAgent(name, c.agent.maxSpeed);
         if (c.anim.enabled) {
             std::map<std::string, float> durations;
@@ -1341,10 +1374,15 @@ bool EngineSession::startPlay(QString* error) {
 
 void EngineSession::setKeyHeld(const QString& key, bool down) {
     if (world_) world_->setKeyHeld(key.toStdString(), down);
+    if (key.isEmpty()) return;
+    if (down) playKeys_.insert(key.toStdString());
+    else playKeys_.erase(key.toStdString());
 }
 
 void EngineSession::stopPlay() {
     if (!world_) return;
+    playCharacters_.clear();
+    playKeys_.clear();
     world_.reset();   // audio and physics go first
     const bool restored = restoreEditorScene();
     for (size_t i = 0; i < playStart_.size() && i < instances_.size(); ++i) {
@@ -1480,6 +1518,27 @@ uint32_t EngineSession::lastDrawCalls() const {
     return renderer_ ? renderer_->lastDrawCalls() : 0;
 }
 
+void EngineSession::drivePlayCharacters(float dt) {
+    if (!world_ || playCharacters_.empty()) return;
+    // Camera-relative, the same convention as the player: yaw 0 looks from +Z, so forward is -Z. The game view owns the
+    // camera; its yaw is what the author is looking along.
+    const float yaw = playCamYaw_;
+    const glm::vec3 forward(-std::sin(yaw), 0.0f, -std::cos(yaw));
+    const glm::vec3 right(std::cos(yaw), 0.0f, -std::sin(yaw));
+    auto held = [this](const char* key) { return playKeys_.count(key) != 0; };
+    const bool w = held("W"), s = held("S"), d = held("D"), a = held("A");
+    glm::vec3 dir = forward * (w ? 1.0f : 0.0f) - forward * (s ? 1.0f : 0.0f) + right * (d ? 1.0f : 0.0f) -
+                    right * (a ? 1.0f : 0.0f);
+    const float len = glm::length(dir);
+    const bool jump = held("Space");
+    for (const PlayCharacter& pc : playCharacters_) {
+        if (pc.instance < 0 || pc.instance >= static_cast<int>(instances_.size())) continue;
+        const glm::vec3 v = len > 1e-4f ? dir / len * pc.speed : glm::vec3(0.0f);
+        world_->setCharacterVelocity(entityName(static_cast<size_t>(pc.instance)), v, jump);
+    }
+    (void)dt;
+}
+
 void EngineSession::tickPlay(float dt) {
     if (!world_ || dt <= 0.0f) return;
     // Adding or removing instances during play would desynchronise the per-instance state.
@@ -1492,6 +1551,7 @@ void EngineSession::tickPlay(float dt) {
         const SystemsComponents& c = instances_[i].components;
         if (c.anim.enabled) world_->setParam(entityName(i), "speed", playSpeed_[i]);
     }
+    drivePlayCharacters(dt);
     world_->tick(dt);
     // Preloads that scripts asked for. A failed one is reported and the scene keeps running.
     for (const std::string& path : world_->takePreloads()) {
@@ -1535,6 +1595,20 @@ int EngineSession::liveParticles() const {
     std::vector<ParticleInstance> list;
     world_->vfx.instances(&list);
     return static_cast<int>(list.size());
+}
+
+void EngineSession::drawPlayHud() {
+    // The atlas loads once, from the editor's own font. Without it the HUD still draws its bands, just no words; the
+    // glyphs a frame needs are rasterised on first use, so leaving this on costs nothing per frame.
+    if (!hudFontTried_) {
+        hudFontTried_ = true;
+        const std::string path = std::string(UKIYO_ROOT) + "/editor/res/fonts/IBMPlexSansJP-Regular.ttf";
+        if (hudFont_.loadFromFile(path, 18.0f, 1024)) {
+            hudFont_.preloadAscii();
+            hudCanvas_.setFont(&hudFont_);
+            if (renderer_) renderer_->setHudAtlas(&hudFont_);
+        }
+    }
 }
 
 void EngineSession::drawParticleOverlay(const OrbitCamera& cam) {
