@@ -348,7 +348,17 @@ jobs:
         run: |
           set -o pipefail
           export VK_ICD_FILENAMES="$(ls /usr/share/vulkan/icd.d/*lvp* | head -1)"
-          xvfb-run -a -s "-screen 0 1600x1000x24" ./build/ukiyo_editor --selftest --no-splash 2>&1 | tee /tmp/ukiyo-editor-selftest.log
+          if xvfb-run -a -s "-screen 0 1600x1000x24" ./build/ukiyo_editor --selftest --no-splash 2>&1 |
+             tee /tmp/ukiyo-editor-selftest.log; then
+            exit 0
+          fi
+          # The log is an artifact, which a reviewer cannot read from the run page; the failing checks are lifted into
+          # the annotations so the run itself says what broke.
+          grep -E "^FAIL" /tmp/ukiyo-editor-selftest.log | head -30 | while IFS= read -r line; do
+            echo "::error::${line//'%'/'%25'}"
+          done
+          tail -25 /tmp/ukiyo-editor-selftest.log | while IFS= read -r line; do echo "::error::  $line"; done
+          exit 1
       # The player, end to end: a real window on the virtual display, a real device, a real model, the HUD over it. The
       # capture is then checked for content, because a black or empty frame is the failure mode a green exit code hides.
       - name: Run the player and capture a frame
