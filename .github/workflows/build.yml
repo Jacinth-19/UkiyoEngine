@@ -595,20 +595,52 @@ jobs:
               if (Test-Path $traceLog) { $tail = Get-Content $traceLog -Tail 6 }
               if ($tail.Count -eq 0) { $tail = $out | Select-Object -Last 6 }
               $tail | ForEach-Object { Write-Host "::error::  $_" }
-              # stderr carries Lua's panic line when an API call fails outside a protected call.
-              $out | Select-Object -Last 4 | ForEach-Object { Write-Host "::error::  $($_.Line)" }
               if ($t -eq "script_test") {
-                # Three more runs, each with its own trace: the same last line every time is one bug in one place, a
-                # different line each time is not, and the difference decides what to do next.
-                for ($i = 1; $i -le 3; $i++) {
+                # A run that dies without running a handler leaves Windows Error Reporting's own record, and that
+                # record names the module, the exception code and the offset. It is the only stack a fast-fail leaves.
+                Start-Sleep -Seconds 5
+                $event = $null
+                try { $event = Get-WinEvent -FilterHashtable @{LogName='Application'; Id=1000} -MaxEvents 1 -ErrorAction Stop } catch { }
+                if ($event) {
+                  $lines = $event.Message -split "`r?`n"
+                  $module = ($lines | Where-Object { $_ -match "Faulting module name" }) -join " "
+                  $code = ($lines | Where-Object { $_ -match "Exception code" }) -join " "
+                  $offsetLine = ($lines | Where-Object { $_ -match "Fault offset" }) -join " "
+                  Write-Host "::error::  WER $module $code $offsetLine"
+                  # The offset is an RVA; the map file the linker wrote turns it back into the function that was
+                  # running, which is the difference between "a stack cookie failed somewhere" and "in luaD_...".
+                  $offsetText = [regex]::Match($offsetLine, "0x([0-9a-fA-F]+)").Groups[1].Value
+                  if ($offsetText -and (Test-Path "build/script_test.map")) {
+                    $rva = [Convert]::ToUInt64($offsetText, 16)
+                    $best = $null
+                    $base = [Convert]::ToUInt64("0000000140000000", 16)
+                    foreach ($line in Get-Content "build/script_test.map") {
+                      $load = [regex]::Match($line, "Preferred load address is ([0-9a-fA-F]+)")
+                      if ($load.Success) { $base = [Convert]::ToUInt64($load.Groups[1].Value, 16); continue }
+                      $m = [regex]::Match($line, "^\s+[0-9a-f]{4}:[0-9a-f]{8}\s+(\S+)\s+([0-9a-fA-F]{16})")
+                      if (-not $m.Success) { continue }
+                      $at = [Convert]::ToUInt64($m.Groups[2].Value, 16)
+                      if ($at -le ($base + $rva) -and (-not $best -or $at -gt $best[1])) { $best = @($m.Groups[1].Value, $at) }
+                    }
+                    if ($best) {
+                      $delta = ($base + $rva) - $best[1]
+                      Write-Host "::error::  script_test+0x$offsetText is $($best[0]) + 0x$('{0:x}' -f $delta)"
+                    }
+                  }
+                } else {
+                  Write-Host "::error::  no Windows Error Reporting record for the crash"
+                }
+                # Two more runs: the same last line every time is one bug in one place, a different line each time is
+                # not, and the difference decides what to do next.
+                for ($i = 1; $i -le 2; $i++) {
                   $again = "$PWD\script_test.again$i.log"
                   $env:UKIYO_TEST_LOG = $again
                   & "./build/script_test.exe" --trace | Out-Null
                   $againCode = $LASTEXITCODE
                   $againTail = @()
-                  if (Test-Path $again) { $againTail = Get-Content $again -Tail 2 }
+                  if (Test-Path $again) { $againTail = Get-Content $again -Tail 1 }
                   $crash = @()
-                  if (Test-Path $again) { $crash = Get-Content $again | Select-String -Pattern "CRASH" | Select-Object -First 3 }
+                  if (Test-Path $again) { $crash = Get-Content $again | Select-String -Pattern "CRASH" | Select-Object -First 2 }
                   Write-Host "::error::  rerun $i exit $againCode, last: $($againTail -join ' / ')"
                   if ($crash) { $crash | ForEach-Object { Write-Host "::error::    $($_.Line)" } }
                 }
