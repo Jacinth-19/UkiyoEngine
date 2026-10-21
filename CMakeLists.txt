@@ -216,6 +216,7 @@ add_library(ukiyo_core STATIC
   src/engine/material_asset.cpp
   src/engine/project_settings.cpp
   src/engine/project_template.cpp
+  src/engine/script_project.cpp
   src/engine/graph_material.cpp
   src/engine/water.cpp
   src/engine/terrain.cpp
@@ -261,6 +262,7 @@ add_library(ukiyo_systems STATIC
   src/systems/audio.cpp
   src/systems/anim_state.cpp
   src/systems/script.cpp
+  src/systems/script_runtime.cpp
   src/systems/vfx.cpp
   src/systems/network.cpp
   src/systems/save_game.cpp
@@ -273,6 +275,11 @@ endif()
 target_compile_options(ukiyo_systems PRIVATE ${UKIYO_WARNINGS})
 
 add_executable(systems_test tests/systems_test.cpp)
+# The Lua scripting system: the sandbox, require(), error reporting, the per-entity runtime, and the files a
+# project needs for an external editor. No device, no window.
+add_executable(script_test tests/script_test.cpp)
+target_link_libraries(script_test PRIVATE ukiyo_systems)
+target_compile_options(script_test PRIVATE ${UKIYO_WARNINGS})
 add_executable(pmx_glb_test tests/pmx_glb_test.cpp src/engine/pmx_glb.cpp)
 target_include_directories(pmx_glb_test PRIVATE ${CMAKE_SOURCE_DIR}/src)
 target_compile_options(pmx_glb_test PRIVATE ${UKIYO_WARNINGS_PEDANTIC})
@@ -601,6 +608,8 @@ if(UKIYO_EDITOR)
       editor/src/material_thumbnail.cpp
       editor/src/material_inspector.cpp
       editor/src/prefs_dialog.cpp
+      editor/src/lua_editor.cpp
+      editor/src/lua_editor.h
       editor/src/shader_graph/sg_nodes.cpp
       editor/src/shader_graph/sg_codegen.cpp
       editor/src/shader_graph/shader_graph_window.cpp

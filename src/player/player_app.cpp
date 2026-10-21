@@ -88,17 +88,8 @@ void PlayerApp::buildWorld() {
     lastEntityPos_.assign(instances_.size(), glm::vec3(0.0f));
     speed_.assign(instances_.size(), 0.0f);
 
-    std::string scriptPath;
-    int scripts = 0;
     bool anyAgent = false;
-    for (const PlayerInstance& in : instances_) {
-        if (in.components.script.enabled) {
-            ++scripts;
-            scriptPath = in.components.script.path;
-        }
-        anyAgent = anyAgent || in.components.agent.enabled;
-    }
-    if (scripts > 1) warnings_.push_back("only the last of " + std::to_string(scripts) + " scripts will run");
+    for (const PlayerInstance& in : instances_) anyAgent = anyAgent || in.components.agent.enabled;
     if (anyAgent) {
         // The player bakes from the rest-pose geometry, the same source the editor uses.
         std::vector<glm::vec3> verts;
@@ -158,13 +149,20 @@ void PlayerApp::buildWorld() {
         }
         lastEntityPos_[i] = e.position;
     }
-    if (!scriptPath.empty()) {
+    // Every instance with a script gets one. require() reads from the project's script folders, the same way the
+    // editor sets them up.
+    std::vector<std::string> scriptRoots{joinPath(projectRoot_, "Scripts"), joinPath(projectRoot_, "assets")};
+    world_->setScriptSearchPaths(scriptRoots);
+    bool anyScript = false;
+    for (const PlayerInstance& in : instances_) {
+        if (!in.components.script.enabled || in.components.script.path.empty()) continue;
         std::string err;
-        if (!world_->loadScript(joinPath(projectRoot_, scriptPath), &err))
-            warnings_.push_back("script " + scriptPath + ": " + err);
+        if (!world_->loadScriptFor(in.name, joinPath(projectRoot_, in.components.script.path), &err))
+            warnings_.push_back("script " + in.components.script.path + ": " + err);
         else
-            world_->notifySceneLoaded();
+            anyScript = true;
     }
+    if (anyScript) world_->notifySceneLoaded();
     // The first instance is the listener.
     if (!instances_.empty()) world_->entity("listener").position = instances_.front().position;
 }
@@ -324,7 +322,10 @@ void PlayerApp::driveCharacter(float dt) {
 
 int PlayerApp::scriptsRunning() const {
     if (!world_) return 0;
-    return world_->script.loaded() && !world_->script.hasFailed() ? 1 : 0;
+    int running = 0;
+    for (const ScriptInfo& s : world_->scripts.scripts())
+        if (s.loaded && !s.stopped) ++running;
+    return running;
 }
 
 void PlayerApp::notify(const std::string& message) { notification_ = message; }

@@ -135,7 +135,7 @@ static double luaNumber(ScriptHost& sh, const char* name) {
 static void testLuaMath() {
     World w(true);
     std::string err;
-    const bool loaded = w.script.loadString(
+    const bool loaded = w.sceneScript().loadString(
         "local a = ukiyo.Vector3(1, 2, 3)\n"
         "local b = a + ukiyo.Vector3(1, 1, 1) - ukiyo.Vector3(0, 0, 1)\n"
         "sumX, sumY, sumZ = b.x, b.y, b.z\n"
@@ -155,27 +155,27 @@ static void testLuaMath() {
         "badAdd = not pcall(function() return a + 1 end)\n",
         "math", &err);
     check(loaded, "lua math: the value-type script loads", err);
-    check(std::fabs(luaNumber(w.script, "sumX") - 2.0) < 1e-6 && std::fabs(luaNumber(w.script, "sumZ") - 3.0) < 1e-6,
-          "lua math: Vector3 adds and subtracts", num(luaNumber(w.script, "sumZ")));
-    check(std::fabs(luaNumber(w.script, "scaled") - 6.0) < 1e-6, "lua math: Vector3 scales by a number");
-    lua_getglobal(w.script.state(), "text");
-    check(std::string(lua_tostring(w.script.state(), -1)) == "(1, 2, 3)", "lua math: tostring prints the vector");
-    lua_pop(w.script.state(), 1);
-    check(std::fabs(luaNumber(w.script, "fx") - 0.5) < 1e-4 && std::fabs(luaNumber(w.script, "fz") - 0.8660) < 1e-4,
+    check(std::fabs(luaNumber(w.sceneScript(), "sumX") - 2.0) < 1e-6 && std::fabs(luaNumber(w.sceneScript(), "sumZ") - 3.0) < 1e-6,
+          "lua math: Vector3 adds and subtracts", num(luaNumber(w.sceneScript(), "sumZ")));
+    check(std::fabs(luaNumber(w.sceneScript(), "scaled") - 6.0) < 1e-6, "lua math: Vector3 scales by a number");
+    lua_getglobal(w.sceneScript().state(), "text");
+    check(std::string(lua_tostring(w.sceneScript().state(), -1)) == "(1, 2, 3)", "lua math: tostring prints the vector");
+    lua_pop(w.sceneScript().state(), 1);
+    check(std::fabs(luaNumber(w.sceneScript(), "fx") - 0.5) < 1e-4 && std::fabs(luaNumber(w.sceneScript(), "fz") - 0.8660) < 1e-4,
           "lua math: lookRotation with a 30 degree yaw matches the engine's yaw direction",
-          num(luaNumber(w.script, "fx")) + " " + num(luaNumber(w.script, "fz")));
-    check(std::fabs(luaNumber(w.script, "rx") - 1.0) < 1e-4 && std::fabs(luaNumber(w.script, "rz")) < 1e-4,
-          "lua math: lookRotation toward +X turns +Z to +X", num(luaNumber(w.script, "rx")));
-    check(std::fabs(luaNumber(w.script, "tz") + 1.0) < 1e-4 && std::fabs(luaNumber(w.script, "tx")) < 1e-4,
+          num(luaNumber(w.sceneScript(), "fx")) + " " + num(luaNumber(w.sceneScript(), "fz")));
+    check(std::fabs(luaNumber(w.sceneScript(), "rx") - 1.0) < 1e-4 && std::fabs(luaNumber(w.sceneScript(), "rz")) < 1e-4,
+          "lua math: lookRotation toward +X turns +Z to +X", num(luaNumber(w.sceneScript(), "rx")));
+    check(std::fabs(luaNumber(w.sceneScript(), "tz") + 1.0) < 1e-4 && std::fabs(luaNumber(w.sceneScript(), "tx")) < 1e-4,
           "lua math: two quaternions multiply, 180 degrees turns +Z to -Z");
-    check(std::fabs(luaNumber(w.script, "gx") - 1.0) < 1e-4 && std::fabs(luaNumber(w.script, "gz")) < 1e-4,
+    check(std::fabs(luaNumber(w.sceneScript(), "gx") - 1.0) < 1e-4 && std::fabs(luaNumber(w.sceneScript(), "gz")) < 1e-4,
           "lua math: angleAxis 90 degrees about +Y turns +Z to +X");
-    lua_getglobal(w.script.state(), "badMul");
-    const bool badMul = lua_toboolean(w.script.state(), -1) != 0;
-    lua_pop(w.script.state(), 1);
-    lua_getglobal(w.script.state(), "badAdd");
-    const bool badAdd = lua_toboolean(w.script.state(), -1) != 0;
-    lua_pop(w.script.state(), 1);
+    lua_getglobal(w.sceneScript().state(), "badMul");
+    const bool badMul = lua_toboolean(w.sceneScript().state(), -1) != 0;
+    lua_pop(w.sceneScript().state(), 1);
+    lua_getglobal(w.sceneScript().state(), "badAdd");
+    const bool badAdd = lua_toboolean(w.sceneScript().state(), -1) != 0;
+    lua_pop(w.sceneScript().state(), 1);
     check(badMul && badAdd,
           "lua math: unsupported operands raise an error");
 }
@@ -206,7 +206,7 @@ static void testContacts() {
     w.attachDynamicSphere("b", 0.5f, 1.0f);
     w.physics.addImpulse(w.entity("a").body, glm::vec3(20, 0, 0));
     std::string err;
-    const bool loaded = w.script.loadString(R"(
+    const bool loaded = w.sceneScript().loadString(R"(
         added = 0
         lastKind = ""
         lastNames = ""
@@ -223,13 +223,13 @@ static void testContacts() {
     while (ticks < 300) {
         w.tick(1.0f / 60.0f);
         ++ticks;
-        lua_State* L = w.script.state();
+        lua_State* L = w.sceneScript().state();
         lua_getglobal(L, "added");
         const bool any = lua_tointeger(L, -1) > 0;
         lua_pop(L, 1);
         if (any) break;
     }
-    lua_State* L = w.script.state();
+    lua_State* L = w.sceneScript().state();
     lua_getglobal(L, "added");
     const int added = static_cast<int>(lua_tointeger(L, -1));
     lua_pop(L, 1);
@@ -239,7 +239,7 @@ static void testContacts() {
     const std::string names = namesC ? namesC : "";
     lua_pop(L, 1);
     check(names == "a,b" || names == "b,a", "contacts: the event names the two entities", names);
-    check(!w.script.hasFailed(), "contacts: handler runs without error", w.script.lastError());
+    check(!w.sceneScript().hasFailed(), "contacts: handler runs without error", w.sceneScript().lastError());
 }
 
 // --- Resource pack: build, mount, read through the hook, cgltf ----------------------------
@@ -320,7 +320,7 @@ static std::string luaText(ScriptHost& sh, const char* name) {
 static void testEntityHandles() {
     World w;
     std::string err;
-    const bool loaded = w.script.loadString(R"(
+    const bool loaded = w.sceneScript().loadString(R"(
         e = ukiyo.Entity("hero")
         e.position = ukiyo.Vector3(1, 2, 3)
         e.yaw = 45
@@ -335,14 +335,14 @@ static void testEntityHandles() {
         text = tostring(e)
     )", "entity_test", &err);
     check(loaded, "entity: handle script loads", err);
-    check(std::fabs(luaNumber(w.script, "posX") - 1.0) < 1e-6 && std::fabs(luaNumber(w.script, "posY") - 2.0) < 1e-6,
+    check(std::fabs(luaNumber(w.sceneScript(), "posX") - 1.0) < 1e-6 && std::fabs(luaNumber(w.sceneScript(), "posY") - 2.0) < 1e-6,
           "entity: writable position is read back");
-    check(std::fabs(luaNumber(w.script, "yawBack") - 45.0) < 1e-6, "entity: writable yaw is read back");
-    check(luaText(w.script, "nameBack") == "hero", "entity: name reads back");
-    check(luaBool(w.script, "readonlyBlocked"), "entity: name is read-only");
-    check(luaBool(w.script, "unknownBlocked"), "entity: an unknown field is an error");
-    check(luaBool(w.script, "same") && !luaBool(w.script, "other"), "entity: handles compare by name");
-    check(luaText(w.script, "text") == "Entity(hero)", "entity: tostring names the entity");
+    check(std::fabs(luaNumber(w.sceneScript(), "yawBack") - 45.0) < 1e-6, "entity: writable yaw is read back");
+    check(luaText(w.sceneScript(), "nameBack") == "hero", "entity: name reads back");
+    check(luaBool(w.sceneScript(), "readonlyBlocked"), "entity: name is read-only");
+    check(luaBool(w.sceneScript(), "unknownBlocked"), "entity: an unknown field is an error");
+    check(luaBool(w.sceneScript(), "same") && !luaBool(w.sceneScript(), "other"), "entity: handles compare by name");
+    check(luaText(w.sceneScript(), "text") == "Entity(hero)", "entity: tostring names the entity");
     check(w.findEntity("hero") != nullptr && w.findEntity("hero")->yawDeg == 45.0f,
           "entity: writes go to the world entity");
 }
@@ -356,17 +356,17 @@ static void testContactFilter() {
     w.attachDynamicSphere("b", 0.5f, 1.0f);
     w.physics.addImpulse(w.entity("a").body, glm::vec3(20, 0, 0));
     std::string err;
-    const bool loaded = w.script.loadString(R"(
+    const bool loaded = w.sceneScript().loadString(R"(
         added = 0
         function onContact(ev)
             if ev.kind == "added" then added = added + 1 end
         end
         ukiyo.setContactFilter("a", "b", false)
     )", "filter_test", &err);
-    check(loaded && !w.script.hasFailed(), "filter: filter script loads", err);
+    check(loaded && !w.sceneScript().hasFailed(), "filter: filter script loads", err);
     for (int i = 0; i < 300; ++i) w.tick(1.0f / 60.0f);
-    check(std::fabs(luaNumber(w.script, "added")) < 1e-6, "filter: a filtered pair makes no contact",
-          num(luaNumber(w.script, "added")));
+    check(std::fabs(luaNumber(w.sceneScript(), "added")) < 1e-6, "filter: a filtered pair makes no contact",
+          num(luaNumber(w.sceneScript(), "added")));
 }
 
 // --- Visibility: frustum test and distance cull and fade ----------------------------------
@@ -624,11 +624,14 @@ static void testScript() {
     lua_pop(sh.state(), 1);
 
     ScriptHost box;
+    // require() is the host's own loader, restricted to the script folders; everything a script could use to read or
+    // write the machine is gone.
     box.loadString("sandboxed = (io == nil) and (os == nil) and (package == nil) and (dofile == nil) and "
-                   "(loadfile == nil) and (require == nil)",
+                   "(loadfile == nil) and (debug == nil) and (type(require) == \"function\")",
                    "sandbox", &err);
     lua_getglobal(box.state(), "sandboxed");
-    check(lua_toboolean(box.state(), -1) == 1, "script: io, os, package, and file loaders are not available");
+    check(lua_toboolean(box.state(), -1) == 1,
+          "script: io, os, package, debug and the file loaders are not available, and require is the host's");
     lua_pop(box.state(), 1);
 
     ScriptHost bad;
@@ -645,7 +648,7 @@ static void testWorld() {
     w.attachDynamicSphere("ball", 0.5f, 1.0f);
 
     std::string err;
-    const bool loaded = w.script.loadString(
+    const bool loaded = w.sceneScript().loadString(
         "function onStart() ukiyo.log('started') ukiyo.setPosition('probe', 1, 2, 3) end\n"
         "function onUpdate(dt)\n"
         "  local hit, x, y, z = ukiyo.raycast(8, 10, 0, 0, -1, 0, 20)\n"
@@ -654,20 +657,20 @@ static void testWorld() {
         "end\n",
         "world", &err);
     check(loaded, "world: a script with onStart and onUpdate loads", err);
-    w.script.callStart();
+    w.sceneScript().callStart();
     check(w.logs.size() == 1 && w.logs[0] == "started", "world: ukiyo.log reaches the host");
     const glm::vec3 probe = w.entity("probe").position;
     check(std::fabs(probe.x - 1.0f) < 1e-4f && std::fabs(probe.y - 2.0f) < 1e-4f,
           "world: ukiyo.setPosition moves a named entity", num(probe.y));
 
     for (int i = 0; i < 180; ++i) w.tick(1.0f / 60.0f);
-    lua_getglobal(w.script.state(), "floorY");
-    const double floorY = lua_tonumber(w.script.state(), -1);
-    lua_pop(w.script.state(), 1);
+    lua_getglobal(w.sceneScript().state(), "floorY");
+    const double floorY = lua_tonumber(w.sceneScript().state(), -1);
+    lua_pop(w.sceneScript().state(), 1);
     check(std::fabs(floorY) < 0.05, "world: ukiyo.raycast from a script hits the floor", num(floorY));
     check(std::fabs(w.entity("ball").position.y - 0.5f) < 0.05f,
           "world: a physics entity follows its body each tick", num(w.entity("ball").position.y));
-    check(!w.script.hasFailed(), "world: scripts ran without error", w.script.lastError());
+    check(!w.sceneScript().hasFailed(), "world: scripts ran without error", w.sceneScript().lastError());
 }
 
 static void testWorldAnimation() {
@@ -867,14 +870,14 @@ static void testSceneSwitch() {
         "ukiyo.loadScene(\"levels/next.ukscene\")\n"
         "ukiyo.preloadModel(\"assets/next.vrm\")\n"
         "HOLD = h\n";
-    check(s.script.loadString(code, "scene-test", &err), "scene: the script with the scene calls loads", err);
+    check(s.sceneScript().loadString(code, "scene-test", &err), "scene: the script with the scene calls loads", err);
     check(s.sceneRequested() && !s.sceneSwitchReady(), "scene: ukiyo.loadScene waits behind ukiyo.holdLoad");
     s.notifySceneLoaded();
     check(s.logs.size() == 1 && s.logs[0] == "loaded", "scene: onSceneLoaded runs once the scene starts");
-    lua_getglobal(s.script.state(), "HOLD");
-    const int token = static_cast<int>(lua_tointeger(s.script.state(), -1));
-    lua_pop(s.script.state(), 1);
-    check(token > 0 && s.script.loadString("ukiyo.releaseLoad(HOLD)", "release", &err) && s.sceneSwitchReady(),
+    lua_getglobal(s.sceneScript().state(), "HOLD");
+    const int token = static_cast<int>(lua_tointeger(s.sceneScript().state(), -1));
+    lua_pop(s.sceneScript().state(), 1);
+    check(token > 0 && s.sceneScript().loadString("ukiyo.releaseLoad(HOLD)", "release", &err) && s.sceneSwitchReady(),
           "scene: ukiyo.releaseLoad lets the requested switch run", err);
     check(s.takeSceneRequest() == "levels/next.ukscene" && s.takePreloads().size() == 1,
           "scene: the Lua request and preload reach the host");

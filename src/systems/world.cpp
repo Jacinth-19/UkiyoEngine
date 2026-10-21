@@ -499,30 +499,41 @@ World::World(bool audioNoDevice) : audio(audioNoDevice) {
     // forwards every key it sees) and a gamepad can be hot-plugged into the same state later.
     input_.addDevice(uinput::DeviceKind::Keyboard, 0);
     input_.addDevice(uinput::DeviceKind::Mouse, 0);
-    script.registerFunction("log", l_log, this);
-    script.registerFunction("time", l_time, this);
-    script.registerFunction("actionDown", l_actionDown, this);
-    script.registerFunction("joinPlayer", l_joinPlayer, this);
-    script.registerFunction("playerCount", l_playerCount, this);
-    script.registerFunction("leavePlayer", l_leavePlayer, this);
-    script.registerFunction("playerActionDown", l_playerActionDown, this);
-    script.registerFunction("playerActionValue", l_playerActionValue, this);
-    script.registerFunction("playerActionVector2", l_playerActionVector2, this);
-    script.registerFunction("getPosition", l_getPosition, this);
-    script.registerFunction("setPosition", l_setPosition, this);
-    script.registerFunction("moveTo", l_moveTo, this);
-    script.registerFunction("impulse", l_impulse, this);
-    script.registerFunction("setParam", l_setParam, this);
-    script.registerFunction("playSound", l_playSound, this);
-    script.registerFunction("spawnEffect", l_spawnEffect, this);
-    script.registerFunction("raycast", l_raycast, this);
-    script.registerFunction("loadScene", l_loadScene, this);
-    script.registerFunction("holdLoad", l_holdLoad, this);
-    script.registerFunction("releaseLoad", l_releaseLoad, this);
-    script.registerFunction("preloadModel", l_preloadModel, this);
-    script.registerFunction("setContactFilter", l_setContactFilter, this);
-    script.registerFunction("Entity", l_entityNew, this);
-    installMath(script.state());
+    // Every script the runtime creates is given the same API. The list is here, once, so a script added mid-scene and
+    // one from the level's first frame see the same table; installMath adds Vector3, Quaternion and the metatables.
+    scripts.onHostCreate([this](ScriptHost& host) {
+        for (const ScriptApiBinding& b : apiBindings()) host.registerFunction(b.name, b.fn, this);
+        installMath(host.state());
+    });
+}
+
+const std::vector<ScriptApiBinding>& World::apiBindings() {
+    static const std::vector<ScriptApiBinding> list{
+        {"log", l_log},
+        {"time", l_time},
+        {"actionDown", l_actionDown},
+        {"joinPlayer", l_joinPlayer},
+        {"playerCount", l_playerCount},
+        {"leavePlayer", l_leavePlayer},
+        {"playerActionDown", l_playerActionDown},
+        {"playerActionValue", l_playerActionValue},
+        {"playerActionVector2", l_playerActionVector2},
+        {"getPosition", l_getPosition},
+        {"setPosition", l_setPosition},
+        {"moveTo", l_moveTo},
+        {"impulse", l_impulse},
+        {"setParam", l_setParam},
+        {"playSound", l_playSound},
+        {"spawnEffect", l_spawnEffect},
+        {"raycast", l_raycast},
+        {"loadScene", l_loadScene},
+        {"holdLoad", l_holdLoad},
+        {"releaseLoad", l_releaseLoad},
+        {"preloadModel", l_preloadModel},
+        {"setContactFilter", l_setContactFilter},
+        {"Entity", l_entityNew},
+    };
+    return list;
 }
 
 World::~World() = default;
@@ -593,11 +604,17 @@ void World::setParam(const std::string& name, const std::string& param, float va
     e.anim->setFloat(param, value);
 }
 
-bool World::loadScript(const std::string& path, std::string* error) {
-    if (!script.loadFile(path, error)) return false;
-    script.callStart();
-    return !script.hasFailed();
+bool World::loadScriptFor(const std::string& entity, const std::string& path, std::string* error) {
+    if (!scripts.add(entity, path, error)) return false;
+    ScriptHost* host = scripts.find(entity);
+    if (!host) return false;
+    host->callStart();
+    return !host->hasFailed();
 }
+
+bool World::loadScript(const std::string& path, std::string* error) { return loadScriptFor(std::string(), path, error); }
+
+ScriptHost& World::sceneScript() { return scripts.ensure(std::string()); }
 
 std::string World::takeSceneRequest() {
     std::string path = scenePath_;
@@ -776,7 +793,11 @@ void World::updateActions(float dt) {
 
 void World::dispatchContacts() {
     std::vector<PhysicsWorld::Contact> contacts = physics.takeContacts();
-    if (contacts.empty() || !script.state() || script.hasFailed() || !script.hasFunction("onContact")) return;
+    if (contacts.empty()) return;
+    // Every script that defines onContact hears every contact, in the runtime's order. A script that has spent its
+    // error budget is skipped by entitiesWith, so one broken script does not stop the others from hearing them.
+    const std::vector<std::string> handlers = scripts.entitiesWith("onContact");
+    if (handlers.empty()) return;
     // The entity that owns a body, by name. Bodies that are not entities give "".
     auto nameOf = [this](PhysicsWorld::Handle h) -> std::string {
         if (h != PhysicsWorld::kNone)
@@ -784,23 +805,26 @@ void World::dispatchContacts() {
                 if (e.body == h) return name;
         return std::string();
     };
-    lua_State* L = script.state();
     physics.setDeferChanges(true);
     for (const PhysicsWorld::Contact& c : contacts) {
-        if (script.hasFailed()) break;
-        lua_getglobal(L, "onContact");
-        lua_newtable(L);
-        lua_pushstring(L, c.added ? "added" : "removed");
-        lua_setfield(L, -2, "kind");
-        lua_pushstring(L, nameOf(c.a).c_str());
-        lua_setfield(L, -2, "a");
-        lua_pushstring(L, nameOf(c.b).c_str());
-        lua_setfield(L, -2, "b");
-        pushVec3(L, c.point);
-        lua_setfield(L, -2, "point");
-        pushVec3(L, c.normal);
-        lua_setfield(L, -2, "normal");
-        script.callPushed(1);
+        for (const std::string& entity : handlers) {
+            ScriptHost* host = scripts.find(entity);
+            if (!host || host->hasFailed() || !host->state()) continue;
+            lua_State* L = host->state();
+            lua_getglobal(L, "onContact");
+            lua_newtable(L);
+            lua_pushstring(L, c.added ? "added" : "removed");
+            lua_setfield(L, -2, "kind");
+            lua_pushstring(L, nameOf(c.a).c_str());
+            lua_setfield(L, -2, "a");
+            lua_pushstring(L, nameOf(c.b).c_str());
+            lua_setfield(L, -2, "b");
+            pushVec3(L, c.point);
+            lua_setfield(L, -2, "point");
+            pushVec3(L, c.normal);
+            lua_setfield(L, -2, "normal");
+            host->callPushed(1);
+        }
     }
     physics.setDeferChanges(false);
 }
@@ -811,7 +835,7 @@ void World::tick(float dt) {
     input_.update(dt);
     if (players_) players_->update(dt);
     dt *= timeScale_;
-    script.callUpdate(dt);
+    scripts.callUpdate(dt);
     physics.step(dt);
     updateCharacters(dt);
     dispatchContacts();

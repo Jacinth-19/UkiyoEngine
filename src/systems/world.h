@@ -19,7 +19,7 @@
 #include "systems/audio.h"
 #include "systems/navigation.h"
 #include "systems/physics.h"
-#include "systems/script.h"
+#include "systems/script_runtime.h"
 #include "systems/vfx.h"
 
 namespace ukiyo {
@@ -57,6 +57,12 @@ struct Entity {
     EntityAction action;                               // spin or ping-pong, when on                                  // last clip the state machine asked for
 };
 
+// One bound function: the name a script sees under ukiyo, and the C function behind it.
+struct ScriptApiBinding {
+    const char* name;
+    lua_CFunction fn;
+};
+
 class World {
 public:
     explicit World(bool audioNoDevice = true);
@@ -82,7 +88,19 @@ public:
     // Starts a spin or ping-pong on an entity. `rest` and `restYaw` are where it starts from.
     void setAction(const std::string& name, const EntityAction& a, const glm::vec3& rest, float restYaw);
 
+    // The ukiyo.* functions this world binds, in registration order. The stub file the editor generates is checked
+    // against it, so a function cannot be bound without being documented for the language server.
+    static const std::vector<ScriptApiBinding>& apiBindings();
+
+    // Adds the script for one entity ("" for a scene-wide script) and runs its onStart. Every instance that has a
+    // script gets one, in the order the scene lists them.
+    bool loadScriptFor(const std::string& entity, const std::string& path, std::string* error);
     bool loadScript(const std::string& path, std::string* error);
+    // The host of the scene-level script (the one with no entity), created empty when there is none. A world with its own
+    // logic and no object to hang it on, and tests that drive one script by hand, use this.
+    ScriptHost& sceneScript();
+    // Folders require() may read from: the project's script folders, usually.
+    void setScriptSearchPaths(std::vector<std::string> roots) { scripts.setSearchPaths(std::move(roots)); }
     // Loads a sound by file and caches it. Returns 0 when the file cannot be read.
     AudioEngine::SoundId soundFor(const std::string& path);
 
@@ -115,7 +133,7 @@ public:
     NavMesh nav;
     AudioEngine audio;
     VfxSystem vfx;
-    ScriptHost script;
+    ScriptRuntime scripts;
 
     // Called when an entity's state machine changes clip. Defaults to storing the clip on the entity.
     std::function<void(const std::string& entity, const std::string& clip, float fade, float startFraction)> onClipChange;
@@ -140,8 +158,8 @@ public:
     // Asks the editor to load a model ahead of time, so a later switch to it is quicker. Taken with takePreloads().
     void requestPreload(const std::string& path) { preloads_.push_back(path); }
     std::vector<std::string> takePreloads();
-    // Runs the script's onSceneLoaded(). The editor calls this once the scene has started.
-    void notifySceneLoaded() { script.callSceneLoaded(); }
+    // Runs every script's onSceneLoaded(). The editor calls this once the scene has started.
+    void notifySceneLoaded() { scripts.callSceneLoaded(); }
 
     // Messages from scripts (ukiyo.log).
     std::vector<std::string> logs;

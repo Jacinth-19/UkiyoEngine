@@ -1,5 +1,7 @@
 #include "engine/project_template.h"
 
+#include "engine/script_project.h"
+
 #include <algorithm>
 #include <cctype>
 #include <cmath>
@@ -482,13 +484,46 @@ ojson projectSettingsFor(const std::string& name) {
 }
 
 const char* kStarterScript =
-    "-- Runs in play mode. ukiyo.log writes to the editor's Console.\n"
+    "-- Runs in play mode. ukiyo.log writes to the editor's Console, and `self` is the name of the\n"
+    "-- instance this script is attached to. require() loads another file from Scripts/ or assets/.\n"
+    "local clock = require(\"clock\")\n"
+    "\n"
     "function onStart()\n"
-    "    ukiyo.log(\"Hello from this Ukiyo project\")\n"
+    "    ukiyo.log(\"Hello from \" .. self)\n"
+    "    clock.start()\n"
     "end\n"
     "\n"
     "function onUpdate(dt)\n"
+    "    local t = clock.tick(dt)\n"
+    "    if t > 1.0 then\n"
+    "        ukiyo.log(string.format(\"%.1f s in the scene\", t))\n"
+    "        clock.reset()\n"
+    "    end\n"
+    "end\n"
+    "\n"
+    "function onDestroy()\n"
+    "    ukiyo.log(\"Goodbye from \" .. self)\n"
     "end\n";
+
+// The module the starter script requires, so a new project shows what require() reads and where.
+const char* kStarterModule =
+    "-- A module: a file that returns a table. require(\"clock\") loads it once.\n"
+    "local clock = { elapsed = 0.0 }\n"
+    "\n"
+    "function clock.start()\n"
+    "    clock.elapsed = 0.0\n"
+    "end\n"
+    "\n"
+    "function clock.tick(dt)\n"
+    "    clock.elapsed = clock.elapsed + dt\n"
+    "    return clock.elapsed\n"
+    "end\n"
+    "\n"
+    "function clock.reset()\n"
+    "    clock.elapsed = 0.0\n"
+    "end\n"
+    "\n"
+    "return clock\n";
 
 const char* kAssetsReadme =
     "# Assets\n"
@@ -721,6 +756,20 @@ bool createProject(const CreateProjectOptions& options, const ProjectProgress& p
     if (!writeText(root / "Scripts" / "hello.lua", kStarterScript, error)) {
         cleanup();
         return false;
+    }
+    if (!writeText(root / "Scripts" / "clock.lua", kStarterModule, error)) {
+        cleanup();
+        return false;
+    }
+    // The files a Lua editor needs: the API stub, .luarc.json, the formatter and linter config, and the extension
+    // recommendations. A new project is ready for an external IDE the moment it exists.
+    {
+        std::string supportError;
+        if (!ukiyo::script_project::writeSupportFiles(root.string(), nullptr, &supportError)) {
+            if (error) *error = supportError;
+            cleanup();
+            return false;
+        }
     }
 
     report(0.74f, "Building the main scene");
