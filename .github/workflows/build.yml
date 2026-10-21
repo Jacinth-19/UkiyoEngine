@@ -325,7 +325,10 @@ jobs:
           echo "ICD: $VK_ICD_FILENAMES"
           vulkaninfo --summary || true
           failed=""
-          for t in endfield_shader_test endfield_scene_test lod_gpu_test endfield_gpu_test particles_gpu_test; do
+          # endfield_scene_test and endfield_gpu_test need assets/personal (the author's own character assets), which
+          # .gitignore keeps out of the repository; they run where those assets exist and are skipped here rather than
+          # counted as passing.
+          for t in endfield_shader_test lod_gpu_test particles_gpu_test; do
             echo "::group::$t"
             if xvfb-run -a ./build/$t 2>&1 | tee /tmp/ukiyo-gpu-$t.log; then
               echo "::endgroup::"
