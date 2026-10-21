@@ -10,14 +10,21 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstdint>
 #include <cstdio>
 #include <cstdlib>
+#include <cstring>
 #include <exception>
 #include <filesystem>
 #include <fstream>
 #include <set>
 #include <string>
 #include <vector>
+
+#ifdef _WIN32
+#include <csignal>
+#include <windows.h>
+#endif
 
 extern "C" {
 #include "lauxlib.h"
@@ -35,6 +42,99 @@ static int checks = 0;
 // stdout in blocks, so the trace is flushed on every line: the last line it wrote is the check that killed it.
 static bool trace = false;
 static std::ofstream traceLog;   // UKIYO_TEST_LOG: the same trace in a file, flushed line by line
+static const char* lastSection = "start";   // named in the crash line below
+
+#ifdef _WIN32
+// A Windows test that dies leaves an exit code and an empty log: the pipe loses what the process wrote, and a checked
+// stack frame or an abort reports itself as 0xC0000409 with no other word. These handlers write the reason into the
+// trace file with plain Win32 calls -- no C++ runtime, no buffers -- so the file says "CRASH abort" or "CRASH exception
+// 0xc0000005 at script_test.exe+0x1f3a" instead of a number to guess at. Nothing here runs on Linux, where a crash
+// already leaves a signal and a core.
+static void crashLine(const char* what) {
+    char line[512];
+    std::snprintf(line, sizeof line, "CRASH %s in section '%s'\n", what, lastSection);
+    if (const char* path = std::getenv("UKIYO_TEST_LOG")) {
+        HANDLE file = CreateFileA(path, FILE_APPEND_DATA, FILE_SHARE_READ | FILE_SHARE_WRITE, nullptr, OPEN_ALWAYS,
+                                  FILE_ATTRIBUTE_NORMAL, nullptr);
+        if (file != INVALID_HANDLE_VALUE) {
+            DWORD written = 0;
+            WriteFile(file, line, static_cast<DWORD>(std::strlen(line)), &written, nullptr);
+            FlushFileBuffers(file);
+            CloseHandle(file);
+        }
+    }
+    std::fprintf(stderr, "%s", line);
+    std::fflush(stderr);
+}
+
+// "script_test.exe+0x1234": a module and an offset, which a linker map turns back into a function name.
+static void describeAddress(char* out, size_t size, void* address) {
+    char module[MAX_PATH] = "?";
+    HMODULE owner = nullptr;
+    if (GetModuleHandleExA(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+                           static_cast<LPCSTR>(address), &owner))
+        GetModuleFileNameA(owner, module, MAX_PATH);
+    const char* name = std::strrchr(module, '\\');
+    std::snprintf(out, size, "%s+0x%llx", name ? name + 1 : module,
+                  static_cast<unsigned long long>(reinterpret_cast<uintptr_t>(address) -
+                                                  reinterpret_cast<uintptr_t>(owner)));
+}
+
+static void crashAccessViolation(EXCEPTION_POINTERS* info) {
+    const EXCEPTION_RECORD* record = info->ExceptionRecord;
+    char where[320];
+    describeAddress(where, sizeof where, record->ExceptionAddress);
+    char what[512];
+    std::snprintf(what, sizeof what, "exception 0x%08lx at %s", static_cast<unsigned long>(record->ExceptionCode), where);
+    crashLine(what);
+#if defined(_M_X64)
+    // Return addresses off the faulting stack, resolved to module+offset: a map file names the functions.
+    const auto* stack = reinterpret_cast<const uintptr_t*>(info->ContextRecord->Rsp);
+    for (int i = 0, shown = 0; i < 256 && shown < 12; ++i) {
+        uintptr_t candidate = stack[i];
+        MEMORY_BASIC_INFORMATION region{};
+        if (VirtualQuery(reinterpret_cast<LPCVOID>(candidate), &region, sizeof region) != sizeof region) continue;
+        if (region.State != MEM_COMMIT || (region.Protect & (PAGE_EXECUTE | PAGE_EXECUTE_READ |
+                                                            PAGE_EXECUTE_READWRITE)) == 0)
+            continue;
+        char frame[320];
+        describeAddress(frame, sizeof frame, reinterpret_cast<void*>(candidate));
+        crashLine(frame);
+        ++shown;
+    }
+#endif
+}
+
+static LONG WINAPI crashFilter(EXCEPTION_POINTERS* info) {
+    crashAccessViolation(info);
+    return EXCEPTION_CONTINUE_SEARCH;
+}
+
+static void invalidParameterHandler(const wchar_t*, const wchar_t*, const wchar_t*, unsigned int, uintptr_t) {
+    crashLine("invalid CRT parameter");
+    std::_Exit(70);
+}
+
+static void terminateHandler() {
+    crashLine("unhandled C++ exception (std::terminate)");
+    std::_Exit(71);
+}
+
+static void abortHandler(int) {
+    crashLine("abort (Lua's panic, a failed assert, or a CRT report)");
+    std::_Exit(72);
+}
+
+// Handlers first, then the state: a failure after this point is written down even when the log pipe is lost.
+static void installCrashReporters() {
+    std::setvbuf(stdout, nullptr, _IONBF, 0);   // a crashing process never flushes a block buffer
+    _set_abort_behavior(0, _WRITE_ABORT_MSG | _CALL_REPORTFAULT);   // abort() raises SIGABRT instead of fast-failing
+    std::signal(SIGABRT, abortHandler);
+    _set_invalid_parameter_handler(invalidParameterHandler);
+    std::set_terminate(terminateHandler);
+    AddVectoredExceptionHandler(1, crashFilter);
+}
+#endif
 
 static void check(bool ok, const std::string& what, const std::string& detail = {}) {
     ++checks;
@@ -59,6 +159,7 @@ static void check(bool ok, const std::string& what, const std::string& detail = 
 // Printed before each section and flushed, so a crash in CI still says where it happened: a redirected stdout is
 // block-buffered, and a crashing process never flushes it.
 static void section(const char* name) {
+    lastSection = name;
     std::printf("== %s\n", name);
     std::fflush(stdout);
     if (traceLog) {
@@ -136,6 +237,10 @@ static void testErrors() {
     ScriptHost once;
     section("errors: budget, second host created");
     std::string e2;
+    // Compiled and run as two steps on purpose: the test says which half a crash is in.
+    const bool doomedCompiles = once.compileString("function onUpdate(dt) error('boom') end", "@boom.lua", &e2);
+    section("errors: budget, doomed script compiled");
+    check(doomedCompiles, "errors: the doomed script compiles", e2);
     const bool doomedLoaded = once.loadString("function onUpdate(dt) error('boom') end", "@boom.lua", &e2);
     section("errors: budget, doomed script loaded");
     check(doomedLoaded, "errors: the doomed script loads", e2);
@@ -396,6 +501,9 @@ static void testProjectFiles() {
 }
 
 int main(int argc, char** argv) {
+#ifdef _WIN32
+    installCrashReporters();
+#endif
     for (int i = 1; i < argc; ++i)
         if (std::string(argv[i]) == "--trace") trace = true;
     if (const char* env = std::getenv("UKIYO_TEST_TRACE")) trace = trace || std::string(env) != "0";

@@ -280,6 +280,11 @@ add_executable(systems_test tests/systems_test.cpp)
 add_executable(script_test tests/script_test.cpp)
 target_link_libraries(script_test PRIVATE ukiyo_systems)
 target_compile_options(script_test PRIVATE ${UKIYO_WARNINGS})
+if(MSVC)
+  # A crash on Windows arrives as an exit code with no words. The test's handler writes module+offset for the faulting
+  # instruction and for the frames above it, and this map file is what turns those offsets back into function names.
+  target_link_options(script_test PRIVATE "/MAP:${CMAKE_BINARY_DIR}/script_test.map")
+endif()
 add_executable(pmx_glb_test tests/pmx_glb_test.cpp src/engine/pmx_glb.cpp)
 target_include_directories(pmx_glb_test PRIVATE ${CMAKE_SOURCE_DIR}/src)
 target_compile_options(pmx_glb_test PRIVATE ${UKIYO_WARNINGS_PEDANTIC})

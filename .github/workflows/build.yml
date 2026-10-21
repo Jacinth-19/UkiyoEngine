@@ -551,6 +551,18 @@ jobs:
       # useful diagnostic, and the job log is not reachable from everywhere, so the last lines go out as annotations.
       - name: Run the portable tests
         run: |
+          # A crash that kills the process outright (a checked stack frame, an abort) leaves Windows Error Reporting
+          # with the only stack there is: keep its dump, so the next reader of a failure has one.
+          $dumpDir = "$PWD\dumps"
+          try {
+            New-Item -ItemType Directory -Force -Path $dumpDir | Out-Null
+            $werKey = "HKLM:\SOFTWARE\Microsoft\Windows\Windows Error Reporting\LocalDumps"
+            New-Item -Path $werKey -Force | Out-Null
+            Set-ItemProperty -Path $werKey -Name DumpFolder -Value $dumpDir -Type ExpandString
+            Set-ItemProperty -Path $werKey -Name DumpType -Value 2 -Type DWord
+          } catch {
+            Write-Host "::warning::no crash dumps this run: $_"
+          }
           $failed = @()
           foreach ($t in @("systems_test", "script_test", "network_test", "project_test", "vgeom_test", "motion_test", "gi_test", "input_test", "trail_test", "search_test", "browser_zoom_test", "ao_test",
                     "contact_shadow_test", "alpha_mips_test", "transform_test", "lights_test", "save_test",
@@ -585,6 +597,23 @@ jobs:
               $tail | ForEach-Object { Write-Host "::error::  $_" }
               # stderr carries Lua's panic line when an API call fails outside a protected call.
               $out | Select-Object -Last 4 | ForEach-Object { Write-Host "::error::  $($_.Line)" }
+              if ($t -eq "script_test") {
+                # Three more runs, each with its own trace: the same last line every time is one bug in one place, a
+                # different line each time is not, and the difference decides what to do next.
+                for ($i = 1; $i -le 3; $i++) {
+                  $again = "$PWD\script_test.again$i.log"
+                  $env:UKIYO_TEST_LOG = $again
+                  & "./build/script_test.exe" --trace | Out-Null
+                  $againCode = $LASTEXITCODE
+                  $againTail = @()
+                  if (Test-Path $again) { $againTail = Get-Content $again -Tail 2 }
+                  $crash = @()
+                  if (Test-Path $again) { $crash = Get-Content $again | Select-String -Pattern "CRASH" | Select-Object -First 3 }
+                  Write-Host "::error::  rerun $i exit $againCode, last: $($againTail -join ' / ')"
+                  if ($crash) { $crash | ForEach-Object { Write-Host "::error::    $($_.Line)" } }
+                }
+                $env:UKIYO_TEST_LOG = $traceLog
+              }
               $failed += $t
             }
           }
@@ -608,6 +637,11 @@ jobs:
           path: |
             configure.log
             build.log
+            dumps/*.dmp
+            *.trace.log
+            script_test.again*.log
+            build/script_test.map
+            build/script_test.pdb
           if-no-files-found: warn
 
   # ---------------------------------------------------------------------------------------------- Android (NDK)
