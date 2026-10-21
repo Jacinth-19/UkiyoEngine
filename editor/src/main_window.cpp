@@ -3326,7 +3326,7 @@ void MainWindow::rebuildHierarchy() {
         QTreeWidgetItem* row = new QTreeWidgetItem(
             hierarchy_, QStringList{QStringLiteral("%1 Light %2").arg(key ? "Key" : spot ? "Spot" : "Point").arg(i + 1)});
         row->setData(0, Qt::UserRole, kItemLightBase - i);
-        row->setIcon(0, uiIcon(key ? "sunny" : spot ? "highlight" : "lightbulb"));
+        row->setIcon(0, uiIcon(key ? "wb_sunny" : spot ? "light_mode" : "lightbulb"));
         if (!l.enabled) row->setForeground(0, QBrush(QColor(0x80, 0x80, 0x80)));
     }
 
@@ -4653,7 +4653,7 @@ void MainWindow::showSceneLightProperties(int index) {
     const ukiyo::SceneLight& l = lights_[static_cast<size_t>(index)];
     const bool spot = l.type == ukiyo::LightType::Spot;
     Page p = makePage(QStringLiteral("%1 Light").arg(spot ? "Spot" : "Point"),
-                      spot ? "highlight" : "lightbulb");
+                      spot ? "light_mode" : "lightbulb");
 
     QFormLayout* f = addSection(p.layout, "Light");
     auto* type = new QComboBox;
@@ -7074,7 +7074,7 @@ QMenu* MainWindow::hierarchyContextMenu(QTreeWidgetItem* item) {
     create->addAction(QStringLiteral("Terrain..."), this, [this] { createTerrainObject(); });
     create->addAction(QStringLiteral("Model..."), this, [this] { addModelDialog(); });
     create->addAction(uiIcon("lightbulb"), QStringLiteral("Point Light"), this, [this] { addLight(1); });
-    create->addAction(uiIcon("highlight"), QStringLiteral("Spot Light"), this, [this] { addLight(2); });
+    create->addAction(uiIcon("light_mode"), QStringLiteral("Spot Light"), this, [this] { addLight(2); });
     create->addAction(QStringLiteral("Prefab..."), this, [this] {
         const QString path = QFileDialog::getOpenFileName(this, QStringLiteral("Add Prefab"), projectRoot_ + "/assets",
                                                           QStringLiteral("Ukiyo Prefab (*.ukprefab)"));
@@ -12964,7 +12964,7 @@ int MainWindow::runSelfTest() {
 
         // A hand-edited file cannot ask for a light that shades nothing, or one that floods the frame; and a scene
         // has one sun, so a second directional light is read as a point light rather than silently dropped.
-        const QJsonArray parsed =
+        const std::vector<ukiyo::SceneLight> parsed =
             scene_file::readLights(QJsonArray{QJsonObject{{QStringLiteral("type"), QStringLiteral("point")},
                                                           {QStringLiteral("radius"), 0.0},
                                                           {QStringLiteral("intensity"), 1000.0}},
