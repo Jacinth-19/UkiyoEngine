@@ -158,6 +158,10 @@ jobs:
       # The figure in docs/PLAYER.md, from the shipping layout. It renders the HUD with the same vertex list the GPU gets.
       - name: Render the player HUD figure
         run: mkdir -p renders && ./build/hud_preview --out renders/player-hud.png --background docs/terrain-hero.png
+      # The figure in docs/CHARACTER.md: the controller walking a real course, drawn from the states it reports. This is
+      # also a runtime check - the tool drives a real CharacterVirtual for about four seconds and fails on a crash.
+      - name: Render the character figure
+        run: mkdir -p renders && ./build/character_preview --out renders/character.png --font editor/res/fonts/IBMPlexSansJP-Regular.ttf
       # The input runtime, its asset format and its actions, driven from synthetic devices: no window, no GPU, no GLFW.
       # It checks press/hold/tap/multitap, 1D and 2D composites, processors, control schemes, rebinding, and that the
       # .inputactions file the engine writes loads back byte-for-byte. docs/INPUT.md.

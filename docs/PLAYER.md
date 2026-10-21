@@ -127,7 +127,7 @@ overlay and by the figure above.
 
 ## 6. Tests
 
-Seven CPU-only binaries, run on Linux and Windows; the runtime core is also compiled for arm64 and x86-64 Android.
+Eight CPU-only binaries, run on Linux and Windows; the runtime core is also compiled for arm64 and x86-64 Android.
 
 | Test | Checks | What it pins |
 | --- | --- | --- |
@@ -135,9 +135,10 @@ Seven CPU-only binaries, run on Linux and Windows; the runtime core is also comp
 | `lights_test` | 22 | Light packing to the 64-byte GPU layout, selection scores, cone maths |
 | `save_test` | 33 | `UKSV` round trip, CRC failure, exact float bits, truncation |
 | `manifest_test` | 71 | The writer always parses; every refusal; old `productName` files; clamps |
-| `scene_runtime_test` | 73 | Every field the player reads, legacy scenes, parents by index and name, cycles, refusals |
+| `scene_runtime_test` | 79 | Every field the player reads, legacy scenes, parents by index and name, cycles, refusals |
 | `hud_test` | 60 | Glyph rasterising, atlas packing, layout, clipping, wrapping, bar fill |
-| `player_test` | 67 | Boot from a manifest, start scene, hierarchy, falling bodies, HUD strings, a script's scene switch |
+| `player_test` | 74 | Boot from a manifest, start scene, hierarchy, falling bodies, HUD strings, a script's scene switch |
+| `character_test` | 29 | The capsule controller: landing, walking, a wall, a step, a slope, a jump, independent characters |
 
 On top of those, CI runs `ukiyo_player --selftest` against `tests/fixtures/player`, a real project with a manifest, two
 scenes, physics bodies and a Lua script. That is the check that the things the tests prove individually also hold when the
@@ -149,6 +150,8 @@ actual binary boots a project the way a player would.
 - **Navigation**: an instance with an agent gets a warning, because the player does not bake a navmesh; a shipped game
   must save one next to the scene.
 - **One script per scene**, the last component wins with a warning. Multiple script hosts are the next step.
+- **A character, but no animation of one.** `driveCharacter` moves a capsule; `docs/CHARACTER.md` is the controller and
+  what it still cannot do.
 - **One sun.** Scene lights are parsed and packed, but the renderer still lights with its own sun and fill; wiring the
   scene's lights into the MToon path is tracked in `docs/AUDIT.md`.
 - **Scale and full rotation** reach the runtime, the scene reader and the transform code, but not yet the editor's gizmo

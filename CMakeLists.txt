@@ -306,6 +306,13 @@ target_include_directories(hud_preview PRIVATE ${CMAKE_SOURCE_DIR}/src ${CMAKE_S
 target_link_libraries(hud_preview PRIVATE glm::glm)
 target_compile_options(hud_preview PRIVATE ${UKIYO_WARNINGS})
 
+# The docs figure for docs/CHARACTER.md: a real CharacterVirtual walked across a real course by the shipping controller,
+# drawn from the CharacterState it reports - the outline of each frame, the feet path, and the jump. No GPU, so CI
+# renders it on every push and the figure cannot drift away from the code.
+add_executable(character_preview tools/character_preview.cpp src/engine/text_atlas.cpp)
+target_link_libraries(character_preview PRIVATE ukiyo_systems)
+target_compile_options(character_preview PRIVATE ${UKIYO_WARNINGS})
+
 # The CPU path tracer behind docs/PATHTRACE.md and docs/pathtrace-terrain.png: the ground-truth render of the Terrain
 # Lab scene, on any CPU and with no GPU at all. STB is implemented in the tool itself, so it does not link ukiyo_core.
 add_executable(pathtrace_preview tools/pathtrace_preview.cpp src/engine/terrain.cpp)
