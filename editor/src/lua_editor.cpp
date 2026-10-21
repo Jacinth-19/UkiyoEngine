@@ -14,6 +14,8 @@
 #include <QFontDatabase>
 #include <QFontMetricsF>
 #include <QHBoxLayout>
+#include <QHelpEvent>
+#include <QToolTip>
 #include <QKeyEvent>
 #include <QKeySequence>
 #include <QLineEdit>
@@ -245,6 +247,49 @@ void LuaCodeEditor::setCompletions(const QStringList& words) {
     completer_->setModel(new QStringListModel(completionWords_, completer_));
 }
 
+void LuaCodeEditor::setApiDocs(const QHash<QString, QString>& docs) { apiDocs_ = docs; }
+
+QString LuaCodeEditor::apiDocFor(const QString& word) const {
+    if (word.isEmpty()) return {};
+    if (const auto it = apiDocs_.constFind(word); it != apiDocs_.constEnd()) return it.value();
+    // A name without its table, so hovering `setPosition` in `ukiyo.setPosition` answers too.
+    if (const auto it = apiDocs_.constFind(QStringLiteral("ukiyo.") + word); it != apiDocs_.constEnd()) return it.value();
+    return {};
+}
+
+bool LuaCodeEditor::event(QEvent* event) {
+    if (event->type() == QEvent::ToolTip) {
+        auto* help = static_cast<QHelpEvent*>(event);
+        const QTextCursor cursor = cursorForPosition(viewport()->mapFrom(this, help->pos()));
+        const QString line = cursor.block().text();
+        int at = cursor.positionInBlock();
+        // The word under the pointer: letters, digits, '_' and the '.' that joins ukiyo to its function.
+        int begin = at;
+        while (begin > 0) {
+            const QChar c = line.at(begin - 1);
+            if (!c.isLetterOrNumber() && c != QLatin1Char('_') && c != QLatin1Char('.')) break;
+            --begin;
+        }
+        int end = at;
+        while (end < line.size()) {
+            const QChar c = line.at(end);
+            if (!c.isLetterOrNumber() && c != QLatin1Char('_') && c != QLatin1Char('.')) break;
+            ++end;
+        }
+        const QString doc = apiDocFor(line.mid(begin, end - begin));
+        if (!doc.isEmpty()) {
+            QToolTip::showText(
+                help->globalPos(),
+                doc.toHtmlEscaped().replace(QLatin1Char('\n'), QStringLiteral("<br>")), this);
+            return true;
+        }
+        QToolTip::hideText();
+        event->ignore();
+        return true;
+    }
+    return QPlainTextEdit::event(event);
+}
+
 QString LuaCodeEditor::wordBeforeCursor(int* start) const {
     const QTextCursor cursor = textCursor();
     const QString line = cursor.block().text();
@@ -387,6 +432,25 @@ LuaEditorDialog::LuaEditorDialog(QWidget* parent, const QString& path, Checker c
     QStringList words;
     for (const std::string& word : ukiyo::script_project::completionWords()) words << QString::fromStdString(word);
     editor_->setCompletions(words);
+    // Hover documentation comes from the same table the stub is written from: a signature, a blank line, one sentence.
+    QHash<QString, QString> docs;
+    for (const ukiyo::script_project::ApiDoc& d : ukiyo::script_project::apiDocs()) {
+        const QString signature = QString::fromUtf8(d.signature);
+        docs.insert(QStringLiteral("ukiyo.") + QString::fromUtf8(d.name),
+                    signature + QStringLiteral("\n\n") + QString::fromUtf8(d.doc));
+    }
+    docs.insert(QStringLiteral("onStart"), QStringLiteral("onStart()\n\nCalled once, after the script is loaded."));
+    docs.insert(QStringLiteral("onUpdate"),
+                QStringLiteral("onUpdate(dt)\n\nCalled every frame before physics. dt is in seconds."));
+    docs.insert(QStringLiteral("onSceneLoaded"),
+                QStringLiteral("onSceneLoaded()\n\nCalled once every script has had onStart."));
+    docs.insert(QStringLiteral("onContact"),
+                QStringLiteral("onContact(contact)\n\nCalled for each physics contact: kind, a, b, point, normal."));
+    docs.insert(QStringLiteral("onDestroy"), QStringLiteral("onDestroy()\n\nCalled when the scene is torn down."));
+    docs.insert(QStringLiteral("self"), QStringLiteral("self\n\nThe name of the instance this script is attached to."));
+    docs.insert(QStringLiteral("require"),
+                QStringLiteral("require(name)\n\nLoads Scripts/<name>.lua or assets/<name>.lua, once."));
+    editor_->setApiDocs(docs);
 
     connect(editor_, &LuaCodeEditor::cursorMoved, this, [this](int line, int column) {
         where_->setText(QStringLiteral("Line %1, column %2").arg(line).arg(column));

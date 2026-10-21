@@ -11912,6 +11912,13 @@ int MainWindow::runSelfTest() {
         check(!lua.checkNow(), "the Lua editor reports a syntax error");
         check(lua.editor()->errorLine() > 0, "the Lua editor marks the line Lua reports",
               QString::number(lua.editor()->errorLine()));
+        // Hover documentation: the same table as the stub, reachable by the name as written or by the bare name.
+        check(lua.editor()->apiDocFor(QStringLiteral("ukiyo.raycast")).contains(QStringLiteral("maxDistance")),
+              "the Lua editor documents ukiyo.raycast on hover");
+        check(lua.editor()->apiDocFor(QStringLiteral("onUpdate")).contains(QStringLiteral("dt")),
+              "the Lua editor documents the hooks on hover");
+        check(lua.editor()->apiDocFor(QStringLiteral("notAThing")).isEmpty(),
+              "the Lua editor stays quiet about names that are not API");
         const QStringList words = lua.editor()->completions();
         check(words.contains(QStringLiteral("ukiyo.raycast")) && words.contains(QStringLiteral("onUpdate")) &&
                   words.contains(QStringLiteral("self")),

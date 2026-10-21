@@ -123,6 +123,8 @@ Three more things a code editor is expected to have:
 * **Completion from the API.** Typing three characters of a `ukiyo.*` name — or of `onStart`, `onUpdate`, `onContact`,
   `self`, `require` — opens a list built from the same table that writes the stub, so what the editor offers and what the
   engine binds cannot drift apart. `Enter` or `Tab` takes the choice; `Esc` dismisses it.
+* **Hover documentation.** A pointer over `ukiyo.raycast`, a hook or `self` shows its signature and one sentence — the
+  same entry that wrote the stub and the completion list.
 * **Find.** `Ctrl+F` opens the find bar at the bottom of the window; `Enter` finds the next match and wraps, `Previous`
   walks back.
 * **Indentation that follows the language.** A new line keeps the indentation, adds a level after `function`, `then`,

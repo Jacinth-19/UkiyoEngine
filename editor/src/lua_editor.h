@@ -4,6 +4,7 @@
 #pragma once
 
 #include <QDialog>
+#include <QHash>
 #include <QPair>
 #include <QPaintEvent>
 #include <QPlainTextEdit>
@@ -66,6 +67,10 @@ public:
     void completeNow();
     // What the editor will complete, for the self-test and for a future API list.
     QStringList completions() const { return completionWords_; }
+    // The API entries shown on hover: "ukiyo.raycast", the hooks, self and require, each a signature and a sentence.
+    void setApiDocs(const QHash<QString, QString>& docs);
+    // The documentation for a word under the cursor, with the ukiyo. prefix optional; empty when the word is not API.
+    QString apiDocFor(const QString& word) const;
 
 signals:
     void cursorMoved(int line, int column);
@@ -73,6 +78,8 @@ signals:
 protected:
     void resizeEvent(QResizeEvent* event) override;
     void keyPressEvent(QKeyEvent* event) override;
+    // Hover over a name in the API shows its signature and what it does.
+    bool event(QEvent* event) override;
 
 private:
     void updateLineNumberWidth();
@@ -84,6 +91,7 @@ private:
     int errorLine_ = 0;
     QCompleter* completer_ = nullptr;
     QStringList completionWords_;
+    QHash<QString, QString> apiDocs_;
     int completionStart_ = 0;
 };
 
