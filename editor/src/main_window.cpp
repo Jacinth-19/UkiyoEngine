@@ -13020,6 +13020,34 @@ void MainWindow::saveProjectSettingsFile() {
     postToWorker([this, copy = projSettings_] { worker_->setProjectSettings(copy); });
 }
 
+// One definition, above both of its callers: the play-mode key path in eventFilter and the Rebind button on the
+// input page, which live on either side of several hundred lines of unrelated code.
+namespace {
+
+// A Qt key event as the engine's portable key text. Qt spells the numpad "Num+" and the engine spells the same key
+// "NumPlus", so those are translated here; everything else Qt already writes the way the engine reads it (Del, Ins,
+// PgUp, Esc, Shift, and punctuation as the character it prints).
+QString portableKeyForQt(int key, Qt::KeyboardModifiers mods) {
+    if (mods & Qt::KeypadModifier) {
+        if (key >= Qt::Key_0 && key <= Qt::Key_9) return QStringLiteral("Num%1").arg(key - Qt::Key_0);
+        switch (key) {
+        case Qt::Key_Plus: return QStringLiteral("NumPlus");
+        case Qt::Key_Minus: return QStringLiteral("NumMinus");
+        case Qt::Key_Asterisk: return QStringLiteral("NumMultiply");
+        case Qt::Key_Slash: return QStringLiteral("NumDivide");
+        case Qt::Key_Period: return QStringLiteral("NumPeriod");
+        default: break;
+        }
+    }
+    // QKeySequence has no (int) constructor in Qt 6, so QKeySequence(key) silently converts the key code to a
+    // StandardKey -- Qt::Key_W becomes an empty sequence, and a rebind or a play-mode keypress was dropped without a
+    // word. Build the combination explicitly.
+    const QKeyCombination combo(mods & ~Qt::KeypadModifier, Qt::Key(key));
+    return QKeySequence(combo).toString(QKeySequence::PortableText);
+}
+
+} // namespace
+
 bool MainWindow::eventFilter(QObject* watched, QEvent* e) {
     if (playing_ && (e->type() == QEvent::KeyPress || e->type() == QEvent::KeyRelease) && gameViewActive()) {
         auto* ke = static_cast<QKeyEvent*>(e);
@@ -13043,9 +13071,6 @@ namespace {
 // While a rebind is armed, the application's key events are the capture. Play mode is fed by the Game view's key
 // events (World::setKeyHeld), not by a poller, so a page that wants to hear a key has to take the same events. It
 // swallows them, so the table does not also start editing a cell on the letter that was pressed.
-// Defined below, next to the input page that also uses it; eventFilter needs it first.
-QString portableKeyForQt(int key, Qt::KeyboardModifiers mods);
-
 class RebindKeyFilter : public QObject {
 public:
     std::function<void(QKeyEvent* event)> onKey;
@@ -13064,28 +13089,6 @@ public:
         return QObject::eventFilter(watched, event);
     }
 };
-
-// A Qt key event as the engine's portable key text. Qt spells the numpad "Num+" and the engine spells the same key
-// "NumPlus", so those are translated here; everything else Qt already writes the way the engine reads it (Del, Ins,
-// PgUp, Esc, Shift, and punctuation as the character it prints).
-QString portableKeyForQt(int key, Qt::KeyboardModifiers mods) {
-    if (mods & Qt::KeypadModifier) {
-        if (key >= Qt::Key_0 && key <= Qt::Key_9) return QStringLiteral("Num%1").arg(key - Qt::Key_0);
-        switch (key) {
-        case Qt::Key_Plus: return QStringLiteral("NumPlus");
-        case Qt::Key_Minus: return QStringLiteral("NumMinus");
-        case Qt::Key_Asterisk: return QStringLiteral("NumMultiply");
-        case Qt::Key_Slash: return QStringLiteral("NumDivide");
-        case Qt::Key_Period: return QStringLiteral("NumPeriod");
-        default: break;
-        }
-    }
-    // QKeySequence has no (int) constructor in Qt 6, so QKeySequence(key) silently converts the key code to a
-    // StandardKey -- Qt::Key_W becomes an empty sequence, and a rebind or a play-mode keypress was dropped without a
-    // word. Build the combination explicitly.
-    const QKeyCombination combo(mods & ~Qt::KeypadModifier, Qt::Key(key));
-    return QKeySequence(combo).toString(QKeySequence::PortableText);
-}
 
 // Unity's keyboard control name -> the key this editor's tables work in. "<Keyboard>/space" -> "Space"; a path on
 // another device has no portable spelling, which is what tells the table to keep the path instead of a key.
