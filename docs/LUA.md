@@ -223,6 +223,14 @@ a fresh process each time, and the first count that dies is the check the run ca
 ./build/script_test --trace --only require --max 7
 ```
 
+There is one failure this harness has not yet explained. On Windows, in roughly one run in three, the scripting test's
+process dies with a heap-corruption exit code after the `require()` section's cycle check. It is not a stack overrun
+(the canaries stay intact), and what the checked heap sees is a C++ delete of an address inside the executable — a
+pointer to code or to a string constant, which is what a corrupted object looks like rather than a block that was
+overrun. It does not happen on Linux, under AddressSanitizer, or in four runs out of five. The harness above names the
+check, the address and the symbol the next time it happens; the cause is not known yet, and it is written down here
+rather than kept quiet.
+
 The test also allocates through a checked heap: C++ `new` and `delete` and the allocator `ScriptHost` is handed (see
 `ScriptHost::setAllocator`) put a canary on both sides of every block and verify every live block after every check. A
 write past the end of a block, or a pointer freed twice, is reported with the check number in the trace, instead of
