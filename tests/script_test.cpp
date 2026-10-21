@@ -88,18 +88,25 @@ static void crashAccessViolation(EXCEPTION_POINTERS* info) {
     std::snprintf(what, sizeof what, "exception 0x%08lx at %s", static_cast<unsigned long>(record->ExceptionCode), where);
     crashLine(what);
 #if defined(_M_X64)
-    // Return addresses off the faulting stack, resolved to module+offset: a map file names the functions.
-    const auto* stack = reinterpret_cast<const uintptr_t*>(info->ContextRecord->Rsp);
-    for (int i = 0, shown = 0; i < 256 && shown < 12; ++i) {
-        uintptr_t candidate = stack[i];
-        MEMORY_BASIC_INFORMATION region{};
-        if (VirtualQuery(reinterpret_cast<LPCVOID>(candidate), &region, sizeof region) != sizeof region) continue;
-        if (region.State != MEM_COMMIT || (region.Protect & (PAGE_EXECUTE | PAGE_EXECUTE_READ |
-                                                            PAGE_EXECUTE_READWRITE)) == 0)
+    // Return addresses off the faulting stack, each read only after the page it lives on has said it is readable, and
+    // resolved to module+offset: a map file names the functions.
+    const uintptr_t rsp = static_cast<uintptr_t>(info->ContextRecord->Rsp);
+    for (int i = 0, shown = 0; i < 512 && shown < 16; ++i) {
+        const uintptr_t slot = rsp + static_cast<uintptr_t>(i) * 8;
+        MEMORY_BASIC_INFORMATION page{};
+        if (VirtualQuery(reinterpret_cast<LPCVOID>(slot), &page, sizeof page) != sizeof page) break;
+        if (page.State != MEM_COMMIT || (page.Protect & (PAGE_NOACCESS | PAGE_GUARD)) != 0) break;
+        const uintptr_t candidate = *reinterpret_cast<const uintptr_t*>(slot);
+        MEMORY_BASIC_INFORMATION code{};
+        if (VirtualQuery(reinterpret_cast<LPCVOID>(candidate), &code, sizeof code) != sizeof code) continue;
+        if (code.State != MEM_COMMIT ||
+            (code.Protect & (PAGE_EXECUTE | PAGE_EXECUTE_READ | PAGE_EXECUTE_READWRITE)) == 0)
             continue;
-        char frame[320];
+        char frame[384];
+        char line[420];
         describeAddress(frame, sizeof frame, reinterpret_cast<void*>(candidate));
-        crashLine(frame);
+        std::snprintf(line, sizeof line, "frame %d: %s", i, frame);
+        crashLine(line);
         ++shown;
     }
 #endif

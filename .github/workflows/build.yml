@@ -587,43 +587,31 @@ jobs:
               # small, so script_test's diagnosis goes to a file that the step after this one announces.
               if ($t -eq "script_test") {
                 Add-Content windows-diagnosis.txt "script_test exit code $code"
-                # A run that dies without running a handler leaves Windows Error Reporting's own record, and that
-                # record names the module, the exception code and the offset: the only stack a fast-fail leaves.
-                Start-Sleep -Seconds 5
-                # Event 1000 is not only the application-error record; the provider is what makes it ours.
-                $werEvents = @()
-                try { $werEvents = Get-WinEvent -FilterHashtable @{LogName='Application'; ProviderName='Application Error'} -MaxEvents 5 -ErrorAction Stop } catch { }
-                $wer = $werEvents | Where-Object { $_.Message -match "script_test" } | Select-Object -First 1
-                if (-not $wer -and $werEvents.Count -gt 0) { $wer = $werEvents[0] }
-                if ($wer) {
-                  $werLines = $wer.Message -split "`r?`n" | Where-Object { $_.Trim() -ne "" }
-                  $werOffset = ($werLines | Where-Object { $_ -match "Fault offset" }) -join " "
-                  $offsetText = [regex]::Match($werOffset, "0x([0-9a-fA-F]+)").Groups[1].Value
-                  # The offset is an RVA; the map file the linker wrote turns it back into the function that was
-                  # running, which is the difference between "a stack cookie failed somewhere" and "in luaD_...".
-                  if ($offsetText -and (Test-Path "build/script_test.map")) {
-                    $rva = [Convert]::ToUInt64($offsetText, 16)
-                    $best = ""
-                    $bestAt = [Convert]::ToUInt64("0", 16)
-                    $base = [Convert]::ToUInt64("0000000140000000", 16)
-                    foreach ($mapLine in Get-Content "build/script_test.map") {
-                      $load = [regex]::Match($mapLine, "Preferred load address is ([0-9a-fA-F]+)")
-                      if ($load.Success) { $base = [Convert]::ToUInt64($load.Groups[1].Value, 16); continue }
-                      $m = [regex]::Match($mapLine, "^\s+[0-9a-f]{4}:[0-9a-f]{8}\s+(\S+)\s+([0-9a-fA-F]{16})")
-                      if (-not $m.Success) { continue }
-                      $at = [Convert]::ToUInt64($m.Groups[2].Value, 16)
-                      if ($at -le ($base + $rva) -and $at -gt $bestAt) { $bestAt = $at; $best = $m.Groups[1].Value }
-                    }
-                    if ($best) {
-                      Add-Content windows-diagnosis.txt "fault: script_test+0x$offsetText is $best + 0x$('{0:x}' -f (($base + $rva) - $bestAt))"
-                    } else {
-                      Add-Content windows-diagnosis.txt "fault: no map symbol for script_test+0x$offsetText"
-                    }
+                # The crash block first: the reason, the faulting address, and the frames above it. A trace line that
+                # starts with CRASH is the harness saying why; the lines before it name the check that was running.
+                if (Test-Path $traceLog) {
+                  $trace = @(Get-Content $traceLog)
+                  $at = -1
+                  for ($i = 0; $i -lt $trace.Count; $i++) { if ($trace[$i] -like "CRASH*") { $at = $i } }
+                  if ($at -ge 0) {
+                    $from = [Math]::Max(0, $at - 2)
+                    $to = [Math]::Min($trace.Count - 1, $at + 12)
+                    for ($i = $from; $i -le $to; $i++) { Add-Content windows-diagnosis.txt "trace: $($trace[$i])" }
+                  } else {
+                    Add-Content windows-diagnosis.txt "trace: no CRASH line; last was: $($trace[-1])"
                   }
-                  $werLines | Select-Object -First 5 | ForEach-Object { Add-Content windows-diagnosis.txt "wer: $_" }
-                } else {
-                  Add-Content windows-diagnosis.txt "wer: no Application Error record"
                 }
+                # Two more runs: the same last line every time is one bug in one place, a different line each time is
+                # not, and the difference decides what to do next.
+                for ($i = 1; $i -le 2; $i++) {
+                  $again = "$PWD\script_test.again$i.log"
+                  $env:UKIYO_TEST_LOG = $again
+                  & "./build/script_test.exe" --trace | Out-Null
+                  $againTail = @()
+                  if (Test-Path $again) { $againTail = Get-Content $again -Tail 1 }
+                  Add-Content windows-diagnosis.txt "rerun $i exit $LASTEXITCODE, last: $($againTail -join ' / ')"
+                }
+                $env:UKIYO_TEST_LOG = $traceLog
                 # A dump is the only thing a fast-fail leaves that names its own reason: the exception record carries
                 # the fast-fail code in its first parameter -- a stack cookie, an invalid argument, a bad longjmp.
                 $dump = Get-ChildItem "dumps" -Filter *.dmp -ErrorAction SilentlyContinue |
@@ -655,20 +643,6 @@ jobs:
                 } else {
                   Add-Content windows-diagnosis.txt "dump: none written"
                 }
-                # Two more runs: the same last line every time is one bug in one place, a different line each time is
-                # not, and the difference decides what to do next.
-                for ($i = 1; $i -le 2; $i++) {
-                  $again = "$PWD\script_test.again$i.log"
-                  $env:UKIYO_TEST_LOG = $again
-                  & "./build/script_test.exe" --trace | Out-Null
-                  $againTail = @()
-                  if (Test-Path $again) { $againTail = Get-Content $again -Tail 1 }
-                  Add-Content windows-diagnosis.txt "rerun $i exit $LASTEXITCODE, last: $($againTail -join ' / ')"
-                }
-                $env:UKIYO_TEST_LOG = $traceLog
-                if (Test-Path $traceLog) {
-                  Get-Content $traceLog -Tail 1 | ForEach-Object { Add-Content windows-diagnosis.txt "trace: $_" }
-                }
               } else {
                 # The failing assertions first, then the summary line, then the tail: a test can print hundreds of PASS
                 # lines, and the interesting ones are never the last.
@@ -692,7 +666,7 @@ jobs:
         if: always()
         run: |
           if (Test-Path windows-diagnosis.txt) {
-            Get-Content windows-diagnosis.txt | Select-Object -First 12 | ForEach-Object { Write-Host "::error::$_" }
+            Get-Content windows-diagnosis.txt | Select-Object -First 16 | ForEach-Object { Write-Host "::error::$_" }
           }
 
       # The player, booting the fixture project with no window and no device (docs/PLAYER.md).
