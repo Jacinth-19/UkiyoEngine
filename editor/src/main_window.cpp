@@ -5878,14 +5878,12 @@ void MainWindow::showScriptingTools() {
         std::string err;
         bool ok = false;
         if (worker_) {
-            runOnWorker([&] { ok = worker_->writeScriptSupportFiles(&written, &err); });
+            runOnWorker([&] { ok = worker_->writeScriptSupportFiles(&written, error); });
         } else {
             ok = ukiyo::script_project::writeSupportFiles(projectRoot_.toStdString(), &written, &err);
+            if (!ok && error) *error = QString::fromStdString(err);
         }
-        if (!ok) {
-            if (error) *error = QString::fromStdString(err);
-            return false;
-        }
+        if (!ok) return false;
         if (!written.empty()) {
             refreshBrowser();
             log(QStringLiteral("script support files: %1 written").arg(written.size()));
@@ -11903,7 +11901,7 @@ int MainWindow::runSelfTest() {
         LuaEditorDialog lua(this, temp, [](const QString& path, const QString& text, QString* error) {
             ukiyo::ScriptHost host;
             std::string message;
-            if (host.compileString(text, path.toStdString(), &message)) return true;
+            if (host.compileString(text.toStdString(), path.toStdString(), &message)) return true;
             if (error) *error = QString::fromStdString(message);
             return false;
         });
