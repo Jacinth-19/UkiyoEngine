@@ -159,6 +159,9 @@ public:
     bool previewPath(const glm::vec3& from, const glm::vec3& to, std::vector<glm::vec3>* path, QString* error) {
         return session_.previewPath(from, to, path, error);
     }
+    // The geometry the last bake used, by value: the session's vector can be replaced by the next bake, so a caller
+    // reading it from another thread gets its own copy. Call it on the worker, like every other session read.
+    std::vector<glm::vec3> bakedNavVertices() const { return session_.bakedNavVertices(); }
     bool previewSound(const QString& path, float volume, bool loop, QString* error) {
         return session_.previewSound(path.toStdString(), volume, loop, error);
     }
