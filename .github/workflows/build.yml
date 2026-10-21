@@ -352,12 +352,11 @@ jobs:
              tee /tmp/ukiyo-editor-selftest.log; then
             exit 0
           fi
-          # The log is an artifact, which a reviewer cannot read from the run page; the failing checks are lifted into
-          # the annotations so the run itself says what broke.
-          grep -E "^FAIL" /tmp/ukiyo-editor-selftest.log | head -30 | while IFS= read -r line; do
-            echo "::error::${line//'%'/'%25'}"
-          done
-          tail -25 /tmp/ukiyo-editor-selftest.log | while IFS= read -r line; do echo "::error::  $line"; done
+          # The log is an artifact, which a reviewer cannot read from the run page; the failing checks are lifted into a
+          # single annotation (newlines as %0A) so the run itself says what broke.
+          msg="$(grep -E '^FAIL' /tmp/ukiyo-editor-selftest.log | head -40 | sed 's/%/%25/g' |
+                 awk 'NR>1{printf "%s", "%0A"} {printf "%s", $0}')"
+          echo "::error::editor self-test:${msg:-no FAIL line, see the log}"
           exit 1
       # The player, end to end: a real window on the virtual display, a real device, a real model, the HUD over it. The
       # capture is then checked for content, because a black or empty frame is the failure mode a green exit code hides.
