@@ -4,7 +4,43 @@
 #include <cmath>
 #include <cstdio>
 
+// Key names. The mapping below is GLFW's numbering because that is what a desktop window reports, but nothing else in
+// this file needs GLFW: on Android the codes are supplied here and the names come from the touch controls instead. The
+// values are GLFW's published constants, stable across GLFW 3.x.
+#if defined(__has_include)
+#if __has_include(<GLFW/glfw3.h>)
 #include <GLFW/glfw3.h>
+#define UKIYO_HAVE_GLFW_KEYS 1
+#endif
+#endif
+#ifndef UKIYO_HAVE_GLFW_KEYS
+#define GLFW_KEY_SPACE 32
+#define GLFW_KEY_ESCAPE 256
+#define GLFW_KEY_ENTER 257
+#define GLFW_KEY_TAB 258
+#define GLFW_KEY_BACKSPACE 259
+#define GLFW_KEY_INSERT 260
+#define GLFW_KEY_DELETE 261
+#define GLFW_KEY_RIGHT 262
+#define GLFW_KEY_LEFT 263
+#define GLFW_KEY_DOWN 264
+#define GLFW_KEY_UP 265
+#define GLFW_KEY_PAGE_UP 266
+#define GLFW_KEY_PAGE_DOWN 267
+#define GLFW_KEY_HOME 268
+#define GLFW_KEY_END 269
+#define GLFW_KEY_CAPS_LOCK 280
+#define GLFW_KEY_F1 290
+#define GLFW_KEY_F25 314
+#define GLFW_KEY_LEFT_SHIFT 340
+#define GLFW_KEY_LEFT_CONTROL 341
+#define GLFW_KEY_LEFT_ALT 342
+#define GLFW_KEY_LEFT_SUPER 343
+#define GLFW_KEY_RIGHT_SHIFT 344
+#define GLFW_KEY_RIGHT_CONTROL 345
+#define GLFW_KEY_RIGHT_ALT 346
+#define GLFW_KEY_RIGHT_SUPER 347
+#endif
 
 #include "systems/anim_state.h"
 

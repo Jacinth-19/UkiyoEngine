@@ -9,7 +9,17 @@
 
 #include <vk_mem_alloc.h>
 #include <vulkan/vulkan.h>
+// The presentation surface comes from the platform: a GLFW window on the desktop, the activity's ANativeWindow on
+// Android. Everything else in this file is the same code on both.
+#if defined(__ANDROID__)
+#include <android/native_window.h>
+#define UKIYO_VK_ANDROID 1
+#define UKIYO_VK_GLFW 0
+#else
 #include <GLFW/glfw3.h>
+#define UKIYO_VK_ANDROID 0
+#define UKIYO_VK_GLFW 1
+#endif
 
 #include <algorithm>
 #include <cmath>
@@ -414,10 +424,19 @@ private:
 
 class VKDevice final : public Device {
 public:
-    VKDevice(const DeviceConfig& cfg, GLFWwindow* window) : headless_(cfg.headless || window == nullptr), width_(cfg.width), height_(cfg.height) {
+    VKDevice(const DeviceConfig& cfg, const NativeWindow& window)
+        : headless_(cfg.headless || !window.valid()), width_(cfg.width), height_(cfg.height) {
         createInstance(cfg, window);
-        if (window && !headless_) {
-            VK_CHECK(glfwCreateWindowSurface(core_.instance, window, nullptr, &core_.surface), "glfwCreateWindowSurface");
+        if (window.valid() && !headless_) {
+#if UKIYO_VK_ANDROID
+            VkAndroidSurfaceCreateInfoKHR ci{VK_STRUCTURE_TYPE_ANDROID_SURFACE_CREATE_INFO_KHR};
+            ci.window = static_cast<ANativeWindow*>(window.android);
+            VK_CHECK(vkCreateAndroidSurfaceKHR(core_.instance, &ci, nullptr, &core_.surface),
+                     "vkCreateAndroidSurfaceKHR");
+#else
+            VK_CHECK(glfwCreateWindowSurface(core_.instance, window.glfw, nullptr, &core_.surface),
+                     "glfwCreateWindowSurface");
+#endif
         }
         pickDevice();
         createDevice(cfg);
@@ -633,10 +652,22 @@ public:
         return std::make_unique<VKDescriptorSet>(&core_, descPool_, setLayouts_[static_cast<size_t>(type)], type);
     }
 
+    // The drawable's size in pixels. Android reports it from the window, and it changes when the surface does; the
+    // desktop asks GLFW. One function so the swapchain code below is platform-neutral.
+    void drawableSize(int& w, int& h) const {
+#if UKIYO_VK_ANDROID
+        auto* win = static_cast<ANativeWindow*>(androidWindow_);
+        w = win ? ANativeWindow_getWidth(win) : 0;
+        h = win ? ANativeWindow_getHeight(win) : 0;
+#else
+        glfwGetFramebufferSize(window_, &w, &h);
+#endif
+    }
+
     bool beginFrame() override {
         if (!headless_) {
             int fw = 0, fh = 0;
-            glfwGetFramebufferSize(window_, &fw, &fh);
+            drawableSize(fw, fh);
             if (fw == 0 || fh == 0) return false;
             if (needRecreate_ || static_cast<uint32_t>(fw) != swapExtent_.width || static_cast<uint32_t>(fh) != swapExtent_.height) {
                 vkDeviceWaitIdle(core_.device);
@@ -883,17 +914,24 @@ private:
         }
     }
 
-    void createInstance(const DeviceConfig& cfg, GLFWwindow* window) {
-        window_ = window;
+    void createInstance(const DeviceConfig& cfg, const NativeWindow& window) {
+        window_ = window.glfw;
+        androidWindow_ = window.android;
         VkApplicationInfo app{VK_STRUCTURE_TYPE_APPLICATION_INFO};
         app.pApplicationName = "Ukiyo Engine";
         app.apiVersion = VK_API_VERSION_1_3;
 
         std::vector<const char*> exts;
-        if (window && !headless_) {
+        if (window.valid() && !headless_) {
+#if UKIYO_VK_ANDROID
+            // What the Android loader needs to hand a VkSurfaceKHR back for an ANativeWindow.
+            exts.push_back(VK_KHR_SURFACE_EXTENSION_NAME);
+            exts.push_back(VK_KHR_ANDROID_SURFACE_EXTENSION_NAME);
+#else
             uint32_t n = 0;
             const char** req = glfwGetRequiredInstanceExtensions(&n);
             exts.assign(req, req + n);
+#endif
         }
         std::vector<const char*> layers;
         if (cfg.validation) {
@@ -1047,7 +1085,7 @@ private:
         }
 
         int fw = 0, fh = 0;
-        glfwGetFramebufferSize(window_, &fw, &fh);
+        drawableSize(fw, fh);
         VkExtent2D ext{static_cast<uint32_t>(fw), static_cast<uint32_t>(fh)};
         if (caps.currentExtent.width != 0xFFFFFFFFu) ext = caps.currentExtent;
         ext.width = std::clamp(ext.width, caps.minImageExtent.width, caps.maxImageExtent.width);
@@ -1121,7 +1159,8 @@ private:
 
 public:
     // Instance-level members declared after methods for readability.
-    GLFWwindow* window_ = nullptr;
+    GLFWwindow* window_ = nullptr;   // desktop, or null on Android
+    void* androidWindow_ = nullptr;  // ANativeWindow* on Android, null on the desktop
     VKCore core_;
     bool fillModeNonSolid_ = false;   // the device supports VK_POLYGON_MODE_LINE, so wireframe pipelines are possible
     bool headless_ = false;
@@ -1151,12 +1190,21 @@ public:
 
 } // namespace
 
-std::unique_ptr<Device> createVKDevice(const DeviceConfig& config, GLFWwindow* window) {
+std::unique_ptr<Device> createVKDevice(const DeviceConfig& config, const NativeWindow& window) {
     return std::make_unique<VKDevice>(config, window);
 }
 
 std::unique_ptr<Device> createDevice(Backend backend, const DeviceConfig& config, GLFWwindow* window) {
-    if (backend == Backend::OpenGL) return createGLDevice(config, window);
+    return createDevice(backend, config, NativeWindow{window, nullptr});
+}
+
+std::unique_ptr<Device> createDevice(Backend backend, const DeviceConfig& config, const NativeWindow& window) {
+#if UKIYO_VK_ANDROID
+    // There is no desktop GL on Android, and no GL backend is built there: Vulkan is the only one.
+    if (backend == Backend::OpenGL) throw std::runtime_error("the OpenGL backend is not available on Android");
+#else
+    if (backend == Backend::OpenGL) return createGLDevice(config, window.glfw);
+#endif
     return createVKDevice(config, window);
 }
 

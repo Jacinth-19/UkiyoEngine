@@ -213,20 +213,20 @@
     "pcssMaxPenumbra": 0.35,
     "sky": true,
     "bloom": true,
-    "bloomStrength": 0.7,
+    "bloomStrength": 0.75,
     "bloomThreshold": 0.62,
     "outlines": true,
     "outlineScale": 1.0,
     "celBand": true,
     "tonemap": 3,
-    "exposure": 1.25,
+    "exposure": 1.35,
     "saturation": 1.08,
     "contrast": 1.02,
     "vignette": 0.34,
     "grain": 0.015,
     "ssao": 0.35,
     "contactShadows": 0.45,
-    "fogDensity": 0.028,
+    "fogDensity": 0.03,
     "sunDir": [
       -0.35,
       0.82,
@@ -236,9 +236,9 @@
     "aaMode": 1,
     "grid": false,
     "fogColor": [
-      0.055,
-      0.065,
-      0.115
+      0.03,
+      0.035,
+      0.07
     ],
     "skyZenith": [
       0.012,
@@ -254,14 +254,14 @@
     "stars": 0.9,
     "sunDisc": 0.0,
     "ambientSky": [
-      0.15,
-      0.18,
-      0.33
+      0.07,
+      0.085,
+      0.17
     ],
     "ambientGround": [
-      0.07,
-      0.06,
-      0.08
+      0.035,
+      0.03,
+      0.045
     ]
   },
   "lights": [
@@ -277,13 +277,13 @@
         0.72,
         1.0
       ],
-      "intensity": 0.6
+      "intensity": 0.75
     },
     {
       "type": "point",
       "position": [
         5.0,
-        1.4,
+        1.5,
         0.0
       ],
       "color": [
@@ -291,14 +291,14 @@
         0.62,
         0.28
       ],
-      "intensity": 3.2,
-      "radius": 5.0
+      "intensity": 5.2,
+      "radius": 7.0
     },
     {
       "type": "point",
       "position": [
         -5.0,
-        1.4,
+        1.5,
         0.0
       ],
       "color": [
@@ -306,8 +306,8 @@
         0.52,
         0.24
       ],
-      "intensity": 3.0,
-      "radius": 5.0
+      "intensity": 4.8,
+      "radius": 7.0
     },
     {
       "type": "point",
@@ -321,19 +321,19 @@
         0.32,
         0.22
       ],
-      "intensity": 2.2,
-      "radius": 6.0
+      "intensity": 3.8,
+      "radius": 8.0
     }
   ],
   "gameCamera": {
     "target": [
       0,
       1.15,
-      1.2
+      0.8
     ],
-    "distance": 8.4,
+    "distance": 10.2,
     "yaw": 0.3,
-    "pitch": 0.22,
-    "fovY": 0.6
+    "pitch": 0.2,
+    "fovY": 0.62
   }
 }

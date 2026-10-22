@@ -204,9 +204,20 @@ public:
     virtual void drawInstanced(uint32_t vertexCount, uint32_t instanceCount) = 0;
 };
 
+// A window the device presents to. Desktop fills `glfw`; Android fills `android` with the ANativeWindow the activity's
+// surface hands over. Two handles rather than a variant so this header needs neither GLFW nor <android/native_window.h>
+// on the platform that does not have it.
+struct NativeWindow {
+    GLFWwindow* glfw = nullptr;
+    void* android = nullptr;   // ANativeWindow*, Android only
+
+    bool valid() const { return glfw != nullptr || android != nullptr; }
+};
+
 // Creates a device for the requested backend. `window` may be null for headless
 // Vulkan; the GL backend always needs a current context (a hidden window works).
 std::unique_ptr<Device> createDevice(Backend backend, const DeviceConfig& config, GLFWwindow* window);
+std::unique_ptr<Device> createDevice(Backend backend, const DeviceConfig& config, const NativeWindow& window);
 
 // Where the compiled shaders are. The build compiles them into the directory baked in at configure time, which is what
 // a developer and every test use. A shipped game cannot use that path — it names a build tree on a machine the player
