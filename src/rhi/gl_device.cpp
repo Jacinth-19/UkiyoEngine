@@ -372,6 +372,9 @@ public:
         if (d.depthTest) glEnable(GL_DEPTH_TEST); else glDisable(GL_DEPTH_TEST);
         glDepthFunc(GL_LEQUAL);
         glDepthMask(d.depthWrite ? GL_TRUE : GL_FALSE);
+        // Wireframe is rasteriser state in GL rather than pipeline state: set it on every bind so a pipeline switch
+        // cannot leak it into the next draw.
+        glPolygonMode(GL_FRONT_AND_BACK, d.wireframe ? GL_LINE : GL_FILL);
         switch (d.blend) {
         case Blend::None: glDisable(GL_BLEND); break;
         case Blend::Alpha:

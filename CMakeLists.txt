@@ -43,6 +43,7 @@ if(ANDROID)
     src/engine/lights.cpp
     src/engine/build_manifest.cpp
     src/engine/scene_runtime.cpp
+    src/engine/async_load.cpp
     src/engine/text_atlas.cpp
     src/engine/msdf.cpp
     src/engine/hud.cpp
@@ -209,6 +210,9 @@ add_library(ukiyo_core STATIC
   src/engine/hud_renderer.cpp
   src/engine/build_manifest.cpp
   src/engine/scene_runtime.cpp
+  src/engine/async_load.cpp
+  src/engine/property_search.cpp
+  src/engine/search.cpp
   src/player/hud_layout.cpp
   src/engine/face.cpp
   src/engine/model.cpp
@@ -411,6 +415,22 @@ target_link_libraries(msdf_test PRIVATE glm::glm)
 target_compile_options(msdf_test PRIVATE ${UKIYO_WARNINGS})
 target_compile_definitions(msdf_test PRIVATE UKIYO_ROOT="${CMAKE_SOURCE_DIR}")
 
+# The figure in docs/WIREFRAME.md: one procedural scene drawn shaded and drawn as the edges of the same triangles, with
+# hidden lines removed by the scene's own depth buffer.
+add_executable(wireframe_preview tools/wireframe_preview.cpp)
+target_include_directories(wireframe_preview PRIVATE ${CMAKE_SOURCE_DIR}/src ${CMAKE_SOURCE_DIR}/third_party
+                             ${CMAKE_SOURCE_DIR}/tools)
+target_link_libraries(wireframe_preview PRIVATE glm::glm)
+target_compile_options(wireframe_preview PRIVATE ${UKIYO_WARNINGS})
+
+# The figure in docs/ASYNC_LOADING.md: what each frame pays while a scene loads, from the shipping scheduler with a fake
+# clock, so the bars are the numbers the code produces.
+add_executable(async_load_preview tools/async_load_preview.cpp src/engine/async_load.cpp)
+target_include_directories(async_load_preview PRIVATE ${CMAKE_SOURCE_DIR}/src ${CMAKE_SOURCE_DIR}/third_party
+                             ${CMAKE_SOURCE_DIR}/tools)
+target_link_libraries(async_load_preview PRIVATE glm::glm)
+target_compile_options(async_load_preview PRIVATE ${UKIYO_WARNINGS})
+
 # The figure in docs/MSDF.md: the shipping canvas laid out over a coverage page and a field page, drawn at sizes neither
 # was made for, and the measurements printed on the sheet.
 add_executable(msdf_preview tools/msdf_preview.cpp src/engine/msdf.cpp src/engine/text_atlas.cpp src/engine/hud.cpp)
@@ -489,6 +509,10 @@ target_link_libraries(vgeom_test PRIVATE glm::glm)
 target_compile_options(vgeom_test PRIVATE ${UKIYO_WARNINGS})
 
 add_executable(particles_gpu_test tests/particles_gpu_test.cpp)
+# The wireframe view (Flax 1.13): a quad drawn filled and drawn as its edges, on both backends, counted from the capture.
+add_executable(wireframe_test tests/wireframe_test.cpp)
+target_link_libraries(wireframe_test PRIVATE ukiyo_core)
+target_compile_options(wireframe_test PRIVATE ${UKIYO_WARNINGS})
 add_executable(water_render tests/water_render.cpp)
 target_link_libraries(water_render PRIVATE ukiyo_core)
 target_compile_options(water_render PRIVATE ${UKIYO_WARNINGS})
@@ -544,6 +568,18 @@ add_executable(save_test tests/save_test.cpp src/systems/save_game.cpp)
 target_include_directories(save_test PRIVATE ${CMAKE_SOURCE_DIR}/src)
 target_link_libraries(save_test PRIVATE glm::glm)
 target_compile_options(save_test PRIVATE ${UKIYO_WARNINGS_PEDANTIC})
+
+# The Inspector's search rule (Flax 1.13's Properties panel search): one query over a page of rows, which rows stay and
+# which sections survive. Pure C++ over strings, so it runs anywhere.
+add_executable(property_search_test tests/property_search_test.cpp src/engine/property_search.cpp src/engine/search.cpp)
+target_include_directories(property_search_test PRIVATE ${CMAKE_SOURCE_DIR}/src)
+target_compile_options(property_search_test PRIVATE ${UKIYO_WARNINGS_PEDANTIC})
+
+# Budgeted loading (Flax 1.11's async scene loading): the scheduler that decides how much of a scene one frame pays for,
+# driven by a fake clock so a budget is a number the test can hold it to.
+add_executable(async_load_test tests/async_load_test.cpp src/engine/async_load.cpp)
+target_include_directories(async_load_test PRIVATE ${CMAKE_SOURCE_DIR}/src)
+target_compile_options(async_load_test PRIVATE ${UKIYO_WARNINGS_PEDANTIC})
 
 # HUD text and layout. Needs the repository root for the test font.
 add_executable(hud_test tests/hud_test.cpp src/engine/text_atlas.cpp src/engine/msdf.cpp src/engine/hud.cpp)
@@ -665,6 +701,8 @@ if(UKIYO_EDITOR)
       editor/src/prefs_dialog.h
       editor/src/material_icons.h
       editor/src/main_window.h
+      editor/src/inspector_filter.cpp
+      editor/src/inspector_filter.h
       editor/src/inspector_ui.h)
     set_target_properties(ukiyo_editor PROPERTIES AUTOMOC ON CXX_STANDARD 17)
     target_include_directories(ukiyo_editor PRIVATE ${CMAKE_SOURCE_DIR}/editor/src)

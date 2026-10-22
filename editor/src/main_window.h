@@ -81,6 +81,7 @@ inline const QString kTerrainUndoKey = QStringLiteral("terrainUndo");
 
 namespace editor {
 
+class InspectorFilter;
 class LuaEditorDialog;
 class MaterialInspector;
 
@@ -303,9 +304,14 @@ private:
     void showPropertiesFor(QTreeWidgetItem* item);
     // The Inspector page. While the Inspector is locked, the current page stays read-only and new pages are dropped.
     void setInspectorPage(QWidget* page);
+    // Narrows the Inspector to the rows a query matches (Flax 1.13's Properties panel search). Runs over the widget
+    // tree the page builders produced, so every page gets it without knowing it exists.
+    void applyInspectorFilter();
     void setInspectorLocked(bool on);
     bool inspectorLocked_ = false;
     QToolButton* lockButton_ = nullptr;
+    QLineEdit* inspectorFilter_ = nullptr;      // the filter box above the page
+    editor::InspectorFilter inspectFilter_;      // the walk over the page's rows, shared with the screenshot mode
     void showNodeProperties(int node);
     void showCameraProperties(ukiyo::OrbitCamera* cam, const QString& title, const char* icon);
     void showLightProperties();
@@ -535,6 +541,7 @@ private:
     // Toolbar.
     QPushButton* playBtn_ = nullptr;
     QPushButton* pauseBtn_ = nullptr;
+    QAction* wireframeAction_ = nullptr;   // View > Wireframe: a view setting, never saved into the scene
 
     // Hierarchy and inspector.
     QTreeWidget* hierarchy_ = nullptr;

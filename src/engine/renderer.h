@@ -36,6 +36,10 @@ struct RenderSettings {
     float pcssSunTanRadius = 0.02f;    // the sun's angular radius as a tangent; 0.00465 is the real sun, 0.02 reads well
     float pcssSearchRadius = 0.25f;    // metres across the receiver the blocker search reads
     float pcssMaxPenumbra = 0.5f;      // metres; wider than this reads as a smudge, not a shadow
+    // Wireframe view (Flax 1.13's view): geometry passes are drawn as their edges, so the triangles, the LODs and the
+    // virtual-geometry cuts are visible instead of guessed at. Every fullscreen pass stays filled, and the shadow map
+    // stays solid. Off by default; toggling it rebuilds the pipelines once.
+    bool wireframe = false;
     bool depthPrepass = true;       // opaque toon draws write depth before the colour pass
     bool frustumCull = true;        // colour passes skip static draws outside the camera frustum
     bool vgeom = true;              // virtual geometry (item 21) for static primitives that have a tree
@@ -323,6 +327,7 @@ private:
 
     void rebuildTargets(uint32_t scale);
     void buildPipelines();
+    bool wireframe_ = false;        // the mode the current pipelines were built for
     void buildPostSets();
     std::unique_ptr<rhi::Texture> makeLutTexture(const uint8_t* rgba, uint32_t size = 16) const;   // size N: N*N x N strip
 

@@ -21,8 +21,8 @@ reachable today.
 | **Split-screen local co-op** | several cameras into one frame, per-viewport GUI | reachable; the post pass already carries a split direction for the debug view, which is not the same thing |
 | Reversed-Z | depth precision rearrangement | not now: it touches every depth test, both backends and the shadow comparison |
 | .NET 10 / C# 14 | the scripting runtime | not applicable — this engine's scripts are Lua |
-| Properties panel search | filter the inspector | small and worth doing when the inspector next changes |
-| Wireframe view | a new debug view | the engine has a depth/normal/outline view set; a wireframe pass is cheap to add |
+| Properties panel search | filter the inspector | **done** — the browser's grammar over the Inspector's rows ([docs/INSPECTOR_SEARCH.md](INSPECTOR_SEARCH.md)) |
+| Wireframe view | a new debug view | **done** — `rhi::PipelineDesc::wireframe`, View > Wireframe ([docs/WIREFRAME.md](WIREFRAME.md)) |
 | Audio device detection | enumeration at run time | miniaudio already enumerates; presenting it in the editor is UI work |
 | GI half-res + bilateral upscale | cheaper probe/trace resolution | the traced bounce already runs at half resolution |
 
@@ -37,7 +37,7 @@ reachable today.
 | 1.12 | Optional linear colour space | not present: the pipeline is display-referred after the tonemap |
 | 1.11 | **Custom shading models** | partly: the toon model is fixed, the shader graph composes fragments, not BRDFs |
 | 1.11 | Decal layers via stencil | not present |
-| 1.11 | Async scene loading with a time budget | not present |
+| 1.11 | Async scene loading with a time budget | **done** — `src/engine/async_load.h`, `--load-budget` ([docs/ASYNC_LOADING.md](ASYNC_LOADING.md)) |
 | 1.10 | Variable mesh vertex layout, 4 UVs, 65 535 bones | the loader is fixed-layout, 2 UVs, 256 joints |
 
 ## 3. The order this engine's situation argues for

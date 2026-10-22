@@ -44,7 +44,12 @@ Plus the offline tools, which are part of the build rather than a separate scrip
 | Alpha-coverage-preserving mipmaps (GH-104289): one fixed mip level per column, the plain box filter on the top row and the preserved chain below it. Coverage holds at 0.37 instead of collapsing to 0.007, so the cut-out does not dissolve ([docs/ALPHA_MIPS.md](docs/ALPHA_MIPS.md)). | The 131 072-triangle Terrain Lab tile built into a virtual-geometry cluster tree, cut at 1 px and 8 px ([docs/VGEOM.md](docs/VGEOM.md)). |
 | ![Grass scatter](docs/grass-scatter-preview.png) | ![Project browser zoom and glob search](docs/browser-qol.png) |
 | Grass scatter over the terrain, drawn by `grass_scatter_preview` from the same bands the engine uses ([docs/GRASS.md](docs/GRASS.md)). | The Project browser's two new gestures (GH-119103): six of the thirteen thumbnail stops drawn at their real pixel size, and eight glob queries run through the engine's matcher against the asset list above them — 23 matches, computed by `browser_qol_preview` ([docs/FILESYSTEM.md](docs/FILESYSTEM.md)). |
-| ![MSDF text](docs/msdf.png) | ![PCSS](docs/pcss.png) |
+| ![Inspector search](docs/inspector-search.png) | ![Wireframe](docs/wireframe.png) |
+| The Inspector's search (Flax 1.13): a query typed into the box narrows four foldouts to the rows it matches, opens the section with the hit, and puts everything back when it is cleared — drawn by the editor itself ([docs/INSPECTOR_SEARCH.md](docs/INSPECTOR_SEARCH.md)). | The wireframe view (Flax 1.13): one scene of 428 triangles, shaded and drawn as its edges, hidden lines removed by the same depth buffer. 67.5 % of the panel filled, 3.15 % as edges ([docs/WIREFRAME.md](docs/WIREFRAME.md)). |
+| ![Loading with a frame budget](docs/async-loading.png) | ![MSDF text](docs/msdf.png) |
+| Loading with a frame budget (Flax 1.11): 95 ms of scene loading in one frame without a budget, and spread over nine frames with one, worst 21 ms. The bars are the shipping scheduler's own decisions ([docs/ASYNC_LOADING.md](docs/ASYNC_LOADING.md)). | Multi-channel distance fields (Flax 1.12): the same layout from a page rasterised at one size (left) and from a field (right), drawn at 12, 20, 40 and 96 px. The field is 0.014 texels from the exact outline ([docs/MSDF.md](docs/MSDF.md)). |
+| ![PCSS](docs/pcss.png) | |
+| Percentage-closer soft shadows (Flax 1.13): one shadow map filtered three ways, against 64 rays over the sun's disc. Mean error in the penumbra: 0.266 hard, 0.066 for the fixed filter at its swept best radius, 0.055 for PCSS ([docs/PCSS.md](docs/PCSS.md)). | |
 | Multi-channel distance fields (Flax 1.12): the same layout from a page rasterised at one size (left) and from a field (right), drawn at 12, 20, 40 and 96 px, with the field's three channels beside the measurements. The field is 0.014 texels from the exact outline and 0.022 from a rasterisation at 12 px; the coverage page is 0.134 of full coverage wrong when drawn at twice its size ([docs/MSDF.md](docs/MSDF.md)). | Percentage-closer soft shadows (Flax 1.13): one shadow map filtered three ways, against 64 rays over the sun's disc. Mean error in the penumbra: 0.266 hard, 0.066 for the fixed filter at its swept best radius, 0.055 for PCSS ([docs/PCSS.md](docs/PCSS.md)). |
 | Percentage-closer soft shadows (Flax 1.13): one shadow map filtered three ways — the map's own single tap, a fixed-radius PCF swept and handed its best radius, and PCSS — each measured against 64 rays over the sun's disc, with the visibility along a floor line crossing the crate's shadow edge at the bottom right. Mean error in the penumbra: 0.266 hard, 0.066 for the tuned fixed filter, 0.055 for PCSS ([docs/PCSS.md](docs/PCSS.md)). | |
 
@@ -146,6 +151,19 @@ Vulkan backend and an OpenGL backend; `--backend gl` selects the latter.
   growing bias and a thickness that keeps the result at contact scale instead of turning into a second shadow map. No per-
   light target, no dispatch, no blur: one loop in `effects.frag`, on the pixels whose normal faces the sun. The figure's
   frame darkens 86 % of its contact band and touches 0.43 % of the lit pixels ([docs/CONTACT_SHADOWS.md](docs/CONTACT_SHADOWS.md)).
+* **An Inspector that can be searched** (Flax 1.13's Properties panel search): a filter box above the Inspector, speaking
+  the Project browser's own grammar — every word must match, a word can be a glob, a word can be a value, `-word` removes
+  what it matches — over row labels, section names and the values themselves. A section survives only when one of its
+  rows does, and opens so the hit is visible. The rule is engine code with 46 checks behind it; the live panel and the
+  figure are the same widget walk ([docs/INSPECTOR_SEARCH.md](docs/INSPECTOR_SEARCH.md)).
+* **A wireframe view** (Flax 1.13): `View > Wireframe` draws the geometry passes as the edges of the triangles actually
+  submitted, leaving every fullscreen pass and the shadow map solid. One flag on the RHI's pipeline description, backed by
+  `fillModeNonSolid` on Vulkan and `glPolygonMode` on GL, and a device test that checks every lit pixel lies on the
+  geometry's own edge ([docs/WIREFRAME.md](docs/WIREFRAME.md)).
+* **Loading with a frame budget** (Flax 1.11's async scene loading): a scene's models are queued as steps and a frame
+  runs only as many as its budget pays for — a step runs whole or not at all, so no half-built model is ever drawn, and a
+  step that costs more than the whole budget is counted rather than hidden. 95 ms of loading becomes nine frames of
+  nothing worse than 21 ms ([docs/ASYNC_LOADING.md](docs/ASYNC_LOADING.md)).
 * **Multi-channel signed distance fields for text** (Flax 1.12's MSDF fonts): one glyph page generated at 40 px and
   sharp at every size, because it stores the distance to the outline rather than the outline's pixels. Three channels,
   and the renderer takes their median, which is what keeps a corner a corner instead of rounding it. The field tracks
@@ -346,6 +364,9 @@ own glslang package is generated with a broken SPIRV-Tools path; everything else
 | [docs/CONTACT_SHADOWS.md](docs/CONTACT_SHADOWS.md) | the contact-shadow march: parameters, why per pixel, and what the test pins |
 | [docs/PCSS.md](docs/PCSS.md) | percentage-closer soft shadows: the two passes, the receiver slope, the foreshortening, the numbers |
 | [docs/MSDF.md](docs/MSDF.md) | multi-channel distance fields for text: the colouring rule, the shader's one line, the measurements |
+| [docs/INSPECTOR_SEARCH.md](docs/INSPECTOR_SEARCH.md) | the Inspector's search: words, globs, values, negation, and what happens to a section |
+| [docs/WIREFRAME.md](docs/WIREFRAME.md) | the wireframe view: one flag, two backends, and why the fullscreen passes stay filled |
+| [docs/ASYNC_LOADING.md](docs/ASYNC_LOADING.md) | loading with a frame budget: whole steps, measured budgets, counted overruns |
 | [docs/FLAX.md](docs/FLAX.md) | Flax 1.10–1.13 surveyed: what this engine has, what it can take, and in what order |
 | [docs/ALPHA_MIPS.md](docs/ALPHA_MIPS.md) | alpha-coverage-preserving mipmaps: the measurement, the search, and the chain upload |
 | [docs/TRAIL.md](docs/TRAIL.md) | trail ribbons: sections, the width curve and gradient, the alignment and tiling modes, the test |

@@ -154,6 +154,10 @@ void Renderer::buildPipelines() {
         d.blend = blend;
         d.colorFormats = std::move(colors);
         d.hasDepth = hasDepth;
+        // A wireframe view turns the geometry passes into their edges and leaves every fullscreen pass alone: a post
+        // shader in line mode would draw two long triangles. The shadow map stays solid, so the picture keeps its
+        // contact shadows where a surface is shaded at all.
+        d.wireframe = wireframe_ && std::string(vs) != "fullscreen" && std::string(vs) != "shadow";
         return dev_.createPipeline(d);
     };
     using S = rhi::SetType;
@@ -601,6 +605,11 @@ void Renderer::render(const OrbitCamera& cam, const std::vector<Model*>& models,
     triangles_ = 0;
     trailTriangles_ = 0;
     vgeomStats_ = VGeomStats{};
+    // The wireframe view is pipeline state, so the pipelines are built once per change rather than once per frame.
+    if (wireframe_ != s.wireframe) {
+        wireframe_ = s.wireframe;
+        buildPipelines();
+    }
     // Smear input: each model's hips displacement since the last render call (world units). The hips
     // carry the animated motion; the root only moves when the app moves the model.
     motionDisp_.clear();

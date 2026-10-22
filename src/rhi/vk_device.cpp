@@ -559,7 +559,7 @@ public:
         vp.viewportCount = 1;
         vp.scissorCount = 1;
         VkPipelineRasterizationStateCreateInfo rs{VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO};
-        rs.polygonMode = VK_POLYGON_MODE_FILL;
+        rs.polygonMode = desc.wireframe ? VK_POLYGON_MODE_LINE : VK_POLYGON_MODE_FILL;
         rs.lineWidth = 1.0f;
         rs.cullMode = desc.cull == Cull::None ? VK_CULL_MODE_NONE : desc.cull == Cull::Back ? VK_CULL_MODE_BACK_BIT : VK_CULL_MODE_FRONT_BIT;
         // GL-style projection with a positive viewport: Vulkan framebuffer space has
@@ -951,6 +951,10 @@ private:
         f2.pNext = &f13;
         vkGetPhysicalDeviceFeatures2(core_.phys, &f2);
         if (!f13.dynamicRendering) throw std::runtime_error("device lacks dynamicRendering");
+        // Wireframe needs the non-solid fill mode. It is optional in Vulkan, though every desktop driver and lavapipe
+        // have it; a device without it can still run everything else, so a wireframe pipeline is refused rather than
+        // the device.
+        fillModeNonSolid_ = f2.features.fillModeNonSolid == VK_TRUE;
 
         std::vector<const char*> devExts;
         if (core_.surface) devExts.push_back(VK_KHR_SWAPCHAIN_EXTENSION_NAME);
@@ -963,8 +967,11 @@ private:
         qi.queueFamilyIndex = core_.qfamily;
         qi.queueCount = 1;
         qi.pQueuePriorities = &prio;
+        VkPhysicalDeviceFeatures base{};
+        base.fillModeNonSolid = fillModeNonSolid_ ? VK_TRUE : VK_FALSE;
         VkDeviceCreateInfo dci{VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO};
         dci.pNext = &enable13;
+        dci.pEnabledFeatures = &base;
         dci.queueCreateInfoCount = 1;
         dci.pQueueCreateInfos = &qi;
         dci.enabledExtensionCount = static_cast<uint32_t>(devExts.size());
@@ -1116,6 +1123,7 @@ public:
     // Instance-level members declared after methods for readability.
     GLFWwindow* window_ = nullptr;
     VKCore core_;
+    bool fillModeNonSolid_ = false;   // the device supports VK_POLYGON_MODE_LINE, so wireframe pipelines are possible
     bool headless_ = false;
     uint32_t width_ = 0, height_ = 0;
     uint32_t passW_ = 0, passH_ = 0;

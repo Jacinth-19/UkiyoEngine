@@ -131,6 +131,11 @@ struct PipelineDesc {
     std::vector<SetType> sets;
     bool vertexInput = false;     // true -> Vertex layout, false -> fullscreen/procedural
     Cull cull = Cull::Back;
+    // Draw triangles as their edges (a debug wireframe view). Vulkan wants the fillModeNonSolid feature, GL wants
+    // glPolygonMode; both are core and both are what the engine's wireframe view uses. Line rasterisation is one pixel
+    // wide on every driver this engine targets, which is the point of it: you can see the geometry, not an antialiasing
+    // sample of it.
+    bool wireframe = false;
     bool depthTest = false;
     bool depthWrite = false;
     Blend blend = Blend::None;

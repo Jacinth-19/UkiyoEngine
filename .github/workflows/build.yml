@@ -157,6 +157,12 @@ jobs:
       # measured against 64 rays over the sun's disc.
       - name: Render the PCSS figure
         run: mkdir -p renders && ./build/pcss_preview renders/pcss.png 1600 1000
+      # The wireframe figure: one procedural scene drawn shaded and drawn as the edges of the same 428 triangles.
+      - name: Render the wireframe figure
+        run: mkdir -p renders && ./build/wireframe_preview --out renders/wireframe.png
+      # The loading figure: what each frame pays while a scene loads, with and without a budget.
+      - name: Render the loading figure
+        run: mkdir -p renders && ./build/async_load_preview --out renders/async-loading.png
       # The MSDF figure: a coverage page and a field page drawn at sizes neither was made for, with the measurements.
       - name: Render the MSDF figure
         run: mkdir -p renders && ./build/msdf_preview --out renders/msdf.png --font editor/res/fonts/IBMPlexSansJP-Regular.ttf
@@ -177,10 +183,23 @@ jobs:
             ./build/$t 2>&1 | tee /tmp/ukiyo-test-$t.log
             echo "::endgroup::"
           done
+      # The Inspector's search, drawn by the program itself: the real filter box, the real row widgets and the real
+      # narrowing. Typed query "shadow" over a page of four sections.
+      - name: Capture the Inspector search
+        run: |-
+          mkdir -p renders
+          QT_QPA_PLATFORM=offscreen ./build/ukiyo_editor --screenshot-inspector shadow --out renders/inspector-search.png
       # The player binary itself, booting the fixture project with no window, no GPU and no sound device: the same
       # start, tick and HUD path main.cpp takes. This is the check that the Build page's output actually runs.
       - name: Run Player Self-Test
         run: ./build/ukiyo_player --selftest --build Build/build.json --project tests/fixtures/player
+      # The same boot with a 2 ms frame budget for loading: the scene arrives over several frames instead of one stall.
+      # The run fails if the load never completes, which is what a budget that is never spent would do.
+      - name: Run Player With a Load Budget
+        run: |-
+          set -o pipefail
+          ./build/ukiyo_player --headless --seconds 4 --load-budget 2 --build Build/build.json --project tests/fixtures/player 2>&1 | tee /tmp/ukiyo-player-budget.log
+          grep -q "player: loaded" /tmp/ukiyo-player-budget.log
       # The figure in docs/PLAYER.md, from the shipping layout. It renders the HUD with the same vertex list the GPU gets.
       - name: Render the player HUD figure
         run: mkdir -p renders && ./build/hud_preview --out renders/player-hud.png --background docs/terrain-hero.png
@@ -192,6 +211,18 @@ jobs:
       # fragment shader's ramp, windowed falloff and cone. It also exercises the light packing in a real run.
       - name: Render the lights figure
         run: mkdir -p renders && ./build/lights_preview --out renders/lights.png --font editor/res/fonts/IBMPlexSansJP-Regular.ttf
+      # The Inspector's search rule (Flax 1.13's Properties panel search): one query over a page of rows, which rows stay
+      # and which sections survive. Pure C++ over strings, so it runs anywhere.
+      - name: Run Property Search Test
+        run: |-
+          set -o pipefail
+          ./build/property_search_test 2>&1 | tee /tmp/ukiyo-test-property_search_test.log
+      # Budgeted loading (Flax 1.11's async scene loading): the scheduler that decides how much of a scene one frame pays
+      # for, driven by a fake clock so a budget is a number the test can hold it to.
+      - name: Run Async Load Test
+        run: |-
+          set -o pipefail
+          ./build/async_load_test 2>&1 | tee /tmp/ukiyo-test-async_load_test.log
       # The input runtime, its asset format and its actions, driven from synthetic devices: no window, no GPU, no GLFW.
       # It checks press/hold/tap/multitap, 1D and 2D composites, processors, control schemes, rebinding, and that the
       # .inputactions file the engine writes loads back byte-for-byte. docs/INPUT.md.
@@ -284,9 +315,13 @@ jobs:
           cp renders/splash_mark.png docs/splash-mark.png
           cp renders/script-editor.png docs/script-editor.png
           cp renders/scripting-tools.png docs/scripting-tools.png
+          cp renders/inspector-search.png docs/inspector-search.png
+          cp renders/wireframe.png docs/wireframe.png
+          cp renders/async-loading.png docs/async-loading.png
           git config user.name "ukiyo-ci"
           git config user.email "ci@ukiyo.invalid"
-          git add docs/hub docs/splash-capture.png docs/splash-mark.png docs/script-editor.png docs/scripting-tools.png
+          git add docs/hub docs/splash-capture.png docs/splash-mark.png docs/script-editor.png docs/scripting-tools.png \
+            docs/inspector-search.png docs/wireframe.png docs/async-loading.png
           if git diff --cached --quiet; then echo "no change"; exit 0; fi
           # actions/checkout leaves a detached HEAD, so there is no branch to push to: name the ref explicitly, and
           # rebase first in case another push landed while this job was building. The fetch names the remote-tracking
@@ -399,7 +434,7 @@ jobs:
           # endfield_scene_test and endfield_gpu_test need assets/personal (the author's own character assets), which
           # .gitignore keeps out of the repository; they run where those assets exist and are skipped here rather than
           # counted as passing.
-          for t in endfield_shader_test lod_gpu_test particles_gpu_test; do
+          for t in endfield_shader_test lod_gpu_test particles_gpu_test wireframe_test; do
             echo "::group::$t"
             if xvfb-run -a ./build/$t 2>&1 | tee /tmp/ukiyo-gpu-$t.log; then
               echo "::endgroup::"
@@ -585,6 +620,7 @@ jobs:
           $failed = @()
           foreach ($t in @("systems_test", "script_test", "network_test", "project_test", "vgeom_test", "motion_test", "gi_test", "input_test", "trail_test", "search_test", "browser_zoom_test", "ao_test",
                     "contact_shadow_test", "pcss_test", "msdf_test", "alpha_mips_test", "transform_test", "lights_test", "save_test",
+                    "property_search_test", "async_load_test",
                     "manifest_test", "scene_runtime_test", "hud_test", "character_test", "player_test")) {
             Write-Host "::group::$t"
             # script_test keeps a trace in a file as well as on stdout: a process that dies on Windows has been seen to

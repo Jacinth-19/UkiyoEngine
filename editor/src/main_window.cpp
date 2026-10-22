@@ -4,6 +4,7 @@
 
 #include "scripting_tools.h"
 
+#include "engine/property_search.h"
 #include "engine/script_project.h"
 
 #include <algorithm>
@@ -42,6 +43,7 @@
 
 #include <QTemporaryDir>
 #include "foldout.h"
+#include "inspector_filter.h"
 #include "inspector_ui.h"
 #include "prefs_dialog.h"
 #include "input/rebind.h"
@@ -969,6 +971,23 @@ void MainWindow::buildDocks() {
     QVBoxLayout* inspectorLayout = new QVBoxLayout(inspectorHolder);
     inspectorLayout->setContentsMargins(0, 0, 0, 0);
     inspectorLayout->setSpacing(0);
+    QHBoxLayout* filterRow = new QHBoxLayout;
+    filterRow->setContentsMargins(6, 3, 6, 0);
+    inspectorFilter_ = new QLineEdit;
+    inspectorFilter_->setObjectName(QStringLiteral("inspectorFilter"));
+    inspectorFilter_->setPlaceholderText(QStringLiteral("Filter properties"));
+    inspectorFilter_->setClearButtonEnabled(true);
+    inspectorFilter_->setToolTip(QStringLiteral("Narrows the Inspector to rows whose label, section or value matches "
+                                                "every word. Glob patterns work, and -word removes what it matches."));
+    filterRow->addWidget(inspectorFilter_);
+    inspectorLayout->addLayout(filterRow);
+    inspectFilter_.setBox(inspectorFilter_);
+    connect(inspectorFilter_, &QLineEdit::textChanged, this, [this](const QString&) { applyInspectorFilter(); });
+    // Escape empties the box from inside it, which is where the hand already is.
+    auto* clearFilter = new QShortcut(QKeySequence(Qt::Key_Escape), inspectorFilter_);
+    clearFilter->setContext(Qt::WidgetShortcut);
+    connect(clearFilter, &QShortcut::activated, inspectorFilter_, &QLineEdit::clear);
+
     QHBoxLayout* lockRow = new QHBoxLayout;
     lockRow->setContentsMargins(6, 3, 6, 3);
     lockRow->addStretch(1);
@@ -1941,6 +1960,11 @@ void MainWindow::buildMenus() {
     edit->addSeparator();
     add(edit, "Preferences...", QKeySequence(), uiIcon("settings"), &MainWindow::openPreferences);
     add(edit, "Find and Replace...", QKeySequence(Qt::CTRL | Qt::Key_H), uiIcon("edit"), &MainWindow::openFindReplace);
+    add(edit, "Find in Inspector", QKeySequence(QStringLiteral("Ctrl+Shift+F")), uiIcon("search"), [this] {
+        if (!inspectorFilter_) return;
+        inspectorFilter_->setFocus(Qt::ShortcutFocusReason);
+        inspectorFilter_->selectAll();
+    });
     add(edit, "Project Settings...", QKeySequence(), uiIcon("tune"), &MainWindow::openProjectSettings);
     edit->addSeparator();
     add(edit, "Reset Camera", QKeySequence("R"), uiIcon("home"), &MainWindow::resetViewportCamera);
@@ -1970,6 +1994,18 @@ void MainWindow::buildMenus() {
     view->addSeparator();
     add(view, "Play / Pause", QKeySequence(Qt::Key_Space), uiIcon("play_arrow"), &MainWindow::togglePlayback);
     add(view, "Back to Start", QKeySequence(Qt::Key_Home), uiIcon("skip_previous"), &MainWindow::resetTime);
+    view->addSeparator();
+    // Wireframe (Flax 1.13's view): the geometry passes drawn as their edges. A view setting, so it is not written into
+    // the scene and does not follow the project; the render worker reads it from the settings it is handed each frame.
+    wireframeAction_ = view->addAction(uiIcon("grid_4x4"), "Wireframe", this, [this](bool on) {
+        settings_.wireframe = on;
+        statusBar()->showMessage(on ? QStringLiteral("Wireframe view") : QStringLiteral("Shaded view"), 3000);
+        renderWanted_ = true;
+    });
+    wireframeAction_->setCheckable(true);
+    wireframeAction_->setShortcut(QKeySequence(QStringLiteral("Ctrl+Shift+W")));
+    shortcuts_.push_back(ShortcutEntry{QStringLiteral("view.wireframe"), QStringLiteral("Wireframe"), wireframeAction_,
+                                       QKeySequence(QStringLiteral("Ctrl+Shift+W"))});
     view->addSeparator();
     QMenu* browserMenu = view->addMenu(uiIcon("folder"), "Content Browser");
     add(browserMenu, "Icon View", QKeySequence(), uiIcon("grid_view"), [this] { setBrowserView(0); });
@@ -2991,6 +3027,18 @@ void MainWindow::setInspectorPage(QWidget* page) {
         return;
     }
     inspector_->setWidget(page);
+    // A page rebuilt under an active query stays narrowed, which is what makes the box usable while clicking around.
+    if (inspectorFilter_ && !inspectorFilter_->text().isEmpty()) applyInspectorFilter();
+}
+
+void MainWindow::applyInspectorFilter() {
+    QWidget* page = inspector_->widget();
+    if (!page) return;
+    // The walk over the page's rows is editor::InspectorFilter: one implementation, shared with the screenshot mode.
+    const size_t shown = inspectFilter_.apply(page);
+    if (inspectFilter_.query().isEmpty()) return;
+    if (shown == 0)
+        statusBar()->showMessage(QStringLiteral("No property matches \"%1\"").arg(inspectFilter_.query()), 4000);
 }
 
 void MainWindow::setInspectorLocked(bool on) {
@@ -13274,6 +13322,56 @@ int MainWindow::runSelfTest() {
         check(lights_.size() == 1 && lights_[0].type == ukiyo::LightType::Spot, "lights: Delete Light removes that light");
         check(readScene(one) && lights_.empty(), "lights: opening a scene without lights clears them");
         QFile::remove(tmpLi);
+    }
+
+    // --- 20. Inspector search (Flax 1.13's Properties panel search): the box above the page narrows it to the rows the
+    // query matches, section by section, opens a section whose rows matched, and puts everything back when cleared.
+    {
+        QWidget* page = new QWidget;
+        QVBoxLayout* v = new QVBoxLayout(page);
+        QFormLayout* light = editor::addSection(v, QStringLiteral("Lighting"));
+        QLabel* sunAngle = new QLabel(QStringLiteral("32"));
+        QLabel* shadowSoft = new QLabel(QStringLiteral("0.35"));
+        light->addRow(QStringLiteral("Sun Angle"), sunAngle);
+        light->addRow(QStringLiteral("Shadow Softness"), shadowSoft);
+        QFormLayout* render = editor::addSection(v, QStringLiteral("Render"));
+        QLabel* exposure = new QLabel(QStringLiteral("0.85"));
+        render->addRow(QStringLiteral("Exposure"), exposure);
+        setInspectorPage(page);
+        const QList<editor::Foldout*> folds = page->findChildren<editor::Foldout*>();
+        check(folds.size() == 2 && folds[0]->title() == QStringLiteral("Lighting") &&
+                  folds[1]->title() == QStringLiteral("Render"),
+              "inspector search: the page reports its two sections");
+
+        inspectorFilter_->setText(QStringLiteral("sun"));
+        check(folds[0]->isVisibleTo(page) && !folds[1]->isVisibleTo(page),
+              "inspector search: only the section with a match stays");
+        check(sunAngle->isVisibleTo(page) && !shadowSoft->isVisibleTo(page),
+              "inspector search: the matching row shows, the other hides");
+        check(folds[0]->isOpen(), "inspector search: a matched section is open, whatever it was before");
+
+        inspectorFilter_->setText(QStringLiteral("0.35"));
+        check(shadowSoft->isVisibleTo(page) && !sunAngle->isVisibleTo(page),
+              "inspector search: a value is searchable, not just a label");
+
+        inspectorFilter_->setText(QStringLiteral("xylophone"));
+        check(!folds[0]->isVisibleTo(page) && !folds[1]->isVisibleTo(page),
+              "inspector search: a query that matches nothing hides every section");
+
+        inspectorFilter_->clear();
+        check(sunAngle->isVisibleTo(page) && shadowSoft->isVisibleTo(page) && exposure->isVisibleTo(page) &&
+                  folds[0]->isVisibleTo(page) && folds[1]->isVisibleTo(page),
+              "inspector search: clearing the box restores every row and section");
+
+        bool bound = false;
+        QString key;
+        for (QAction* a : findChildren<QAction*>())
+            if (a->text() == QLatin1String("Find in Inspector")) {
+                bound = true;
+                key = a->shortcut().toString(QKeySequence::PortableText);
+            }
+        check(bound && key == QLatin1String("Ctrl+Shift+F"), "inspector search: Find in Inspector is bound to Ctrl+Shift+F",
+              key);
     }
 
     std::printf("selftest: %d passed, %d failed\n", passed, failed);

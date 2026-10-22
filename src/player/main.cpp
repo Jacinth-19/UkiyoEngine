@@ -3,6 +3,8 @@
 //   ukiyo_player --build Build/build.json --project .            windowed (Vulkan by default)
 //   ukiyo_player --backend gl                                    force OpenGL
 //   ukiyo_player --headless --shot out/player.png --seconds 3    render a fixed number of seconds and capture
+//   ukiyo_player --load-budget 2                                 load the scene with a 2 ms budget per frame
+//   ukiyo_player --wireframe                                     draw the geometry as its edges
 //   ukiyo_player --selftest                                      headless logic check, no GPU
 //
 // The editor used to be the only way to see a scene, with its docks, gizmos and debug overlays. This is the other half of
@@ -12,6 +14,7 @@
 #include <chrono>
 #include <cmath>
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <exception>
 #include <memory>
@@ -21,6 +24,7 @@
 #include <GLFW/glfw3.h>
 #include <glm/gtc/matrix_transform.hpp>
 
+#include "engine/async_load.h"
 #include "engine/camera.h"
 #include "engine/hud.h"
 #include "engine/model.h"
@@ -40,6 +44,8 @@ struct Options {
     bool headless = false;
     bool selftest = false;
     bool hud = true;
+    bool wireframe = false;   // --wireframe: the debug view, for a screenshot or a look at the geometry
+    double loadBudgetMs = 0.0;   // --load-budget: milliseconds of scene loading a frame may pay for (0 = all at once)
     std::string shot;
     float seconds = 0.0f;
 };
@@ -60,6 +66,12 @@ Options parseArgs(int argc, char** argv) {
         } else if (a == "--headless") o.headless = true;
         else if (a == "--selftest") o.selftest = true;
         else if (a == "--no-hud") o.hud = false;
+        else if (a == "--wireframe") o.wireframe = true;
+        else if (a == "--load-budget") {
+            std::string ms;
+            next(&ms);
+            o.loadBudgetMs = std::max(0.0, std::atof(ms.c_str()));
+        }
         else if (a == "--shot") {
             next(&o.shot);
             o.headless = true;
@@ -69,7 +81,8 @@ Options parseArgs(int argc, char** argv) {
             o.seconds = std::stof(s);
         } else if (a == "--help" || a == "-h") {
             std::printf("usage: ukiyo_player [--build Build/build.json] [--project dir] [--backend vk|gl]\n"
-                        "                    [--headless --shot out.png --seconds N] [--no-hud] [--selftest]\n");
+                        "                    [--headless --shot out.png --seconds N] [--no-hud] [--selftest]\n"
+                        "                    [--load-budget MS] [--wireframe]\n");
             std::exit(0);
         }
     }
@@ -205,30 +218,45 @@ int main(int argc, char** argv) {
         std::vector<std::unique_ptr<ukiyo::Model>> models;
         std::vector<size_t> modelForInstance;
         uint32_t loadedGeneration = UINT32_MAX;
-        auto reloadModels = [&]() {
-            models.clear();
-            modelForInstance.assign(app.instances().size(), SIZE_MAX);
-            for (size_t i = 0; i < app.instances().size(); ++i) {
-                const ukiyo::PlayerInstance& in = app.instances()[i];
-                if (in.modelPath.empty()) continue;
-                ukiyo::ModelLoadOptions mo;
-                mo.preserveAlphaTestCoverage = true;
-                try {
-                    models.push_back(ukiyo::loadModel(*device, in.modelPath, mo));
-                } catch (const std::exception& e) {
-                    std::fprintf(stderr, "player: %s: %s\n", in.modelPath.c_str(), e.what());
-                    continue;
-                }
-                modelForInstance[i] = models.size() - 1;
-                loadedGeneration = app.sceneGeneration();
-            }
+        // Loading, with or without a frame budget (Flax 1.11's async scene loading). A model is one step: loaded whole
+        // or not at all, so a frame that runs out of budget never leaves a half-built model behind, and the next frame
+        // carries on from the instance it stopped at. A budget of 0 is the synchronous path — the scene is ready before
+        // the first frame, which is what the self-test and a still frame want.
+        ukiyo::BudgetedLoader sceneLoader;
+        uint32_t loadGeneration = 0;   // the generation the queued steps belong to
+        const auto finishLoad = [&] {
             // LOD switches are authored per instance; apply them once, after loading.
             for (size_t i = 0; i < app.instances().size(); ++i) {
                 if (modelForInstance[i] == SIZE_MAX) continue;
                 const auto& lod = app.scene().instances[i].lod;
                 if (!lod.empty()) ukiyo::buildModelLods(*device, *models[modelForInstance[i]], lod);
             }
+            loadedGeneration = loadGeneration;
         };
+        auto beginModelLoad = [&]() {
+            loadGeneration = app.sceneGeneration();
+            sceneLoader.cancel();
+            models.clear();   // steps below capture this vector; clearing it first is what makes a reload a reload
+            modelForInstance.assign(app.instances().size(), SIZE_MAX);
+            for (size_t i = 0; i < app.instances().size(); ++i) {
+                const ukiyo::PlayerInstance in = app.instances()[i];
+                if (in.modelPath.empty()) continue;
+                sceneLoader.push(in.modelPath, [&, i, in] {
+                    ukiyo::ModelLoadOptions mo;
+                    mo.preserveAlphaTestCoverage = true;
+                    try {
+                        models.push_back(ukiyo::loadModel(*device, in.modelPath, mo));
+                    } catch (const std::exception& e) {
+                        std::fprintf(stderr, "player: %s: %s\n", in.modelPath.c_str(), e.what());
+                        return;
+                    }
+                    modelForInstance[i] = models.size() - 1;
+                });
+            }
+            sceneLoader.push("finish", finishLoad);
+            if (opt.loadBudgetMs <= 0.0) sceneLoader.runAll();
+        };
+        auto reloadModels = [&]() { beginModelLoad(); };   // budgeted loads finish in the frame loop
 
         // Mouse orbit is polled from the window each frame; a game that needs deltas can add callbacks on top.
         bool dragging = false;
@@ -242,6 +270,10 @@ int main(int argc, char** argv) {
         auto last = startTime;
         float capturedSeconds = 0.0f;
         std::vector<uint8_t> shot;
+        // The scene's settings for this run, with the one the command line is allowed to override: a debug view belongs
+        // to the person looking at the frame, not to the project.
+        ukiyo::RenderSettings frameSettings = app.scene().settings;
+        frameSettings.wireframe = opt.wireframe;
 
         while (app.running()) {
             const auto now = std::chrono::steady_clock::now();
@@ -289,15 +321,29 @@ int main(int argc, char** argv) {
             }
             if (window && glfwGetKey(window, GLFW_KEY_ESCAPE) == GLFW_PRESS) app.requestQuit();
 
-            if (app.sceneGeneration() != loadedGeneration) {
+            if (app.sceneGeneration() != loadedGeneration && sceneLoader.empty()) {
                 reloadModels();
                 renderer.setSceneLights(app.scene().lights);
+                // A scene switch brings its own render settings; the debug view is still the one the command line asked
+                // for, because it is not part of the scene.
+                frameSettings = app.scene().settings;
+                frameSettings.wireframe = opt.wireframe;
             }
 
             app.tick(dt);
-            if (app.sceneGeneration() != loadedGeneration) {
+            if (app.sceneGeneration() != loadedGeneration && sceneLoader.empty()) {
                 reloadModels();
                 renderer.setSceneLights(app.scene().lights);
+            }
+            // The frame's slice of the load. A step runs whole, so the frame pays the budget plus at most one model;
+            // `overruns` counts the models that cost more than the whole budget on their own, which is the number worth
+            // printing when a load stutters.
+            if (opt.loadBudgetMs > 0.0 && !sceneLoader.empty()) {
+                const ukiyo::LoadProgress lp = sceneLoader.tick(opt.loadBudgetMs);
+                if (lp.done) {
+                    std::printf("player: loaded %zu models in %zu steps%s\n", models.size(), lp.stepsRun,
+                                lp.overruns > 0 ? " (some overran the budget)" : "");
+                }
             }
 
             // Place and animate the models from the scene's world matrices.
@@ -312,7 +358,7 @@ int main(int argc, char** argv) {
             }
 
             if (!device->beginFrame()) continue;
-            renderer.render(cam, drawList, float(app.playTime()), uint32_t(capturedSeconds * 60.0f), app.scene().settings);
+            renderer.render(cam, drawList, float(app.playTime()), uint32_t(capturedSeconds * 60.0f), frameSettings);
             if (hudOn && font.loaded()) {
                 hud.setScreen(float(device->backbufferWidth()), float(device->backbufferHeight()));
                 drawPlayerHud(hud, app.hudText(renderer.lastDrawCalls(), renderer.lastTriangles()),
