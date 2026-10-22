@@ -12,3 +12,6 @@
 # Python bytecode from the tools in tools/
 __pycache__/
 *.pyc
+
+# Packaged games (tools/ukiyo_pack) and their zips
+/dist/

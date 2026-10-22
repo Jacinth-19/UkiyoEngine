@@ -52,7 +52,7 @@ Any hook may be missing. A script with no `onUpdate` costs nothing per frame.
 
 ## The API
 
-Every bound function lives in the `ukiyo` table — 23 of them — alongside `ukiyo.Vector3`, `ukiyo.Quaternion` and
+Every bound function lives in the `ukiyo` table — 24 of them — alongside `ukiyo.Vector3`, `ukiyo.Quaternion` and
 `ukiyo.Entity`. The full list, with signatures and one line each, is `ukiyo::script_project::apiDocs()`; the editor stub
 is generated from that same table, so the documentation and an editor's completion cannot drift apart.
 
@@ -60,6 +60,7 @@ is generated from that same table, so the documentation and an editor's completi
 ukiyo.log(message)                     -- the editor console and the player log
 ukiyo.time()                           -- seconds since the world started
 ukiyo.actionDown(action)               -- a Gameplay action is held by the local player
+ukiyo.hud(text)                        -- the player's status line under the title (the game's own HUD line)
 ukiyo.getPosition(name)                -- x, y, z
 ukiyo.setPosition(name, x, y, z)       -- moves a body or an agent with it
 ukiyo.moveTo(name, x, y, z)            -- an agent walks to a point on the navmesh

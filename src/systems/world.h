@@ -119,6 +119,11 @@ public:
     // The editor reports key presses and releases for the game view, in Qt's portable key text.
     void setKeyHeld(const std::string& key, bool down);
     bool actionDown(const std::string& action) const;
+    // A game's own line in the player's HUD, set by a script (`ukiyo.hud`). The player reads it after every tick and
+    // shows it under the title, which is how a game says "3 of 5 lanterns" without owning the HUD renderer. Empty
+    // means "nothing to say": the player then keeps its own message (a save result, a warning) on screen.
+    void setHudText(const std::string& text) { hudText_ = text; }
+    const std::string& hudText() const { return hudText_; }
     // The live input state, for a game that wants more than actionDown(): values, vectors, phases and rebinding.
     ukiyo::input::State& input() { return input_; }
     const ukiyo::input::State& input() const { return input_; }
@@ -184,6 +189,7 @@ private:
     std::unique_ptr<ukiyo::input::InputSystem> players_;
     std::map<std::string, Entity> entities_;   // std::map keeps the update order deterministic
     std::map<std::string, AudioEngine::SoundId> sounds_;
+    std::string hudText_;
     double time_ = 0.0;
 };
 

@@ -7,6 +7,7 @@
 // about the rasteriser and nothing else.
 #include <GLFW/glfw3.h>
 
+#include <algorithm>
 #include <cmath>
 #include <cstdio>
 #include <memory>
@@ -150,15 +151,28 @@ bool runBackend(rhi::Backend backend, GLFWwindow* window, const char* label) {
         d.dev->endFrame(true);
         Pixels px;
         px.rgba = d.dev->takeCapture();
-        px.w = W;
-        px.h = H;
+        // The capture's size is the device's, not the const this test asked for: a backend that renders to a different
+        // size would otherwise be counted against the wrong stride and read as a black frame.
+        px.w = static_cast<int>(d.dev->backbufferWidth());
+        px.h = static_cast<int>(d.dev->backbufferHeight());
         return px;
     };
 
+    // A warm-up frame, thrown away. The first frame through a fresh device is where a backend creates its swapchain
+    // images, its descriptor pools and its readback buffer; drawing into it and measuring it measures that setup, not
+    // the renderer.
+    render(fill.get());
     const Pixels filled = render(fill.get());
     const Pixels edged = render(wire.get());
     if (filled.rgba.empty() || edged.rgba.empty()) {
-        check(false, "captured a frame in both modes");
+        check(false, "captured a frame in both modes",
+              std::to_string(filled.rgba.size()) + " and " + std::to_string(edged.rgba.size()) + " bytes");
+        return true;
+    }
+    if (filled.w != W || filled.h != H || static_cast<size_t>(filled.w) * filled.h * 4 != filled.rgba.size()) {
+        check(false, "the capture is the frame the test asked for",
+              std::to_string(filled.w) + "x" + std::to_string(filled.h) + ", " +
+                  std::to_string(filled.rgba.size()) + " bytes");
         return true;
     }
 
@@ -204,6 +218,18 @@ bool runBackend(rhi::Backend backend, GLFWwindow* window, const char* label) {
         }
     const double onShare = lit > 0 ? double(onEdges) / double(lit) : 0.0;
     check(lit > 0 && onShare > 0.97, "every lit pixel is on the geometry's own edge", std::to_string(onShare));
+
+    // When a backend draws nothing, the numbers that say why: the two counts and the brightest channel in each capture.
+    // A black capture and a capture of geometry outside the viewport look identical in a count of lit pixels.
+    if (fillCount == 0 || edgeCount == 0) {
+        auto brightest = [](const Pixels& px) {
+            int best = 0;
+            for (uint8_t v : px.rgba) best = std::max(best, static_cast<int>(v));
+            return best;
+        };
+        std::printf("  %s: filled %d px (brightest %d), wireframe %d px (brightest %d)\n", label, fillCount,
+                    brightest(filled), edgeCount, brightest(edged));
+    }
 
     // The frame is a picture, not just a count: dump both captures so a failure can be looked at.
     auto dump = [&](const Pixels& px, const char* name) {

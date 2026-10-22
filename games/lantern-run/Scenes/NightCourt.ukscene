@@ -1,0 +1,115 @@
+{
+  "format": "ukiyo-scene",
+  "version": 2,
+  "models": [
+    {
+      "name": "Court",
+      "path": "assets/platform.glb",
+      "position": [0, 0, 0]
+    },
+    {
+      "name": "Court Body",
+      "empty": true,
+      "position": [0, -0.6, 0],
+      "components": {
+        "body": { "dynamic": false, "box": true, "halfExtents": [7, 0.6, 7] }
+      }
+    },
+    {
+      "name": "Torii",
+      "path": "assets/torii.glb",
+      "position": [0, 0, -5.6],
+      "rotation": [0, 180, 0]
+    },
+    {
+      "name": "Hero",
+      "path": "../../assets/AliciaSolid_vrm-0.51.vrm",
+      "position": [0, 0, 3.4],
+      "components": {
+        "character": { "radius": 0.28, "height": 1.62, "speed": 3.6, "jumpSpeed": 4.6, "stepHeight": 0.35 }
+      }
+    },
+
+    { "name": "Lantern 1", "path": "assets/paper_lantern.glb", "position": [3.4, 1.15, 0.0] },
+    { "name": "Lantern 2", "path": "assets/paper_lantern.glb", "position": [1.05, 1.15, 3.23] },
+    { "name": "Lantern 3", "path": "assets/paper_lantern.glb", "position": [-2.75, 1.15, 2.0] },
+    { "name": "Lantern 4", "path": "assets/paper_lantern.glb", "position": [-2.75, 1.15, -2.0] },
+    { "name": "Lantern 5", "path": "assets/paper_lantern.glb", "position": [1.05, 1.15, -3.23] },
+
+    { "name": "Stone Lantern A", "path": "assets/stone_lantern.glb", "position": [5.0, 0.0, 0.0], "rotation": [0, 90, 0] },
+    { "name": "Stone Lantern B", "path": "assets/stone_lantern.glb", "position": [2.5, 0.0, 4.33], "rotation": [0, 90, 0] },
+    { "name": "Stone Lantern C", "path": "assets/stone_lantern.glb", "position": [-2.5, 0.0, 4.33], "rotation": [0, 90, 0] },
+    { "name": "Stone Lantern D", "path": "assets/stone_lantern.glb", "position": [-5.0, 0.0, 0.0], "rotation": [0, 90, 0] },
+    { "name": "Stone Lantern E", "path": "assets/stone_lantern.glb", "position": [-2.5, 0.0, -4.33], "rotation": [0, 90, 0] },
+    { "name": "Stone Lantern F", "path": "assets/stone_lantern.glb", "position": [2.5, 0.0, -4.33], "rotation": [0, 90, 0] },
+
+    {
+      "name": "Night",
+      "empty": true,
+      "position": [0, 0, 0],
+      "components": {
+        "script": { "path": "Scripts/game.lua" }
+      }
+    }
+  ],
+  "settings": {
+    "shadows": true,
+    "pcss": true,
+    "pcssMaxPenumbra": 0.35,
+    "sky": true,
+    "bloom": true,
+    "bloomStrength": 0.55,
+    "bloomThreshold": 0.85,
+    "outlines": true,
+    "outlineScale": 1.0,
+    "celBand": true,
+    "tonemap": 3,
+    "exposure": 1.05,
+    "saturation": 1.08,
+    "contrast": 1.02,
+    "vignette": 0.28,
+    "grain": 0.015,
+    "ssao": 0.35,
+    "contactShadows": 0.45,
+    "fogDensity": 0.012,
+    "sunDir": [0.35, -0.82, -0.45],
+    "sunIntensity": 0.6,
+    "aaMode": 1
+  },
+  "lights": [
+    {
+      "type": "directional",
+      "direction": [0.35, -0.82, -0.45],
+      "color": [0.62, 0.72, 1.0],
+      "intensity": 0.6
+    },
+    {
+      "type": "point",
+      "position": [5.0, 1.4, 0.0],
+      "color": [1.0, 0.62, 0.28],
+      "intensity": 3.2,
+      "radius": 5.0
+    },
+    {
+      "type": "point",
+      "position": [-5.0, 1.4, 0.0],
+      "color": [1.0, 0.52, 0.24],
+      "intensity": 3.0,
+      "radius": 5.0
+    },
+    {
+      "type": "point",
+      "position": [0.0, 2.4, -5.0],
+      "color": [1.0, 0.32, 0.22],
+      "intensity": 2.2,
+      "radius": 6.0
+    }
+  ],
+  "gameCamera": {
+    "target": [0, 1.1, 0],
+    "distance": 6.4,
+    "yaw": 0.24,
+    "pitch": 0.2,
+    "fovY": 0.62
+  }
+}

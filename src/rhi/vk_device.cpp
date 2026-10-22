@@ -521,10 +521,10 @@ public:
         pl.pPushConstantRanges = &pcr;
         VK_CHECK(vkCreatePipelineLayout(core_.device, &pl, nullptr, &p->layout), "vkCreatePipelineLayout");
 
-        VkShaderModule vs = loadModule(std::string(UKIYO_SHADER_DIR "/spv/") + desc.vertexShader + ".vert.spv");
+        VkShaderModule vs = loadModule(shaderRoot() + "/spv/" + desc.vertexShader + ".vert.spv");
         VkShaderModule fs = VK_NULL_HANDLE;
         if (desc.fragmentSpirv.empty()) {
-            fs = loadModule(std::string(UKIYO_SHADER_DIR "/spv/") + desc.fragmentShader + ".frag.spv");
+            fs = loadModule(shaderRoot() + "/spv/" + desc.fragmentShader + ".frag.spv");
         } else {
             VkShaderModuleCreateInfo fci{VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO};
             fci.codeSize = desc.fragmentSpirv.size() * sizeof(uint32_t);

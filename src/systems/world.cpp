@@ -69,6 +69,13 @@ int l_actionDown(lua_State* L) {
     return 1;
 }
 
+// ukiyo.hud(text) -> the line the player shows under the title. A game's own status line, not a log.
+int l_hud(lua_State* L) {
+    const char* text = luaL_checkstring(L, 1);
+    worldOf(L)->setHudText(text ? text : "");
+    return 0;
+}
+
 // ukiyo.joinPlayer([scheme]) -> index, or nil when no free device matches
 int l_joinPlayer(lua_State* L) {
     World* w = worldOf(L);
@@ -512,6 +519,7 @@ const std::vector<ScriptApiBinding>& World::apiBindings() {
         {"log", l_log},
         {"time", l_time},
         {"actionDown", l_actionDown},
+        {"hud", l_hud},
         {"joinPlayer", l_joinPlayer},
         {"playerCount", l_playerCount},
         {"leavePlayer", l_leavePlayer},

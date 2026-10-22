@@ -48,6 +48,7 @@ struct Options {
     double loadBudgetMs = 0.0;   // --load-budget: milliseconds of scene loading a frame may pay for (0 = all at once)
     std::string shot;
     float seconds = 0.0f;
+    std::string shaders;   // --shaders: the compiled shaders this build shipped (a package's shaders/ folder)
 };
 
 Options parseArgs(int argc, char** argv) {
@@ -72,7 +73,9 @@ Options parseArgs(int argc, char** argv) {
             next(&ms);
             o.loadBudgetMs = std::max(0.0, std::atof(ms.c_str()));
         }
-        else if (a == "--shot") {
+        else if (a == "--shaders") {
+            next(&o.shaders);
+        } else if (a == "--shot") {
             next(&o.shot);
             o.headless = true;
         } else if (a == "--seconds") {
@@ -82,7 +85,7 @@ Options parseArgs(int argc, char** argv) {
         } else if (a == "--help" || a == "-h") {
             std::printf("usage: ukiyo_player [--build Build/build.json] [--project dir] [--backend vk|gl]\n"
                         "                    [--headless --shot out.png --seconds N] [--no-hud] [--selftest]\n"
-                        "                    [--load-budget MS] [--wireframe]\n");
+                        "                    [--load-budget MS] [--wireframe] [--shaders DIR]\n");
             std::exit(0);
         }
     }
@@ -176,6 +179,8 @@ int main(int argc, char** argv) {
         cfg.width = static_cast<uint32_t>(app.manifest().window.width);
         cfg.height = static_cast<uint32_t>(app.manifest().window.height);
         cfg.headless = opt.headless;
+        // A packaged game carries its own shaders; a build-tree run keeps the directory CMake compiled them into.
+        if (!opt.shaders.empty()) rhi::setShaderRoot(opt.shaders);
         auto device = rhi::createDevice(opt.backend, cfg, window);
         ukiyo::Renderer renderer(*device);
 
@@ -257,6 +262,11 @@ int main(int argc, char** argv) {
             if (opt.loadBudgetMs <= 0.0) sceneLoader.runAll();
         };
         auto reloadModels = [&]() { beginModelLoad(); };   // budgeted loads finish in the frame loop
+
+        // What the game actually started with. A script that failed to compile leaves the game running but silent, so
+        // the count and the warnings are printed once: CI greps them, and a shipped game's log says why it feels empty.
+        std::printf("player: %d script%s running\n", app.scriptsRunning(), app.scriptsRunning() == 1 ? "" : "s");
+        for (const std::string& w : app.warnings()) std::fprintf(stderr, "player: warning: %s\n", w.c_str());
 
         // Mouse orbit is polled from the window each frame; a game that needs deltas can add callbacks on top.
         bool dragging = false;

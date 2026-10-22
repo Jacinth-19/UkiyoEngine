@@ -235,7 +235,7 @@ public:
     std::unique_ptr<Pipeline> createPipeline(const PipelineDesc& desc) override {
         auto p = std::make_unique<GLPipeline>();
         p->desc = desc;
-        std::string dir = UKIYO_SHADER_DIR "/gl/";
+        std::string dir = shaderRoot() + "/gl/";
         std::string vsrc = readText(dir + desc.vertexShader + ".vert.glsl");
         std::string fsrc;
         if (!desc.fragmentGlsl.empty()) {

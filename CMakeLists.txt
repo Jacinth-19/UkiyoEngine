@@ -200,6 +200,7 @@ endif()
 add_library(ukiyo_core STATIC
   src/rhi/gl_device.cpp
   src/rhi/vk_device.cpp
+  src/rhi/shader_paths.cpp
   src/engine/anim.cpp
   src/engine/camera.cpp
   src/engine/transform.cpp
@@ -296,6 +297,20 @@ target_include_directories(pmx_glb_test PRIVATE ${CMAKE_SOURCE_DIR}/src)
 target_compile_options(pmx_glb_test PRIVATE ${UKIYO_WARNINGS_PEDANTIC})
 add_executable(ukiyo_pak tools/ukiyo_pak.cpp)
 target_link_libraries(ukiyo_pak PRIVATE ukiyo_core)
+
+# The packer (docs/PACKAGING.md): a project plus a player binary into a folder someone can run, and a zip of it. The
+# library is separate so tests/pack_test.cpp drives it without a command line in the way.
+add_library(ukiyo_pack_core STATIC src/pack/pack.cpp)
+target_link_libraries(ukiyo_pack_core PUBLIC ukiyo_core)
+target_compile_options(ukiyo_pack_core PRIVATE ${UKIYO_WARNINGS})
+add_executable(ukiyo_pack tools/ukiyo_pack.cpp)
+target_link_libraries(ukiyo_pack PRIVATE ukiyo_pack_core)
+target_compile_options(ukiyo_pack PRIVATE ${UKIYO_WARNINGS})
+
+# The first game's geometry (docs/GAME.md), generated so the committed GLBs can be rebuilt and checked.
+add_executable(lantern_assets tools/lantern_assets.cpp)
+target_link_libraries(lantern_assets PRIVATE glm::glm nlohmann_json::nlohmann_json)
+target_compile_options(lantern_assets PRIVATE ${UKIYO_WARNINGS})
 
 # Offline terrain preview (docs/TERRAIN.md): renders the Terrain Lab tile without a GPU. It links only the pure CPU
 # terrain, layer and grass code, so the build needs no Vulkan, GL or GLFW for it, and CI compiles it on every push.
@@ -613,6 +628,17 @@ add_executable(player_test tests/player_test.cpp src/player/player_app.cpp)
 target_link_libraries(player_test PRIVATE ukiyo_systems ukiyo_core)
 target_compile_definitions(player_test PRIVATE GLFW_INCLUDE_NONE)
 target_compile_options(player_test PRIVATE ${UKIYO_WARNINGS})
+
+# The first game (docs/GAME.md): Lantern Run's project, scene and generated assets, checked without a device. A broken
+# model path or a scene that no longer loads fails here, not on a player's machine.
+add_executable(game_test tests/game_test.cpp)
+target_link_libraries(game_test PRIVATE ukiyo_core)
+target_compile_options(game_test PRIVATE ${UKIYO_WARNINGS})
+
+# The packer (docs/PACKAGING.md): what a package contains, that it verifies, and that a corrupted file is caught.
+add_executable(pack_test tests/pack_test.cpp)
+target_link_libraries(pack_test PRIVATE ukiyo_pack_core)
+target_compile_options(pack_test PRIVATE ${UKIYO_WARNINGS})
 
 add_executable(lod_gpu_test tests/lod_gpu_test.cpp)
 target_link_libraries(lod_gpu_test PRIVATE ukiyo_core)

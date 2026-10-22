@@ -69,6 +69,9 @@ public:
     uint32_t sceneGeneration() const { return generation_; }
     double playTime() const { return playTime_; }
     int scriptsRunning() const;
+    // Everything that went wrong without stopping the game: a script that did not compile, a sound that did not load,
+    // a prefab the player cannot flatten. A shipped game prints these once at start; CI fails on them.
+    const std::vector<std::string>& warnings() const { return warnings_; }
 
     // Puts a one-line message under the title until the next one (a save result, a failed load). Empty clears it.
     void notify(const std::string& message);

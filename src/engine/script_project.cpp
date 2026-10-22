@@ -152,6 +152,8 @@ const std::vector<ApiDoc>& apiDocs() {
          "Seconds since the world started, already scaled by the project's time scale."},
         {"actionDown", "ukiyo.actionDown(action)",
          "True while the named Gameplay action is held for the local player."},
+        {"hud", "ukiyo.hud(text)",
+         "Sets the player's status line under the title; an empty string leaves the player's own message alone."},
         {"getPosition", "ukiyo.getPosition(name)",
          "Returns x, y, z of an entity, in metres."},
         {"setPosition", "ukiyo.setPosition(name, x, y, z)",

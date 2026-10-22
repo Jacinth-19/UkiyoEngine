@@ -216,6 +216,31 @@ jobs:
         run: |-
           set -o pipefail
           ./build/async_load_test 2>&1 | tee /tmp/ukiyo-test-async_load_test.log
+      # The first game (docs/GAME.md): Lantern Run's project directory, its scene, the script it hangs on "Night", and
+      # the four GLB files tools/lantern_assets.cpp generated. No device, so a broken path or a stale asset fails here.
+      - name: Check the first game
+        run: |-
+          set -o pipefail
+          ./build/game_test games/lantern-run 2>&1 | tee /tmp/ukiyo-test-game_test.log
+          # The committed GLBs have to be exactly what the generator writes, or the game and its source have drifted.
+          ./build/lantern_assets --check
+      # The packer (docs/PACKAGING.md): what a package contains, that it verifies, that a corrupted file is caught and
+      # that a reference outside the repository is refused.
+      - name: Run Packer Test
+        run: |-
+          set -o pipefail
+          ./build/pack_test 2>&1 | tee /tmp/ukiyo-test-pack_test.log
+      # The Linux build of the first game, as a player would download it: the binary, the compiled shaders, the project
+      # and everything it references, plus a zip. The packaged game is run in the gpu job, where there is a device.
+      - name: Package the first game for Linux
+        run: |-
+          ./build/ukiyo_pack --project games/lantern-run --player build/ukiyo_player --platform linux \
+            --shaders build/shaders --out dist/lantern-run-linux --zip dist/lantern-run-linux.zip
+      - name: Upload the Linux package
+        uses: actions/upload-artifact@v4
+        with:
+          name: lantern-run-linux
+          path: dist/lantern-run-linux.zip
       # The input runtime, its asset format and its actions, driven from synthetic devices: no window, no GPU, no GLFW.
       # It checks press/hold/tap/multitap, 1D and 2D composites, processors, control schemes, rebinding, and that the
       # .inputactions file the engine writes loads back byte-for-byte. docs/INPUT.md.
@@ -483,6 +508,34 @@ jobs:
             --build Build/build.json --project tests/fixtures/player --seconds 4 --load-budget 2 \
             2>&1 | tee /tmp/ukiyo-player-budget.log
           grep -q "player: loaded" /tmp/ukiyo-player-budget.log
+      # The first game, packaged and then run the way a player runs it: the package's launcher, its own project path
+      # and its own copy of the compiled shaders, on a real device. The check is not "it exited zero" — it is that the
+      # game's script is running, that nothing warned, and that the frame has a scene in it.
+      - name: Package and run the first game
+        env:
+          QT_QPA_PLATFORM: xcb
+        run: |-
+          set -o pipefail
+          export VK_ICD_FILENAMES="$(ls /usr/share/vulkan/icd.d/*lvp* | head -1)"
+          ./build/ukiyo_pack --project games/lantern-run --player build/ukiyo_player --platform linux \
+            --shaders build/shaders --out dist/lantern-run-linux --zip dist/lantern-run-linux.zip
+          mkdir -p renders
+          xvfb-run -a -s "-screen 0 1280x720x24" dist/lantern-run-linux/run.sh --backend vk --headless \
+            --seconds 3 --shot renders/lantern-run.png 2>&1 | tee /tmp/ukiyo-lantern-run.log
+          grep -q "player: 1 script running" /tmp/ukiyo-lantern-run.log
+          if grep -q "player: warning:" /tmp/ukiyo-lantern-run.log; then
+            echo "::error::the game started with warnings:"
+            grep "player: warning:" /tmp/ukiyo-lantern-run.log
+            exit 1
+          fi
+          ls -la renders/lantern-run.png
+          python3 tools/frame_check.py renders/lantern-run.png
+      - name: Upload the game's first frame
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: lantern-run-frame
+          path: renders/lantern-run.png
       - name: Upload the player frame and the logs
         if: always()
         uses: actions/upload-artifact@v4
@@ -627,7 +680,7 @@ jobs:
           $failed = @()
           foreach ($t in @("systems_test", "script_test", "network_test", "project_test", "vgeom_test", "motion_test", "gi_test", "input_test", "trail_test", "search_test", "browser_zoom_test", "ao_test",
                     "contact_shadow_test", "pcss_test", "msdf_test", "alpha_mips_test", "transform_test", "lights_test", "save_test",
-                    "property_search_test", "async_load_test",
+                    "property_search_test", "async_load_test", "game_test", "pack_test",
                     "manifest_test", "scene_runtime_test", "hud_test", "character_test", "player_test")) {
             Write-Host "::group::$t"
             # script_test keeps a trace in a file as well as on stdout: a process that dies on Windows has been seen to
@@ -776,6 +829,18 @@ jobs:
           $env:QT_QPA_PLATFORM = "offscreen"
           ./build/ukiyo_hub.exe --selftest
 
+      # The same game as the Linux job packages, built by MSVC: the Windows player, its shaders and the project in one
+      # folder, zipped. This is the artifact a Windows player downloads.
+      - name: Package the first game for Windows
+        run: |-
+          ./build/ukiyo_pack.exe --project games/lantern-run --player build/ukiyo_player.exe --platform windows `
+            --shaders build/shaders --out dist/lantern-run-windows --zip dist/lantern-run-windows.zip
+      - name: Upload the Windows package
+        uses: actions/upload-artifact@v4
+        with:
+          name: lantern-run-windows
+          path: dist/lantern-run-windows.zip
+
       - name: Upload build log
         if: always()
         uses: actions/upload-artifact@v4
@@ -851,3 +916,35 @@ jobs:
             "$UKIYO_NDK/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-readelf" -l "$f" | grep -q "/system/bin/linker64" ||
               { echo "::error::$f was not linked against the Android loader"; exit 1; }
           done
+
+  # The first game's frame comes from the gpu job, which is where a device exists, so it is published here rather than
+  # in the Linux job: the artifact is downloaded, copied into docs/ and committed the same way the hub screenshots are.
+  # A picture of the game in the repository is part of the deliverable; a frame inside an artifact nobody downloads is not.
+  publish-game-frame:
+    runs-on: ubuntu-latest
+    needs: [gpu]
+    if: github.event_name == 'push'
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: lantern-run-frame
+          path: renders
+      - name: Publish the first game's frame
+        run: |
+          test -f renders/lantern-run.png
+          cp renders/lantern-run.png docs/lantern-run.png
+          git config user.name "ukiyo-ci"
+          git config user.email "ci@ukiyo.invalid"
+          git add docs/lantern-run.png
+          if git diff --cached --quiet; then echo "no change"; exit 0; fi
+          branch="${GITHUB_REF_NAME}"
+          git commit -m "Lantern Run frame from CI [skip ci]"
+          for attempt in 1 2 3; do
+            git fetch origin "+refs/heads/$branch:refs/remotes/origin/$branch"
+            git rebase "origin/$branch" || { git rebase --abort; exit 1; }
+            if git push origin "HEAD:$branch"; then exit 0; fi
+            sleep 5
+          done
+          echo "could not publish the frame; the artifact still has it" >&2
+          exit 1

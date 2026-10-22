@@ -208,6 +208,13 @@ public:
 // Vulkan; the GL backend always needs a current context (a hidden window works).
 std::unique_ptr<Device> createDevice(Backend backend, const DeviceConfig& config, GLFWwindow* window);
 
+// Where the compiled shaders are. The build compiles them into the directory baked in at configure time, which is what
+// a developer and every test use. A shipped game cannot use that path — it names a build tree on a machine the player
+// does not own — so a package carries its own `shaders/` folder and the player points this at it before creating a
+// device. Both backends read the root when they load a shader, not when they are constructed.
+void setShaderRoot(std::string dir);
+const std::string& shaderRoot();
+
 // Reads a whole file; throws on failure.
 std::vector<uint8_t> readFileBytes(const std::string& path);
 

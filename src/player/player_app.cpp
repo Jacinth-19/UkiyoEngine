@@ -102,9 +102,12 @@ void PlayerApp::buildWorld() {
     for (size_t i = 0; i < instances_.size(); ++i) {
         PlayerInstance& in = instances_[i];
         const SystemsComponents& c = in.components;
-        if (!c.any()) continue;
+        // Every instance gets an entity, not only the ones with a component: a scene's props are things a script may
+        // move, light up or test the distance to, and `ukiyo.setPosition("Lantern 3", …)` has to work on a lantern that
+        // has no body. An entity with no component is inert — it costs a map entry and nothing per frame.
         Entity& e = world_->entity(in.name);
         e.position = in.position;
+        e.yawDeg = in.local.rotationDeg.y;
         if (c.body.enabled) {
             if (c.body.dynamic) {
                 if (c.body.box) world_->attachDynamicBox(in.name, c.body.halfExtents, c.body.mass);
@@ -224,6 +227,8 @@ void PlayerApp::tick(float dt) {
     }
     syncInstancesFromWorld();
     if (!instances_.empty()) world_->entity("listener").position = instances_.front().position;
+    // A game's own status line (`ukiyo.hud`) outranks the engine's messages while it is set.
+    if (!world_->hudText().empty()) notification_ = world_->hudText();
 }
 
 bool PlayerApp::saveGame(const std::string& path, std::string* error) const {
