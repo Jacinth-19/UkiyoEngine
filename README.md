@@ -118,8 +118,9 @@ Whichever platform you built for, the same project can be packaged for someone e
 ```
 
 CI does exactly that on Linux and Windows, runs the packaged game on a software Vulkan device, and uploads both zips —
-see [docs/GAME.md](docs/GAME.md) and [docs/PACKAGING.md](docs/PACKAGING.md). Android builds the game's portable core for
-arm64 and x86_64 today; the window and the APK are the next step, and the reason is in the packaging doc.
+see [docs/GAME.md](docs/GAME.md) and [docs/PACKAGING.md](docs/PACKAGING.md). The `android` job goes one step further and
+builds an installable APK of the same project, with the player for arm64 and x86_64, the game staged in its assets and no
+Java at all; [docs/ANDROID.md](docs/ANDROID.md) has the layout, the tools and what is still missing there.
 
 ## What is in the engine
 
@@ -396,6 +397,7 @@ own glslang package is generated with a broken SPIRV-Tools path; everything else
 | [docs/FILESYSTEM.md](docs/FILESYSTEM.md) | the browser's wheel zoom (the 32–224 ladder) and glob search, and the Android/Windows/Linux CI matrix |
 | [docs/GAME.md](docs/GAME.md) | the first game: Lantern Run, its script, its generated art, and what it proves |
 | [docs/PACKAGING.md](docs/PACKAGING.md) | `ukiyo_pack`: what a build contains, why the layout mirrors the project, and verification |
+| [docs/ANDROID.md](docs/ANDROID.md) | the APK: native activity, asset staging, touch controls, and what is not on the phone yet |
 | [docs/LUA.md](docs/LUA.md) | the sandbox, the hooks and the API, require(), errors, the built-in Lua editor, and the files an external IDE reads |
 
 ## Credits

@@ -26,6 +26,9 @@ else()
   set(UKIYO_NO_WARNINGS -w)
 endif()
 
+# What the engine is made of, in one place: the desktop targets and the Android app build the same lists.
+include(cmake/ukiyo_sources.cmake)
+
 # ---- Android -----------------------------------------------------------------------------------
 # The editor is a desktop Qt program and there is no Android application yet, so an Android configure does not build a
 # window, a renderer or a hub. What it does build is the portable core: the rules the editor's Project browser runs on
@@ -56,6 +59,98 @@ if(ANDROID)
                                ${CMAKE_SOURCE_DIR}/third_party/glm ${CMAKE_SOURCE_DIR}/third_party/nlohmann/include)
     target_compile_options(${t} PRIVATE ${UKIYO_WARNINGS})
   endforeach()
+
+  # ---- The first game, on a phone --------------------------------------------------------------
+  # The same engine the desktop builds, minus the three translation units that cannot exist here, plus the NDK's
+  # native-activity glue. Vulkan is the only backend (Android has no desktop GL, so the GL backend and GLAD are out),
+  # and the runtime GLSL compiler goes with glslang, which the NDK does not ship — shader_compiler_stub.cpp answers for
+  # it, because a shipped game carries its compiled shaders and never compiles a graph on the device.
+  #
+  # The third-party libraries are configured here rather than after the early return, because the app links the whole
+  # engine: physics, navigation, scripting, audio and the renderer.
+  add_library(ukiyo_glm INTERFACE)
+  target_include_directories(ukiyo_glm INTERFACE ${CMAKE_SOURCE_DIR}/third_party/glm)
+  add_library(glm::glm ALIAS ukiyo_glm)
+  add_library(ukiyo_json INTERFACE)
+  target_include_directories(ukiyo_json INTERFACE ${CMAKE_SOURCE_DIR}/third_party/nlohmann/include)
+  add_library(nlohmann_json::nlohmann_json ALIAS ukiyo_json)
+
+  file(GLOB LUA_SRC CONFIGURE_DEPENDS ${CMAKE_SOURCE_DIR}/third_party/lua/*.c)
+  add_library(ukiyo_lua STATIC ${LUA_SRC})
+  target_include_directories(ukiyo_lua PUBLIC ${CMAKE_SOURCE_DIR}/third_party/lua)
+  target_compile_definitions(ukiyo_lua PRIVATE LUA_USE_LINUX)
+  target_compile_options(ukiyo_lua PRIVATE ${UKIYO_NO_WARNINGS})
+
+  add_library(ukiyo_miniaudio STATIC ${CMAKE_SOURCE_DIR}/third_party/miniaudio/miniaudio_impl.cpp)
+  target_include_directories(ukiyo_miniaudio PUBLIC ${CMAKE_SOURCE_DIR}/third_party/miniaudio)
+  target_compile_options(ukiyo_miniaudio PRIVATE ${UKIYO_NO_WARNINGS})
+  target_link_libraries(ukiyo_miniaudio PUBLIC ${CMAKE_DL_LIBS} m)
+
+  file(GLOB RECAST_SRC CONFIGURE_DEPENDS
+    ${CMAKE_SOURCE_DIR}/third_party/recastnavigation/Recast/Source/*.cpp
+    ${CMAKE_SOURCE_DIR}/third_party/recastnavigation/Detour/Source/*.cpp
+    ${CMAKE_SOURCE_DIR}/third_party/recastnavigation/DetourCrowd/Source/*.cpp)
+  add_library(ukiyo_recast STATIC ${RECAST_SRC})
+  target_include_directories(ukiyo_recast PUBLIC
+    ${CMAKE_SOURCE_DIR}/third_party/recastnavigation/Recast/Include
+    ${CMAKE_SOURCE_DIR}/third_party/recastnavigation/Detour/Include
+    ${CMAKE_SOURCE_DIR}/third_party/recastnavigation/DetourCrowd/Include)
+  target_compile_options(ukiyo_recast PRIVATE ${UKIYO_NO_WARNINGS})
+
+  # Jolt: the CPU build with the same options the desktop uses, and without the Vulkan compute shaders it would need
+  # dxc for.
+  set(JPH_BUILD_SHARED_LIBS OFF CACHE BOOL "Jolt: shared library" FORCE)
+  set(INTERPROCEDURAL_OPTIMIZATION OFF CACHE BOOL "Jolt: link-time optimisation" FORCE)
+  set(GENERATE_DEBUG_SYMBOLS OFF CACHE BOOL "Jolt: debug symbols" FORCE)
+  set(ENABLE_ALL_WARNINGS OFF CACHE BOOL "Jolt: all warnings" FORCE)
+  set(USE_ASSERTS OFF CACHE BOOL "Jolt: asserts in Release" FORCE)
+  set(PROFILER_IN_DEBUG_AND_RELEASE OFF CACHE BOOL "Jolt: profiler" FORCE)
+  set(DEBUG_RENDERER_IN_DEBUG_AND_RELEASE OFF CACHE BOOL "Jolt: debug renderer" FORCE)
+  set(JPH_USE_VK OFF CACHE BOOL "Jolt: Vulkan compute" FORCE)
+  add_subdirectory(third_party/JoltPhysics/Build ${CMAKE_BINARY_DIR}/jolt EXCLUDE_FROM_ALL)
+
+  set(UKIYO_CORE_ANDROID ${UKIYO_CORE_SOURCES})
+  list(REMOVE_ITEM UKIYO_CORE_ANDROID
+    src/rhi/gl_device.cpp
+    src/engine/shader_compiler.cpp
+    third_party/glad/src/gl.c)
+  list(APPEND UKIYO_CORE_ANDROID src/engine/shader_compiler_stub.cpp)
+
+  find_library(UKIYO_VULKAN_LIBRARY vulkan REQUIRED)
+  add_library(ukiyo_core_android STATIC ${UKIYO_CORE_ANDROID})
+  target_include_directories(ukiyo_core_android PUBLIC
+    ${CMAKE_SOURCE_DIR}/src ${CMAKE_SOURCE_DIR}/third_party ${CMAKE_SOURCE_DIR}/third_party/meshoptimizer)
+  # VK_USE_PLATFORM_ANDROID_KHR is what makes <vulkan/vulkan.h> declare vkCreateAndroidSurfaceKHR.
+  target_compile_definitions(ukiyo_core_android PUBLIC
+    UKIYO_SHADER_DIR="shaders/spv" VK_USE_PLATFORM_ANDROID_KHR=1)
+  target_link_libraries(ukiyo_core_android PUBLIC
+    ${UKIYO_VULKAN_LIBRARY} android log glm::glm nlohmann_json::nlohmann_json ${CMAKE_DL_LIBS})
+  target_compile_options(ukiyo_core_android PRIVATE ${UKIYO_WARNINGS})
+
+  add_library(ukiyo_input STATIC ${UKIYO_INPUT_SOURCES})
+  target_include_directories(ukiyo_input PUBLIC ${CMAKE_SOURCE_DIR}/src)
+  target_link_libraries(ukiyo_input PUBLIC glm::glm nlohmann_json::nlohmann_json)
+  target_compile_options(ukiyo_input PRIVATE ${UKIYO_WARNINGS})
+
+  add_library(ukiyo_systems_android STATIC ${UKIYO_SYSTEMS_SOURCES})
+  target_include_directories(ukiyo_systems_android PUBLIC ${CMAKE_SOURCE_DIR}/src)
+  target_link_libraries(ukiyo_systems_android PUBLIC
+    ukiyo_core_android ukiyo_input Jolt ukiyo_recast ukiyo_lua ukiyo_miniaudio)
+  target_compile_options(ukiyo_systems_android PRIVATE ${UKIYO_WARNINGS})
+
+  # The app: android_main.cpp is the desktop player's presentation layer with the platform swapped, and the glue turns
+  # it into the entry point an Android activity starts.
+  add_library(ukiyo_player_android SHARED
+    src/player/android_main.cpp
+    src/player/player_app.cpp
+    ${ANDROID_NDK}/sources/android/native_app_glue/android_native_app_glue.c)
+  set_target_properties(ukiyo_player_android PROPERTIES OUTPUT_NAME "ukiyo_player")
+  target_include_directories(ukiyo_player_android PRIVATE
+    ${CMAKE_SOURCE_DIR}/src ${ANDROID_NDK}/sources/android/native_app_glue)
+  target_link_libraries(ukiyo_player_android PRIVATE ukiyo_systems_android ukiyo_core_android android log)
+  # The glue's entry point is referenced by nothing: keep it alive through the link.
+  target_link_options(ukiyo_player_android PRIVATE "-u ANativeActivity_onCreate")
+  target_compile_options(ukiyo_player_android PRIVATE ${UKIYO_WARNINGS})
   return()
 endif()
 
@@ -199,56 +294,7 @@ if(UNIX)
 endif()
 
 # ---- Engine core library ---------------------------------------------------
-add_library(ukiyo_core STATIC
-  src/rhi/gl_device.cpp
-  src/rhi/vk_device.cpp
-  src/rhi/shader_paths.cpp
-  src/engine/anim.cpp
-  src/engine/camera.cpp
-  src/engine/transform.cpp
-  src/engine/lights.cpp
-  src/engine/text_atlas.cpp
-  src/engine/msdf.cpp
-  src/engine/hud.cpp
-  src/engine/hud_renderer.cpp
-  src/engine/build_manifest.cpp
-  src/engine/scene_runtime.cpp
-  src/engine/async_load.cpp
-  src/engine/property_search.cpp
-  src/engine/search.cpp
-  src/player/hud_layout.cpp
-  src/engine/face.cpp
-  src/engine/model.cpp
-  src/engine/pmx_glb.cpp
-  src/engine/vfs.cpp
-  src/engine/shader_compiler.cpp
-  src/engine/material_asset.cpp
-  src/engine/project_settings.cpp
-  src/engine/project_template.cpp
-  src/engine/script_project.cpp
-  src/engine/graph_material.cpp
-  src/engine/water.cpp
-  src/engine/terrain.cpp
-  src/engine/terrain_gpu.cpp
-  src/engine/terrain_layers.cpp
-  src/engine/foliage.cpp
-  src/engine/grass.cpp
-  src/engine/vgeom.cpp
-  src/engine/motion_match.cpp
-  src/engine/terrain_edit.cpp
-  third_party/meshoptimizer/simplifier.cpp
-  third_party/meshoptimizer/allocator.cpp
-  src/engine/material_preview.cpp
-  src/engine/particle_renderer.cpp
-  src/engine/trail.cpp
-  src/engine/trail_renderer.cpp
-  src/engine/search.cpp
-  src/engine/browser_zoom.cpp
-  src/engine/texture_mips.cpp
-  src/engine/renderer.cpp
-  src/engine/rig.cpp
-  src/third_party_impl.cpp
-  third_party/glad/src/gl.c)
+add_library(ukiyo_core STATIC ${UKIYO_CORE_SOURCES})
 add_dependencies(ukiyo_core ukiyo_shaders)
 target_include_directories(ukiyo_core PUBLIC
   ${CMAKE_SOURCE_DIR}/src
@@ -265,17 +311,7 @@ endif()
 target_compile_options(ukiyo_core PRIVATE ${UKIYO_WARNINGS})
 
 # ---- Game systems: physics, navigation, audio, animation state, scripting, particles -----
-add_library(ukiyo_systems STATIC
-  src/systems/physics.cpp
-  src/systems/navigation.cpp
-  src/systems/audio.cpp
-  src/systems/anim_state.cpp
-  src/systems/script.cpp
-  src/systems/script_runtime.cpp
-  src/systems/vfx.cpp
-  src/systems/network.cpp
-  src/systems/save_game.cpp
-  src/systems/world.cpp)
+add_library(ukiyo_systems STATIC ${UKIYO_SYSTEMS_SOURCES})
 target_include_directories(ukiyo_systems PUBLIC ${CMAKE_SOURCE_DIR}/src)
 target_link_libraries(ukiyo_systems PUBLIC ukiyo_core ukiyo_input Jolt ukiyo_recast ukiyo_lua ukiyo_miniaudio)
 if(WIN32)
@@ -493,11 +529,7 @@ target_compile_options(browser_qol_preview PRIVATE ${UKIYO_WARNINGS})
 # ---- Input system (docs/INPUT.md) ------------------------------------------
 # The runtime and the .inputactions asset format are plain C++ (glm + nlohmann), with no GLFW, Vulkan or window, so the
 # test below runs on any machine and in CI. The GLFW backend is its own target: only applications link it.
-add_library(ukiyo_input STATIC
-  src/input/input.cpp
-  src/input/input_asset.cpp
-  src/input/input_users.cpp
-  src/input/rebind.cpp)
+add_library(ukiyo_input STATIC ${UKIYO_INPUT_SOURCES})
 target_include_directories(ukiyo_input PUBLIC ${CMAKE_SOURCE_DIR}/src)
 target_link_libraries(ukiyo_input PUBLIC glm::glm nlohmann_json::nlohmann_json)
 target_compile_options(ukiyo_input PRIVATE ${UKIYO_WARNINGS})

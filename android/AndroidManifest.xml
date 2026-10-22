@@ -1,0 +1,35 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Lantern Run, packaged the way a game is: the native activity starts libukiyo_player.so, and there is no Java code at
+  all (hasCode=false) — the whole game is C++ and the NDK's native-activity glue.
+-->
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    package="dev.ukiyo.lanternrun"
+    android:versionCode="1"
+    android:versionName="0.1.0">
+
+    <uses-sdk android:minSdkVersion="24" android:targetSdkVersion="34" />
+
+    <!-- The player draws through Vulkan and nothing else: a device without it cannot run the game. -->
+    <uses-feature android:name="android.hardware.vulkan.version" android:version="0x400003" android:required="true" />
+
+    <application
+        android:label="Lantern Run"
+        android:hasCode="false"
+        android:allowBackup="false"
+        android:extractNativeLibs="true"
+        android:theme="@android:style/Theme.NoTitleBar.Fullscreen">
+
+        <activity
+            android:name="android.app.NativeActivity"
+            android:exported="true"
+            android:screenOrientation="sensorLandscape"
+            android:configChanges="orientation|keyboardHidden|screenSize|screenLayout|uiMode">
+            <meta-data android:name="android.app.lib_name" android:value="ukiyo_player" />
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+        </activity>
+    </application>
+</manifest>

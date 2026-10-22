@@ -75,6 +75,17 @@ with the same reader the player uses, and checks the things that break silently:
 The device half is in the `gpu` job: it packages the game, runs the package's own launcher on lavapipe, and requires
 `player: 1 script running`, no `player: warning:` line, and a frame that `tools/frame_check.py` accepts.
 
+## The three builds
+
+| Platform | What CI produces | Where it runs |
+| --- | --- | --- |
+| Linux | `lantern-run-linux.zip` and a folder package | the `gpu` job runs the package's launcher on lavapipe and captures `docs/lantern-run.png` |
+| Windows | `lantern-run-windows.zip`, built and packaged by MSVC | not run in CI: the Windows runner has no Vulkan device |
+| Android | `lantern-run-android`: a signed APK, arm64 + x86_64, no Java | built and signed, not launched: CI has no phone ([docs/ANDROID.md](ANDROID.md)) |
+
+The desktop packages carry the player binary, the project tree at its repo-relative path (`games/lantern-run/…`), the
+character and font it references, and the compiled shaders. The APK carries the same trees inside its assets.
+
 ## Making it yours
 
 Copy the folder, change `Build/build.json`'s `name`, and edit `NightCourt.ukscene`. The editor opens the same project:
