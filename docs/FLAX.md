@@ -31,7 +31,7 @@ reachable today.
 | Flax | Feature | State here |
 | --- | --- | --- |
 | 1.12 | **Spring bones** | already present (secondary motion on the character rig) |
-| 1.12 | **MSDF fonts** | not present: text is a bitmap atlas, which is why the HUD is crisp at one size and soft at others |
+| 1.12 | **MSDF fonts** | **done**: one generated page, three distance channels, sharp at 12-96 px ([docs/MSDF.md](MSDF.md)) |
 | 1.12 | **Box-projected environment probes** | not present |
 | 1.12 | `ProfilerGPU.Dump`-style debug commands | not present; the engine's debug views are fixed |
 | 1.12 | Optional linear colour space | not present: the pipeline is display-referred after the tonemap |
@@ -54,8 +54,9 @@ reachable today.
    graph needs a dispatch node.
 4. **HZB occlusion culling** — follows from 3, and pays for itself on the terrain, which is the densest thing the
    engine draws.
-5. **MSDF fonts** — small, self-contained, and fixes the one part of the frame (HUD, editor, subtitles) that is still
-   limited by resolution.
+5. **MSDF fonts** — done. One page generated at 40 px serves every size the HUD draws, and the measurement that came
+   out of it is worth more than the feature: the textbook two-pixel alpha ramp puts 21-64% more ink than a rasteriser
+   on 12-13 px text, and a one-pixel ramp fixes it (48 checks, [docs/MSDF.md](MSDF.md)).
 6. **Split-screen local co-op**, **box-projected probes**, **linear colour space**: each is a contained feature, and
    none is on the critical path of a prettier frame.
 

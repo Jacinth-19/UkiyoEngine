@@ -44,6 +44,7 @@ if(ANDROID)
     src/engine/build_manifest.cpp
     src/engine/scene_runtime.cpp
     src/engine/text_atlas.cpp
+    src/engine/msdf.cpp
     src/engine/hud.cpp
     src/player/hud_layout.cpp)
   foreach(t search_test browser_zoom_test transform_test lights_test manifest_test scene_runtime_test)
@@ -203,6 +204,7 @@ add_library(ukiyo_core STATIC
   src/engine/transform.cpp
   src/engine/lights.cpp
   src/engine/text_atlas.cpp
+  src/engine/msdf.cpp
   src/engine/hud.cpp
   src/engine/hud_renderer.cpp
   src/engine/build_manifest.cpp
@@ -312,7 +314,7 @@ target_compile_options(vgeom_preview PRIVATE ${UKIYO_WARNINGS})
 
 # The figure for docs/PLAYER.md: the shipping HUD layout, composited over an engine frame by a software rasteriser. It
 # links only the CPU HUD code and STB, so CI compiles and runs it without a GPU.
-add_executable(hud_preview tools/hud_preview.cpp src/engine/text_atlas.cpp src/engine/hud.cpp
+add_executable(hud_preview tools/hud_preview.cpp src/engine/text_atlas.cpp src/engine/msdf.cpp src/engine/hud.cpp
                src/player/hud_layout.cpp)
 target_include_directories(hud_preview PRIVATE ${CMAKE_SOURCE_DIR}/src ${CMAKE_SOURCE_DIR}/third_party)
 target_link_libraries(hud_preview PRIVATE glm::glm)
@@ -321,13 +323,14 @@ target_compile_options(hud_preview PRIVATE ${UKIYO_WARNINGS})
 # The docs figure for docs/CHARACTER.md: a real CharacterVirtual walked across a real course by the shipping controller,
 # drawn from the CharacterState it reports - the outline of each frame, the feet path, and the jump. No GPU, so CI
 # renders it on every push and the figure cannot drift away from the code.
-add_executable(character_preview tools/character_preview.cpp src/engine/text_atlas.cpp)
+add_executable(character_preview tools/character_preview.cpp src/engine/text_atlas.cpp src/engine/msdf.cpp)
 target_link_libraries(character_preview PRIVATE ukiyo_systems)
 target_compile_options(character_preview PRIVATE ${UKIYO_WARNINGS})
 
 # The docs figure for docs/LIGHTS.md: three authored lights on a three-sphere studio, shaded with the shipping
 # packSceneLights and mtoon.frag's ramp, falloff and cone. No GPU, so CI renders it on every push.
-add_executable(lights_preview tools/lights_preview.cpp src/engine/lights.cpp src/engine/text_atlas.cpp)
+add_executable(lights_preview tools/lights_preview.cpp src/engine/lights.cpp src/engine/text_atlas.cpp
+               src/engine/msdf.cpp)
 target_include_directories(lights_preview PRIVATE ${CMAKE_SOURCE_DIR}/src ${CMAKE_SOURCE_DIR}/third_party)
 target_link_libraries(lights_preview PRIVATE glm::glm)
 target_compile_options(lights_preview PRIVATE ${UKIYO_WARNINGS})
@@ -398,6 +401,23 @@ add_executable(pcss_test tests/pcss_test.cpp)
 target_include_directories(pcss_test PRIVATE ${CMAKE_SOURCE_DIR}/src ${CMAKE_SOURCE_DIR}/third_party)
 target_link_libraries(pcss_test PRIVATE glm::glm)
 target_compile_options(pcss_test PRIVATE ${UKIYO_WARNINGS})
+
+# Multi-channel signed distance fields (docs/MSDF.md): the generator, the median reconstruction and the atlas against
+# the exact outline, and against a rasterisation of each size with that rasteriser's own quarter-pixel sensitivity as
+# the bar.
+add_executable(msdf_test tests/msdf_test.cpp src/engine/msdf.cpp src/engine/text_atlas.cpp)
+target_include_directories(msdf_test PRIVATE ${CMAKE_SOURCE_DIR}/src ${CMAKE_SOURCE_DIR}/third_party)
+target_link_libraries(msdf_test PRIVATE glm::glm)
+target_compile_options(msdf_test PRIVATE ${UKIYO_WARNINGS})
+target_compile_definitions(msdf_test PRIVATE UKIYO_ROOT="${CMAKE_SOURCE_DIR}")
+
+# The figure in docs/MSDF.md: the shipping canvas laid out over a coverage page and a field page, drawn at sizes neither
+# was made for, and the measurements printed on the sheet.
+add_executable(msdf_preview tools/msdf_preview.cpp src/engine/msdf.cpp src/engine/text_atlas.cpp src/engine/hud.cpp)
+target_include_directories(msdf_preview PRIVATE ${CMAKE_SOURCE_DIR}/src ${CMAKE_SOURCE_DIR}/third_party
+                             ${CMAKE_SOURCE_DIR}/tools)
+target_link_libraries(msdf_preview PRIVATE glm::glm)
+target_compile_options(msdf_preview PRIVATE ${UKIYO_WARNINGS})
 
 # The figure in docs/PCSS.md: the same scene under a hard map, a swept fixed-radius PCF and PCSS, against 64-ray truth.
 add_executable(pcss_preview tools/pcss_preview.cpp)

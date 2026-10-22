@@ -24,6 +24,7 @@
 #include "stb_image_write.h"
 
 #include "engine/hud.h"
+#include "engine/msdf.h"
 #include "engine/text_atlas.h"
 #include "player/hud_layout.h"
 
@@ -34,7 +35,7 @@ struct Image {
     std::vector<uint8_t> px;   // RGBA8
 };
 
-float sampleAtlas(const ukiyo::FontAtlas& font, float u, float v, int channel) {
+float bilinear(const ukiyo::FontAtlas& font, float u, float v, int channel) {
     // Bilinear, in texel space. The pipeline samples the same atlas with Filter::Linear, so a glyph edge lands where the
     // GPU would put it.
     const int w = font.width();
@@ -51,6 +52,16 @@ float sampleAtlas(const ukiyo::FontAtlas& font, float u, float v, int channel) {
     const float a = float(texel(x0, y0)) * (1 - fx) + float(texel(x0 + 1, y0)) * fx;
     const float b = float(texel(x0, y0 + 1)) * (1 - fx) + float(texel(x0 + 1, y0 + 1)) * fx;
     return (a * (1 - fy) + b * fy) / 255.0f;
+}
+
+// hud.frag's own rule: the median of three distances, scaled by the page's range in screen pixels. `pc.p0.z` carries the
+// range, which is what HudRenderer pushes for a field page and 0 for a coverage page.
+float coverage(const ukiyo::FontAtlas& font, float u, float v, float range, const glm::vec2& uvPerPixel) {
+    if (range <= 0.0f) return bilinear(font, u, v, 3);
+    const float rangeUv = range / float(font.width());
+    return float(ukiyo::msdf::coverageFromField(bilinear(font, u, v, 0), bilinear(font, u, v, 1),
+                                                bilinear(font, u, v, 2), double(rangeUv), double(uvPerPixel.x),
+                                                double(uvPerPixel.y)));
 }
 
 void blendPixel(Image& img, int x, int y, const glm::vec4& c) {
@@ -75,6 +86,13 @@ void triangle(Image& img, const ukiyo::FontAtlas& font, const ukiyo::HudVertex& 
     const float maxY = std::ceil(std::max({a.pos.y, b.pos.y, c.pos.y}));
     const float area = (b.pos.x - a.pos.x) * (c.pos.y - a.pos.y) - (b.pos.y - a.pos.y) * (c.pos.x - a.pos.x);
     if (std::fabs(area) < 1e-6f) return;
+    // uv is affine over the triangle, so its screen derivative is exact: evaluate it a pixel away. This is what the GPU's
+    // fwidth sees, and it is what the field reconstruction needs to make the edge one pixel wide.
+    auto uvAt = [&](float x, float y) {
+        const float u0 = ((b.pos.x - x) * (c.pos.y - y) - (b.pos.y - y) * (c.pos.x - x)) / area;
+        const float u1 = ((c.pos.x - x) * (a.pos.y - y) - (c.pos.y - y) * (a.pos.x - x)) / area;
+        return a.uv * u0 + b.uv * u1 + c.uv * (1.0f - u0 - u1);
+    };
     for (int y = int(minY); y <= int(maxY); ++y) {
         for (int x = int(minX); x <= int(maxX); ++x) {
             const float px = float(x) + 0.5f, py = float(y) + 0.5f;
@@ -86,8 +104,13 @@ void triangle(Image& img, const ukiyo::FontAtlas& font, const ukiyo::HudVertex& 
             if (w0 < eps || w1 < eps || w2 < eps) continue;
             const glm::vec2 uv = a.uv * w0 + b.uv * w1 + c.uv * w2;
             glm::vec4 col = a.color * w0 + b.color * w1 + c.color * w2;
-            // The atlas stores coverage in alpha with white RGB, which is what hud.frag multiplies by the vertex colour.
-            if (font.loaded()) col.a *= sampleAtlas(font, uv.x, uv.y, 3);
+            // The atlas stores either coverage in alpha with white RGB, or three distances in RGB whose median is the
+            // coverage - the same branch hud.frag takes on pc.p0.z, at the same screen derivative.
+            if (font.loaded()) {
+                col.a *= coverage(font, uv.x, uv.y, font.msdfRange(),
+                                  {std::fabs(uvAt(px + 1.0f, py).x - uv.x) + std::fabs(uvAt(px + 1.0f, py).y - uv.y),
+                                   std::fabs(uvAt(px, py + 1.0f).x - uv.x) + std::fabs(uvAt(px, py + 1.0f).y - uv.y)});
+            }
             blendPixel(img, x, y, col);
         }
     }
@@ -109,6 +132,7 @@ int main(int argc, char** argv) {
     std::string background = "docs/terrain-hero.png";
     std::string fontPath = "editor/res/fonts/IBMPlexSansJP-Regular.ttf";
     int width = 1600, height = 900;
+    bool msdf = true;
     for (int i = 1; i < argc; ++i) {
         const std::string a = argv[i];
         auto next = [&](std::string* dst) {
@@ -117,11 +141,12 @@ int main(int argc, char** argv) {
         if (a == "--out") next(&out);
         else if (a == "--background") next(&background);
         else if (a == "--font") next(&fontPath);
+        else if (a == "--coverage") msdf = false;
         else if (a == "--width" && i + 1 < argc) width = std::stoi(argv[++i]);
         else if (a == "--height" && i + 1 < argc) height = std::stoi(argv[++i]);
         else if (a == "--help" || a == "-h") {
             std::printf("usage: hud_preview [--out docs/player-hud.png] [--background frame.png]\n"
-                        "                   [--font font.ttf] [--width 1600] [--height 900]\n");
+                        "                   [--font font.ttf] [--width 1600] [--height 900] [--coverage]\n");
             return 0;
         }
     }
@@ -159,8 +184,12 @@ int main(int argc, char** argv) {
         }
     }
 
+    // The player ships a multi-channel distance field page: 40 px, a 6-texel range, and hud.frag reconstructs the edge
+    // from it at whatever size the layout asks for. `--coverage` renders the page the engine used before it, so the two
+    // can be compared without a GPU.
     ukiyo::FontAtlas font;
-    if (!font.loadFromFile(fontPath, 20.0f, 1024)) {
+    const bool ok = msdf ? font.loadMsdfFromFile(fontPath, 40.0f, 6.0f, 1024) : font.loadFromFile(fontPath, 20.0f, 1024);
+    if (!ok) {
         std::fprintf(stderr, "hud_preview: could not load the font %s\n", fontPath.c_str());
         return 1;
     }

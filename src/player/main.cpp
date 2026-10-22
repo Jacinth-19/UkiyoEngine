@@ -167,10 +167,16 @@ int main(int argc, char** argv) {
         ukiyo::Renderer renderer(*device);
 
         // Text. The manifest names the font; without one the HUD still draws its panels, just no words.
+        //
+        // The page is a multi-channel distance field generated at 40 px (docs/MSDF.md): one page then serves the whole
+        // HUD at any size, so a heading and a caption are equally sharp, and the debug overlay can be drawn larger
+        // without regenerating anything. A manifest that sets "msdf": false gets the old coverage page at 20 px.
         ukiyo::FontAtlas font;
         if (!app.manifest().font.empty()) {
             const std::string path = opt.project + "/" + app.manifest().font;
-            if (!font.loadFromFile(path, 20.0f, 2048)) {
+            const bool ok = app.manifest().msdf ? font.loadMsdfFromFile(path, 40.0f, 6.0f, 2048)
+                                                : font.loadFromFile(path, 20.0f, 2048);
+            if (!ok) {
                 std::fprintf(stderr, "player: could not load the font %s\n", path.c_str());
             } else {
                 font.preloadAscii();

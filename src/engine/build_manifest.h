@@ -27,6 +27,7 @@ struct BuildManifest {
     std::vector<std::string> scenes;      // project-relative .ukscene paths, in load order
     BuildWindow window;
     std::string font;                     // project-relative .ttf; empty means "no HUD text"
+    bool msdf = true;                     // generate the HUD font as a distance field (docs/MSDF.md); false = coverage
     float hudScale = 1.0f;                // multiplies the HUD's pixel sizes for high-DPI windows
     std::string version = "1.0.0";
 };

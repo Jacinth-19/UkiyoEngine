@@ -1,5 +1,7 @@
 #include "engine/text_atlas.h"
 
+#include "engine/msdf.h"
+
 #include <algorithm>
 #include <cstring>
 #include <map>
@@ -26,6 +28,9 @@ struct FontAtlas::Impl {
     int shelfHeight = 0;
     bool loaded = false;
     bool full = false;
+    // MSDF mode: the field's half-width in texels, and the em size it was generated at. Zero range = coverage page.
+    float msdfRange = 0.0f;
+    float msdfEm = 0.0f;
 
     uint64_t revision = 0;
     DirtyRect dirtyAtlas{};
@@ -62,7 +67,20 @@ bool FontAtlas::load(const uint8_t* ttf, size_t size, float pixelHeight, int atl
     return true;
 }
 
-bool FontAtlas::loadFromFile(const std::string& path, float pixelHeight, int atlasSize) {
+bool FontAtlas::loadMsdf(const uint8_t* ttf, size_t size, float pixelHeight, float range, int atlasSize) {
+    if (!load(ttf, size, pixelHeight, atlasSize)) return false;
+    // A range of zero asks for a coverage page: the same font, the old field, which is what a project with a hand-picked
+    // pixel size and no scaling wants.
+    if (range > 0.0f) {
+        impl_->msdfRange = range;
+        impl_->msdfEm = pixelHeight;
+    }
+    return true;
+}
+
+namespace {
+
+bool readFile(const std::string& path, std::vector<uint8_t>* out) {
     std::FILE* f = std::fopen(path.c_str(), "rb");
     if (!f) return false;
     std::fseek(f, 0, SEEK_END);
@@ -72,10 +90,17 @@ bool FontAtlas::loadFromFile(const std::string& path, float pixelHeight, int atl
         std::fclose(f);
         return false;
     }
-    std::vector<uint8_t> bytes(static_cast<size_t>(n));
-    const size_t read = std::fread(bytes.data(), 1, bytes.size(), f);
+    out->resize(static_cast<size_t>(n));
+    const size_t read = std::fread(out->data(), 1, out->size(), f);
     std::fclose(f);
-    if (read != bytes.size()) return false;
+    return read == out->size();
+}
+
+} // namespace
+
+bool FontAtlas::loadFromFile(const std::string& path, float pixelHeight, int atlasSize) {
+    std::vector<uint8_t> bytes;
+    if (!readFile(path, &bytes)) return false;
     return load(bytes.data(), bytes.size(), pixelHeight, atlasSize);
 }
 
@@ -89,6 +114,15 @@ int FontAtlas::height() const { return impl_->atlas; }
 const std::vector<uint8_t>& FontAtlas::pixels() const { return impl_->pixels; }
 uint64_t FontAtlas::revision() const { return impl_->revision; }
 
+bool FontAtlas::msdf() const { return impl_->msdfRange > 0.0f; }
+float FontAtlas::msdfRange() const { return impl_->msdfRange; }
+
+bool FontAtlas::loadMsdfFromFile(const std::string& path, float pixelHeight, float range, int atlasSize) {
+    std::vector<uint8_t> bytes;
+    if (!readFile(path, &bytes)) return false;
+    return loadMsdf(bytes.data(), bytes.size(), pixelHeight, range, atlasSize);
+}
+
 const GlyphMetrics* FontAtlas::glyph(uint32_t cp) {
     Impl& im = *impl_;
     if (!im.loaded) return nullptr;
@@ -101,6 +135,7 @@ const GlyphMetrics* FontAtlas::glyph(uint32_t cp) {
         im.glyphs[cp] = dup->second;
         return &im.glyphs[cp];
     }
+    if (im.msdfRange > 0.0f) return rasteriseMsdf(cp, gi);
 
     int adv = 0, lsb = 0;
     stbtt_GetGlyphHMetrics(&im.font, gi, &adv, &lsb);
@@ -159,6 +194,70 @@ const GlyphMetrics* FontAtlas::glyph(uint32_t cp) {
         }
         ++im.revision;
     }
+    im.byIndex[gi] = m;
+    im.glyphs[cp] = m;
+    return &im.glyphs[cp];
+}
+
+const GlyphMetrics* FontAtlas::rasteriseMsdf(uint32_t cp, int gi) {
+    Impl& im = *impl_;
+    int adv = 0, lsb = 0;
+    stbtt_GetGlyphHMetrics(&im.font, gi, &adv, &lsb);
+
+    msdf::Params params;
+    params.range = im.msdfRange;
+    msdf::Field field;
+    if (!msdf::build(im.ttf.data(), im.ttf.size(), gi, im.scale, params, &field)) {
+        // A glyph with no outline (a space, a tab): it advances and draws nothing, and it is worth remembering so the
+        // next lookup does not pay for the generator again.
+        GlyphMetrics m;
+        m.advance = adv * im.scale;
+        im.byIndex[gi] = m;
+        im.glyphs[cp] = m;
+        return &im.glyphs[cp];
+    }
+
+    const int w = field.width, h = field.height;
+    const int pad = 1;
+    if (im.shelfX + w + pad > im.atlas) {
+        im.shelfX = 0;
+        im.shelfY += im.shelfHeight + pad;
+        im.shelfHeight = 0;
+    }
+    if (im.shelfY + h + pad > im.atlas) {
+        im.full = true;
+        return nullptr;   // atlas exhausted: refuse rather than corrupt text already on screen
+    }
+    const int ax = im.shelfX;
+    const int ay = im.shelfY;
+    for (int row = 0; row < h; ++row) {
+        std::memcpy(im.pixels.data() + (static_cast<size_t>(ay + row) * im.atlas + ax) * 4,
+                    field.pixels.data() + static_cast<size_t>(row) * w * 4, static_cast<size_t>(w) * 4);
+    }
+
+    GlyphMetrics m;
+    m.width = static_cast<float>(w);
+    m.height = static_cast<float>(h);
+    m.xoff = static_cast<float>(field.xoff);
+    m.yoff = static_cast<float>(field.yoff);
+    m.advance = adv * im.scale;
+    m.u0 = static_cast<float>(ax) / im.atlas;
+    m.v0 = static_cast<float>(ay) / im.atlas;
+    m.u1 = static_cast<float>(ax + w) / im.atlas;
+    m.v1 = static_cast<float>(ay + h) / im.atlas;
+
+    im.shelfX += w + pad;
+    im.shelfHeight = std::max(im.shelfHeight, h);
+    if (!im.dirtyAny) {
+        im.dirtyAtlas = {ax, ay, w, h};
+        im.dirtyAny = true;
+    } else {
+        DirtyRect& d = im.dirtyAtlas;
+        const int nx = std::min(d.x, ax), ny = std::min(d.y, ay);
+        const int nr = std::max(d.x + d.w, ax + w), nb = std::max(d.y + d.h, ay + h);
+        d = {nx, ny, nr - nx, nb - ny};
+    }
+    ++im.revision;
     im.byIndex[gi] = m;
     im.glyphs[cp] = m;
     return &im.glyphs[cp];

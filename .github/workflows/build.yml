@@ -112,6 +112,12 @@ jobs:
         run: |-
           set -o pipefail
           ./build/pcss_test 2>&1 | tee /tmp/ukiyo-test-pcss_test.log
+      # Multi-channel signed distance fields (Flax 1.12's MSDF fonts): the field against the exact outline, the median
+      # against the corners it is there to keep, and the atlas page (docs/MSDF.md).
+      - name: Run MSDF Test
+        run: |-
+          set -o pipefail
+          ./build/msdf_test 2>&1 | tee /tmp/ukiyo-test-msdf_test.log
       # Alpha-coverage-preserving mipmaps (GH-104289): the chain builder the model loader runs, on cut-outs whose
       # coverage can be measured exactly (docs/ALPHA_MIPS.md).
       - name: Run Alpha Mipmap Test
@@ -151,6 +157,9 @@ jobs:
       # measured against 64 rays over the sun's disc.
       - name: Render the PCSS figure
         run: mkdir -p renders && ./build/pcss_preview renders/pcss.png 1600 1000
+      # The MSDF figure: a coverage page and a field page drawn at sizes neither was made for, with the measurements.
+      - name: Render the MSDF figure
+        run: mkdir -p renders && ./build/msdf_preview --out renders/msdf.png --font editor/res/fonts/IBMPlexSansJP-Regular.ttf
       # The alpha-coverage figure, and the per-level coverage its caption quotes.
       - name: Render the alpha mipmap figure
         run: mkdir -p renders && ./build/alpha_mips_preview renders/alpha-mips.png 1600 1000
@@ -575,7 +584,7 @@ jobs:
           }
           $failed = @()
           foreach ($t in @("systems_test", "script_test", "network_test", "project_test", "vgeom_test", "motion_test", "gi_test", "input_test", "trail_test", "search_test", "browser_zoom_test", "ao_test",
-                    "contact_shadow_test", "pcss_test", "alpha_mips_test", "transform_test", "lights_test", "save_test",
+                    "contact_shadow_test", "pcss_test", "msdf_test", "alpha_mips_test", "transform_test", "lights_test", "save_test",
                     "manifest_test", "scene_runtime_test", "hud_test", "character_test", "player_test")) {
             Write-Host "::group::$t"
             # script_test keeps a trace in a file as well as on stdout: a process that dies on Windows has been seen to

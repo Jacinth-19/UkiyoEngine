@@ -44,7 +44,8 @@ Plus the offline tools, which are part of the build rather than a separate scrip
 | Alpha-coverage-preserving mipmaps (GH-104289): one fixed mip level per column, the plain box filter on the top row and the preserved chain below it. Coverage holds at 0.37 instead of collapsing to 0.007, so the cut-out does not dissolve ([docs/ALPHA_MIPS.md](docs/ALPHA_MIPS.md)). | The 131 072-triangle Terrain Lab tile built into a virtual-geometry cluster tree, cut at 1 px and 8 px ([docs/VGEOM.md](docs/VGEOM.md)). |
 | ![Grass scatter](docs/grass-scatter-preview.png) | ![Project browser zoom and glob search](docs/browser-qol.png) |
 | Grass scatter over the terrain, drawn by `grass_scatter_preview` from the same bands the engine uses ([docs/GRASS.md](docs/GRASS.md)). | The Project browser's two new gestures (GH-119103): six of the thirteen thumbnail stops drawn at their real pixel size, and eight glob queries run through the engine's matcher against the asset list above them — 23 matches, computed by `browser_qol_preview` ([docs/FILESYSTEM.md](docs/FILESYSTEM.md)). |
-| ![PCSS](docs/pcss.png) | |
+| ![MSDF text](docs/msdf.png) | ![PCSS](docs/pcss.png) |
+| Multi-channel distance fields (Flax 1.12): the same layout from a page rasterised at one size (left) and from a field (right), drawn at 12, 20, 40 and 96 px, with the field's three channels beside the measurements. The field is 0.014 texels from the exact outline and 0.022 from a rasterisation at 12 px; the coverage page is 0.134 of full coverage wrong when drawn at twice its size ([docs/MSDF.md](docs/MSDF.md)). | Percentage-closer soft shadows (Flax 1.13): one shadow map filtered three ways, against 64 rays over the sun's disc. Mean error in the penumbra: 0.266 hard, 0.066 for the fixed filter at its swept best radius, 0.055 for PCSS ([docs/PCSS.md](docs/PCSS.md)). |
 | Percentage-closer soft shadows (Flax 1.13): one shadow map filtered three ways — the map's own single tap, a fixed-radius PCF swept and handed its best radius, and PCSS — each measured against 64 rays over the sun's disc, with the visibility along a floor line crossing the crate's shadow edge at the bottom right. Mean error in the penumbra: 0.266 hard, 0.066 for the tuned fixed filter, 0.055 for PCSS ([docs/PCSS.md](docs/PCSS.md)). | |
 
 The hub is the first thing anyone sees, so it is checked like a screen and not like a build artifact: CI captures its
@@ -145,6 +146,13 @@ Vulkan backend and an OpenGL backend; `--backend gl` selects the latter.
   growing bias and a thickness that keeps the result at contact scale instead of turning into a second shadow map. No per-
   light target, no dispatch, no blur: one loop in `effects.frag`, on the pixels whose normal faces the sun. The figure's
   frame darkens 86 % of its contact band and touches 0.43 % of the lit pixels ([docs/CONTACT_SHADOWS.md](docs/CONTACT_SHADOWS.md)).
+* **Multi-channel signed distance fields for text** (Flax 1.12's MSDF fonts): one glyph page generated at 40 px and
+  sharp at every size, because it stores the distance to the outline rather than the outline's pixels. Three channels,
+  and the renderer takes their median, which is what keeps a corner a corner instead of rounding it. The field tracks
+  the exact outline to 0.014 texels and lands within 0.022 of a rasterisation at 12 px — three to twenty times closer
+  than that rasteriser is to itself a quarter pixel away — where the coverage page it replaces is 0.134 wrong when
+  drawn at twice its size. Its alpha ramp is one screen pixel wide rather than the textbook two, which is what stops
+  13 px text rendering bold ([docs/MSDF.md](docs/MSDF.md)).
 * **Percentage-closer soft shadows** (Flax 1.13's PCSS): the shadow edge's width comes from the light, not from a
   constant — a blocker search reads the shadow map's average occluder distance, and the penumbra is `2 tanRadius × gap`
   wide. Contact hardens for free, a plank and a wall in the same shadow map get different edges, and a fixed-radius
@@ -337,6 +345,7 @@ own glslang package is generated with a broken SPIRV-Tools path; everything else
 | [docs/AO.md](docs/AO.md) | the multi-bounce AO fit, where the albedo comes from, and why the post pass clamps it |
 | [docs/CONTACT_SHADOWS.md](docs/CONTACT_SHADOWS.md) | the contact-shadow march: parameters, why per pixel, and what the test pins |
 | [docs/PCSS.md](docs/PCSS.md) | percentage-closer soft shadows: the two passes, the receiver slope, the foreshortening, the numbers |
+| [docs/MSDF.md](docs/MSDF.md) | multi-channel distance fields for text: the colouring rule, the shader's one line, the measurements |
 | [docs/FLAX.md](docs/FLAX.md) | Flax 1.10–1.13 surveyed: what this engine has, what it can take, and in what order |
 | [docs/ALPHA_MIPS.md](docs/ALPHA_MIPS.md) | alpha-coverage-preserving mipmaps: the measurement, the search, and the chain upload |
 | [docs/TRAIL.md](docs/TRAIL.md) | trail ribbons: sections, the width curve and gradient, the alignment and tiling modes, the test |

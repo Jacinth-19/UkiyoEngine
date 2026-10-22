@@ -52,6 +52,7 @@ bool parseBuildManifest(const std::string& text, BuildManifest* out, std::string
     m.startScene = j.value("startScene", std::string());
     m.version = j.value("versionName", m.version);
     m.font = j.value("font", std::string());
+    m.msdf = j.value("msdf", m.msdf);
     m.hudScale = j.value("hudScale", 1.0f);
     if (m.hudScale < 0.25f) m.hudScale = 0.25f;
     if (m.hudScale > 8.0f) m.hudScale = 8.0f;
@@ -116,6 +117,7 @@ std::string buildManifestJson(const BuildManifest& m) {
     j["versionName"] = m.version;
     j["startScene"] = m.startScene;
     j["font"] = m.font;
+    j["msdf"] = m.msdf;
     j["hudScale"] = m.hudScale;
     j["window"] = {{"width", m.window.width}, {"height", m.window.height}, {"fullscreen", m.window.fullscreen},
                    {"vsync", m.window.vsync}};

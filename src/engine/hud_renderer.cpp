@@ -28,6 +28,7 @@ HudRenderer::HudRenderer(rhi::Device& dev, rhi::Format colorFormat) : colorForma
 
 void HudRenderer::syncAtlas(rhi::Device& dev, FontAtlas& font) {
     if (!font.loaded()) return;
+    msdfRange_ = font.msdfRange();
     if (!atlasCreated_) {
         rhi::TextureDesc td;
         td.width = static_cast<uint32_t>(font.width());
@@ -86,7 +87,9 @@ uint32_t HudRenderer::draw(rhi::Device& dev, const std::vector<HudVertex>& verti
     dev.bindVertexBuffer(vertices_.get());
     PushConstants pc{};
     pc.model = glm::mat4(1.0f);
-    pc.p0 = glm::vec4(static_cast<float>(screenW), static_cast<float>(screenH), 0.0f, 0.0f);
+    // p0.z is the MSDF field's half-width in texels, which the fragment shader needs to turn the distance into an edge
+    // one pixel wide; 0 selects the coverage path.
+    pc.p0 = glm::vec4(static_cast<float>(screenW), static_cast<float>(screenH), msdfRange_, 0.0f);
     dev.pushConstants(&pc, sizeof(pc));
     dev.drawInstanced(n, 1);   // non-indexed: the triangle list is already expanded
     return n;

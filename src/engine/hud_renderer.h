@@ -20,7 +20,8 @@ public:
     // colorFormat is the target's format: Format::Backbuffer for the presentation target.
     HudRenderer(rhi::Device& dev, rhi::Format colorFormat);
 
-    // Creates the atlas texture on first use, then uploads any new glyphs. Call once per frame before draw().
+    // Creates the atlas texture on first use, then uploads any new glyphs. Call once per frame before draw(). An MSDF
+    // atlas records its field width here, which draw() hands to the shader so it can reconstruct an edge.
     void syncAtlas(rhi::Device& dev, FontAtlas& font);
 
     // Records the draw into an open pass whose viewport covers the whole target. Vertices are in pixels.
@@ -37,6 +38,7 @@ private:
     std::unique_ptr<rhi::Texture> atlas_;
     uint64_t atlasRevision_ = 0;
     bool atlasCreated_ = false;
+    float msdfRange_ = 0.0f;   // the field's half-width in texels; 0 for a coverage atlas
     uint32_t capacity_ = 0;
     rhi::Format colorFormat_;
 };
