@@ -892,19 +892,37 @@ jobs:
           echo "UKIYO_NDK=$ndk" >> "$GITHUB_ENV"
           cat "$ndk/source.properties" 2>/dev/null || true
 
-      - name: Build the portable core for arm64-v8a
+      - name: Build for arm64-v8a
         run: |
+          set -o pipefail
           cmake -B build-android-arm64 -DCMAKE_BUILD_TYPE=Release \
             -DCMAKE_TOOLCHAIN_FILE="$UKIYO_NDK/build/cmake/android.toolchain.cmake" \
-            -DANDROID_ABI=arm64-v8a -DANDROID_PLATFORM=android-24
-          cmake --build build-android-arm64 --parallel
+            -DANDROID_ABI=arm64-v8a -DANDROID_PLATFORM=android-24 2>&1 | tee /tmp/android-arm64.log
+          cmake --build build-android-arm64 --parallel 2>&1 | tee -a /tmp/android-arm64.log
 
-      - name: Build the portable core for x86_64
+      - name: Build for x86_64
+        if: always()
         run: |
+          set -o pipefail
           cmake -B build-android-x86_64 -DCMAKE_BUILD_TYPE=Release \
             -DCMAKE_TOOLCHAIN_FILE="$UKIYO_NDK/build/cmake/android.toolchain.cmake" \
-            -DANDROID_ABI=x86_64 -DANDROID_PLATFORM=android-24
-          cmake --build build-android-x86_64 --parallel
+            -DANDROID_ABI=x86_64 -DANDROID_PLATFORM=android-24 2>&1 | tee /tmp/android-x86_64.log
+          cmake --build build-android-x86_64 --parallel 2>&1 | tee -a /tmp/android-x86_64.log
+
+      # An NDK build's error is one line in a thousand; an annotation is the only part of a job log GitHub lets this
+      # repository read back, so the diagnostics are lifted into them rather than left in the log.
+      - name: Annotate Android build errors
+        if: failure()
+        run: |
+          for f in /tmp/android-arm64.log /tmp/android-x86_64.log; do
+            [ -f "$f" ] || continue
+            echo "::group::$f"
+            grep -E "error:|CMake Error|undefined reference|cannot find -l" "$f" | head -25 | while IFS= read -r line; do
+              echo "::error::$line"
+            done
+            echo "::endgroup::"
+          done
+          exit 1
 
       # The ABIs are the point of two builds, so the binaries are checked rather than assumed: an ELF for AArch64 and one
       # for x86-64, both built against Bionic. A build that silently fell back to the host compiler fails here.

@@ -116,7 +116,11 @@ if(ANDROID)
     third_party/glad/src/gl.c)
   list(APPEND UKIYO_CORE_ANDROID src/engine/shader_compiler_stub.cpp)
 
-  find_library(UKIYO_VULKAN_LIBRARY vulkan REQUIRED)
+  # The NDK's sysroot carries libvulkan.so; a toolchain that cannot find it fails loudly here rather than at link time.
+  find_library(UKIYO_VULKAN_LIBRARY vulkan)
+  if(NOT UKIYO_VULKAN_LIBRARY)
+    message(FATAL_ERROR "libvulkan.so was not found in the NDK sysroot")
+  endif()
   add_library(ukiyo_core_android STATIC ${UKIYO_CORE_ANDROID})
   target_include_directories(ukiyo_core_android PUBLIC
     ${CMAKE_SOURCE_DIR}/src ${CMAKE_SOURCE_DIR}/third_party ${CMAKE_SOURCE_DIR}/third_party/meshoptimizer)
