@@ -35,13 +35,13 @@ CI does this (see `.github/workflows/build.yml`, job `android`), and a machine w
 ```
 cmake -B build-android-arm64 -DCMAKE_BUILD_TYPE=Release \
   -DCMAKE_TOOLCHAIN_FILE=$NDK/build/cmake/android.toolchain.cmake \
-  -DANDROID_ABI=arm64-v8a -DANDROID_PLATFORM=android-24
+  -DANDROID_ABI=arm64-v8a -DANDROID_PLATFORM=android-33
 cmake --build build-android-arm64 --parallel
 
 python3 tools/shaderc.py shaders apk/assets/shaders $(command -v glslangValidator)
 # assets/ as above, lib/ with the two .so files, then the SDK's own tools:
 aapt2 link -o apk/unaligned.apk -I $SDK/platforms/android-34/android.jar \
-  --manifest android/AndroidManifest.xml -A apk/assets --min-sdk-version 24 --target-sdk-version 34
+  --manifest android/AndroidManifest.xml -A apk/assets --min-sdk-version 33 --target-sdk-version 34
 (cd apk && zip -q -r unaligned.apk lib)
 zipalign -f 4 apk/unaligned.apk apk/aligned.apk
 apksigner sign --ks apk/debug.keystore --out LanternRun.apk apk/aligned.apk
@@ -49,6 +49,14 @@ adb install -r LanternRun.apk
 ```
 
 The APK from a CI run is attached to it as `lantern-run-android`.
+
+## Why Android 13 (API 33)
+
+The renderer is Vulkan **1.3**: dynamic rendering instead of render passes, `vkCmdBeginRendering` and friends, and no
+compatibility path back to 1.0. Android's `libvulkan.so` only exports the 1.3 entry points from API 33, so linking a
+1.3 renderer against an API 24 stub leaves `vkCmdBeginRendering`, `vkBindImageMemory2` and eight more undefined — which
+is exactly what the first Android link said. API 33 is therefore the build's floor, and the manifest says so:
+`minSdkVersion="33"` and `android.hardware.vulkan.version 0x403000`.
 
 ## Playing it
 

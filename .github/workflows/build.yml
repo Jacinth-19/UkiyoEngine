@@ -897,7 +897,7 @@ jobs:
           set -o pipefail
           cmake -B build-android-arm64 -DCMAKE_BUILD_TYPE=Release \
             -DCMAKE_TOOLCHAIN_FILE="$UKIYO_NDK/build/cmake/android.toolchain.cmake" \
-            -DANDROID_ABI=arm64-v8a -DANDROID_PLATFORM=android-24 2>&1 | tee /tmp/android-arm64.log
+            -DANDROID_ABI=arm64-v8a -DANDROID_PLATFORM=android-33 2>&1 | tee /tmp/android-arm64.log
           cmake --build build-android-arm64 --parallel 2>&1 | tee -a /tmp/android-arm64.log
 
       - name: Build for x86_64
@@ -906,7 +906,7 @@ jobs:
           set -o pipefail
           cmake -B build-android-x86_64 -DCMAKE_BUILD_TYPE=Release \
             -DCMAKE_TOOLCHAIN_FILE="$UKIYO_NDK/build/cmake/android.toolchain.cmake" \
-            -DANDROID_ABI=x86_64 -DANDROID_PLATFORM=android-24 2>&1 | tee /tmp/android-x86_64.log
+            -DANDROID_ABI=x86_64 -DANDROID_PLATFORM=android-33 2>&1 | tee /tmp/android-x86_64.log
           cmake --build build-android-x86_64 --parallel 2>&1 | tee -a /tmp/android-x86_64.log
 
       # An NDK build's error is one line in a thousand; an annotation is the only part of a job log GitHub lets this
@@ -979,7 +979,7 @@ jobs:
           cp build-android-x86_64/libukiyo_player.so apk/lib/x86_64/
           cp android/AndroidManifest.xml apk/
           "$build_tools/aapt2" link -o apk/unaligned.apk -I "$platform/android.jar" \
-            --manifest apk/AndroidManifest.xml -A apk/assets --min-sdk-version 24 --target-sdk-version 34
+            --manifest apk/AndroidManifest.xml -A apk/assets --min-sdk-version 33 --target-sdk-version 34
           ( cd apk && zip -q -r unaligned.apk lib )
           "$build_tools/zipalign" -f 4 apk/unaligned.apk apk/aligned.apk
           keytool -genkeypair -keystore apk/debug.keystore -storepass android -keypass android \
