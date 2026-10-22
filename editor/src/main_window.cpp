@@ -6316,6 +6316,23 @@ QJsonObject MainWindow::sceneDocument() {
         s["outlineMatNoise"] = double(settings_.outlineMatNoise);
         s["fogDensity"] = double(settings_.fogDensity);
         s["fogSun"] = double(settings_.fogSun);
+        if (settings_.fogColor != glm::vec3(0.62f, 0.72f, 0.86f))
+            s["fogColor"] = floatsJson({settings_.fogColor.x, settings_.fogColor.y, settings_.fogColor.z});
+        // The sky: written whenever it differs from the daytime default, so an untouched scene keeps its old file.
+        if (settings_.cloudCover != 1.0f || settings_.stars != 0.0f || settings_.sunDisc != 1.0f ||
+            settings_.skyZenith != glm::vec3(0.20f, 0.46f, 0.92f) ||
+            settings_.skyHorizon != glm::vec3(0.80f, 0.91f, 1.00f) ||
+            settings_.ambientSky != glm::vec3(0.62f, 0.72f, 0.92f) ||
+            settings_.ambientGround != glm::vec3(0.50f, 0.45f, 0.48f)) {
+            s["cloudCover"] = double(settings_.cloudCover);
+            s["stars"] = double(settings_.stars);
+            s["sunDisc"] = double(settings_.sunDisc);
+            s["skyZenith"] = floatsJson({settings_.skyZenith.x, settings_.skyZenith.y, settings_.skyZenith.z});
+            s["skyHorizon"] = floatsJson({settings_.skyHorizon.x, settings_.skyHorizon.y, settings_.skyHorizon.z});
+            s["ambientSky"] = floatsJson({settings_.ambientSky.x, settings_.ambientSky.y, settings_.ambientSky.z});
+            s["ambientGround"] =
+                floatsJson({settings_.ambientGround.x, settings_.ambientGround.y, settings_.ambientGround.z});
+        }
         s["ssao"] = double(settings_.ssao);
         s["multiBounceAO"] = settings_.multiBounceAO;
         s["contactShadows"] = double(settings_.contactShadows);
@@ -7433,6 +7450,26 @@ bool MainWindow::applySceneDocument(const QJsonObject& root, const QString& sour
     // Screen effects, clamped to their control ranges.
     st.fogDensity = std::clamp(float(s.value("fogDensity").toDouble(st.fogDensity)), 0.0f, 0.1f);
     st.fogSun = std::clamp(float(s.value("fogSun").toDouble(st.fogSun)), 0.0f, 1.0f);
+    {
+        float c[3] = {st.fogColor.x, st.fogColor.y, st.fogColor.z};
+        readFloats(s.value("fogColor"), c, 3);
+        st.fogColor = glm::vec3(c[0], c[1], c[2]);
+    }
+    // A scene states the hour through its sky and ambient (src/engine/renderer.h). Read here too, so opening and saving
+    // a night scene in the editor keeps the night.
+    st.cloudCover = std::clamp(float(s.value("cloudCover").toDouble(st.cloudCover)), 0.0f, 1.0f);
+    st.stars = std::clamp(float(s.value("stars").toDouble(st.stars)), 0.0f, 1.0f);
+    st.sunDisc = std::clamp(float(s.value("sunDisc").toDouble(st.sunDisc)), 0.0f, 1.0f);
+    // Colours are three floats, the same shape sunDir and the tints above use.
+    auto readSky = [&](const char* key, glm::vec3& dst) {
+        float c[3] = {dst.x, dst.y, dst.z};
+        readFloats(s.value(key), c, 3);
+        dst = glm::vec3(c[0], c[1], c[2]);
+    };
+    readSky("skyZenith", st.skyZenith);
+    readSky("skyHorizon", st.skyHorizon);
+    readSky("ambientSky", st.ambientSky);
+    readSky("ambientGround", st.ambientGround);
     st.ssao = std::clamp(float(s.value("ssao").toDouble(st.ssao)), 0.0f, 1.0f);
     // QJsonObject::value has no "default" overload: a scene written before this key existed keeps the setting's
     // own default.

@@ -673,8 +673,14 @@ void Renderer::render(const OrbitCamera& cam, const std::vector<Model*>& models,
     const glm::vec3 Lsun = sunDir;
     f.sunDir = glm::vec4(Lsun, 0.0f);
     f.sunColor = glm::vec4(sunColor, 1.0f);
-    f.skyColor = glm::vec4(0.62f, 0.72f, 0.92f, 1.0f) * 0.9f;
-    f.groundColor = glm::vec4(0.50f, 0.45f, 0.48f, 1.0f);
+    // The scene's sky and ambient. These were two hardcoded constants until a game needed a night: the sky shader reads
+    // the two colours, and every shaded surface reads the hemisphere below. The 0.9 on the sky ambient is the old
+    // constant's own scale, kept so the daytime defaults render unchanged.
+    f.skyColor = glm::vec4(s.ambientSky, 1.0f) * 0.9f;
+    f.groundColor = glm::vec4(s.ambientGround, 1.0f);
+    f.skyZenith = glm::vec4(s.skyZenith, std::clamp(s.cloudCover, 0.0f, 1.0f));
+    f.skyHorizon = glm::vec4(s.skyHorizon, std::clamp(s.stars, 0.0f, 1.0f));
+    f.skyParams = glm::vec4(std::clamp(s.sunDisc, 0.0f, 1.0f), 0.0f, 0.0f, 0.0f);
 
     // Cascade ranges: [near, 8], [8, 25], [25, 80].
     const float ranges[4] = {cam.nearZ, kSplits[0], kSplits[1], kSplits[2]};

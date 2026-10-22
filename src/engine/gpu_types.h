@@ -55,6 +55,11 @@ struct FrameUBO {                 // set 0, binding 0 (frame.glsl)
     glm::vec4 waterWaveS[4]; // water: per wave x speed multiplier, y steepness
     glm::vec4 shadowSoft;    // PCSS (docs/PCSS.md): x sun disc tangent, y 1 = soft shadows on, z search radius (m),
                              // w max penumbra (m)
+    // The sky a scene asks for (settings.skyZenith / skyHorizon / cloudCover / stars / sunDisc). Appended at the end, as
+    // std140 requires of every addition, so the offsets of every field above are unchanged.
+    glm::vec4 skyZenith;     // rgb zenith colour, w cloud cover (0 = clear .. 1 = the full layer)
+    glm::vec4 skyHorizon;    // rgb horizon colour, w star amount (0 = off .. 1 = a full field)
+    glm::vec4 skyParams;     // x sun disc strength, yzw unused
 };
 static_assert(sizeof(FrameUBO) % 16 == 0, "FrameUBO is std140: every member is a vec4 or a mat4");
 

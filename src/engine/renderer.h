@@ -89,6 +89,18 @@ struct RenderSettings {
     // Screen-space and grading effects. Each is off at its default, so existing renders are unchanged.
     float fogDensity = 0.0f;         // exponential view-distance fog per metre (0 = off). No height term.
     glm::vec3 fogColor{0.62f, 0.72f, 0.86f};
+    // Sky and ambient: a scene says what hour it is. The sky is drawn by shaders/sky.frag from the two colours below,
+    // and the ambient is the hemisphere every shaded surface reads (frame.skyColor / frame.groundColor). They are three
+    // settings rather than one on purpose: a night scene wants a dark ambient so the lanterns carry the frame, but a
+    // dusk scene wants an orange horizon over a blue ambient. Defaults are the daytime sky the engine had before these
+    // existed, so a scene that says nothing renders exactly as it did.
+    glm::vec3 skyZenith{0.20f, 0.46f, 0.92f};    // the sky overhead
+    glm::vec3 skyHorizon{0.80f, 0.91f, 1.00f};   // the sky at the horizon, and the base of the gradient
+    glm::vec3 ambientSky{0.62f, 0.72f, 0.92f};   // hemisphere light from above (multiplied by 0.9 by the renderer)
+    glm::vec3 ambientGround{0.50f, 0.45f, 0.48f}; // hemisphere light bounced from below
+    float cloudCover = 1.0f;         // 0 = clear sky, 1 = the full procedural cloud layer
+    float stars = 0.0f;              // 0 = off, 1 = a full star field; only visible where the sky is dark
+    float sunDisc = 1.0f;            // the sun disc and halo in the sky; 0 hides them behind a night sky
     float fogSun = 0.0f;             // sun in-scatter into the fog, 0..1 (needs fogDensity > 0)
     float ssao = 0.0f;               // ambient occlusion strength, 0..1 (normal pre-pass)
     // Multi-bounce ambient occlusion (GH-115426): the AO term restored by the light that bounces between the surfaces

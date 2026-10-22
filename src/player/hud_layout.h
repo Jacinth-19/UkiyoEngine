@@ -15,11 +15,15 @@ struct PlayerHudText {
     std::string title;     // product name and version
     std::string stats;     // frame time, draw calls, triangles
     std::string hint;      // the controls line
+    // The game's own status line (`ukiyo.hud`): the game writes it, so it is not a warning and does not compete with
+    // them. Drawn under the title at a size that reads at 720p.
+    std::string game;
     std::string warning;   // the first problem the world reported, empty when there is none
 };
 
-// Draws the whole HUD: a band and title along the top, the stats right-aligned, the controls along the bottom, and the
-// warning in amber under the title. `scale` multiplies every pixel size for high-DPI windows; the manifest's hudScale.
+// Draws the whole HUD: a band and title along the top, the stats right-aligned, the game's status line under the title
+// (cream), the warning under that (amber), and the controls along the bottom. `scale` multiplies every pixel size for
+// high-DPI windows; the manifest's hudScale.
 void drawPlayerHud(HudCanvas& hud, const PlayerHudText& text, float scale);
 
 } // namespace ukiyo

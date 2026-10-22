@@ -147,6 +147,21 @@ void readSettings(const json& s, RenderSettings* r) {
     f("fogDensity", r->fogDensity);
     b("celBand", r->celBand);
     if (s.contains("sunDir")) r->sunDir = vec3Of(s["sunDir"], r->sunDir);
+    // Fog is the colour the far distance fades to, so a night scene that keeps the daytime blue fogs blue. It was a
+    // renderer constant until this; the editor wrote only its density.
+    if (s.contains("fogColor")) r->fogColor = vec3Of(s["fogColor"], r->fogColor);
+    // The sky a scene asks for (renderer.h). Colours are read the same way every other vec3 in a scene is, so a file
+    // written by the editor and a file written by hand mean the same thing.
+    if (s.contains("skyZenith")) r->skyZenith = vec3Of(s["skyZenith"], r->skyZenith);
+    if (s.contains("skyHorizon")) r->skyHorizon = vec3Of(s["skyHorizon"], r->skyHorizon);
+    if (s.contains("ambientSky")) r->ambientSky = vec3Of(s["ambientSky"], r->ambientSky);
+    if (s.contains("ambientGround")) r->ambientGround = vec3Of(s["ambientGround"], r->ambientGround);
+    f("cloudCover", r->cloudCover);
+    f("stars", r->stars);
+    f("sunDisc", r->sunDisc);
+    r->cloudCover = std::clamp(r->cloudCover, 0.0f, 1.0f);
+    r->stars = std::clamp(r->stars, 0.0f, 1.0f);
+    r->sunDisc = std::clamp(r->sunDisc, 0.0f, 1.0f);
 }
 
 // The scene's lights (item 6). Values are clamped to what the renderer accepts, exactly as the editor's reader does

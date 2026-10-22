@@ -227,8 +227,6 @@ void PlayerApp::tick(float dt) {
     }
     syncInstancesFromWorld();
     if (!instances_.empty()) world_->entity("listener").position = instances_.front().position;
-    // A game's own status line (`ukiyo.hud`) outranks the engine's messages while it is set.
-    if (!world_->hudText().empty()) notification_ = world_->hudText();
 }
 
 bool PlayerApp::saveGame(const std::string& path, std::string* error) const {
@@ -355,6 +353,9 @@ PlayerHudText PlayerApp::hudText(uint32_t drawCalls, uint32_t triangles) const {
                   drawCalls, double(triangles) / 1000.0);
     t.stats = buf;
     t.hint = "WASD move   drag to orbit   wheel zoom   F5 save   F9 load   F1 hide HUD   Esc quit";
+    // The game's status line is the game's (`ukiyo.hud`). It used to be routed through notification_, which is the
+    // engine's message slot, so every game's own HUD was drawn as an amber warning at 14 px.
+    if (world_) t.game = world_->hudText();
     // The newest message wins: a save result is more useful than a warning that is still true.
     if (!notification_.empty()) t.warning = notification_;
     else if (!warnings_.empty()) t.warning = warnings_.front();

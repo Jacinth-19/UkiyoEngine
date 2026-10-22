@@ -68,7 +68,9 @@ int main() {
          "intensity": 3.5, "radius": 12, "angle": 35, "softness": 0.2},
         {"type": "point", "enabled": false}
       ],
-      "settings": {"shadows": false, "ssao": 0.7, "tonemap": 3, "celBand": true, "sunDir": [0, -1, 0.2]},
+      "settings": {"shadows": false, "ssao": 0.7, "tonemap": 3, "celBand": true, "sunDir": [0, -1, 0.2],
+                   "skyZenith": [0.02, 0.04, 0.12], "skyHorizon": [0.16, 0.10, 0.22], "stars": 0.8,
+                   "ambientSky": [0.10, 0.13, 0.24], "cloudCover": 0.25, "sunDisc": 0.0},
       "gameCamera": {"target": [0, 1.4, 0], "distance": 4.5, "yaw": 0.25, "pitch": 0.15, "fovY": 0.7}
     })");
 
@@ -135,6 +137,15 @@ int main() {
     check(s.settings.tonemap == 3, "an int render setting loads");
     check(s.settings.celBand, "celBand is a switch and loads as one");
     check(near(s.settings.sunDir.z, 0.2f), "the sun direction loads");
+    // The sky a scene asks for: without this a game cannot be set at night, because the sky and the ambient were
+    // constants in the renderer.
+    check(near(s.settings.skyZenith.z, 0.12f) && near(s.settings.skyZenith.x, 0.02f), "the zenith colour loads");
+    check(near(s.settings.skyHorizon.y, 0.10f), "the horizon colour loads");
+    check(near(s.settings.ambientSky.z, 0.24f), "the ambient sky colour loads");
+    check(near(s.settings.stars, 0.8f), "the star amount loads");
+    check(near(s.settings.cloudCover, 0.25f), "the cloud cover loads");
+    check(near(s.settings.sunDisc, 0.0f), "a scene can hide the sun disc");
+    check(near(s.settings.ambientGround.x, 0.50f), "an unused ambient colour keeps the daytime default");
     check(s.settings.grid, "a setting the file omits keeps its default");
 
     check(near(s.cameraDistance, 4.5f) && near(s.cameraYaw, 0.25f) && near(s.cameraPitch, 0.15f),

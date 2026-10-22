@@ -204,6 +204,7 @@ int main(int argc, char** argv) {
     text.title = "Seed Garden 0.4.0";
     text.stats = "60 fps   16.7 ms   128 draws   412.3k tris";
     text.hint = "WASD move   drag to orbit   wheel zoom   F1 hide HUD   Esc quit";
+    text.game = "Lanterns 2 / 5";
     ukiyo::drawPlayerHud(hud, text, 1.0f);
     drawVertices(img, font, hud.vertices());
 

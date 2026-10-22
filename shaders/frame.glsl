@@ -47,4 +47,9 @@ UBO(0, 0) FrameBlock {
     // one. y turns it on; z is the radius in metres the blocker search reads; w caps the penumbra so a distant caster
     // smears rather than covers the screen. A vec4 at the end of the block, as std140 requires of every addition.
     vec4 shadowSoft;     // x sun tan radius, y 1 = on, z search radius (m), w max penumbra (m)
+    // The sky a scene asks for (src/engine/renderer.h RenderSettings). Zenith/horizon are the gradient; the fourth
+    // components are the cloud cover and the star amount; skyParams.x is the sun disc strength.
+    vec4 skyZenith;      // rgb zenith colour, w cloud cover (0 = clear .. 1 = the full layer)
+    vec4 skyHorizon;     // rgb horizon colour, w star amount (0 = off .. 1 = a full field)
+    vec4 skyParams;      // x sun disc strength, yzw unused
 } frame;

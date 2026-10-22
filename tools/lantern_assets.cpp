@@ -180,7 +180,7 @@ Asset stoneLantern() {
     Asset a;
     a.name = "StoneLantern";
     a.materials.push_back({"Granite", vec4(0.34f, 0.35f, 0.38f, 1.0f), vec3(0.0f), 0.9f, 0.0f});
-    a.materials.push_back({"Paper", vec4(1.0f, 0.86f, 0.62f, 1.0f), vec3(1.0f, 0.55f, 0.18f), 0.7f, 0.0f});
+    a.materials.push_back({"Paper", vec4(1.0f, 0.86f, 0.62f, 1.0f), vec3(2.2f, 1.15f, 0.38f), 0.7f, 0.0f});
     Part stone;
     stone.material = 0;
     addBox(stone, vec3(-0.34f, 0.0f, -0.34f), vec3(0.34f, 0.16f, 0.34f));      // base
@@ -198,7 +198,7 @@ Asset stoneLantern() {
 Asset paperLantern() {
     Asset a;
     a.name = "PaperLantern";
-    a.materials.push_back({"Paper", vec4(1.0f, 0.90f, 0.72f, 1.0f), vec3(1.0f, 0.62f, 0.26f), 0.8f, 0.0f});
+    a.materials.push_back({"Paper", vec4(1.0f, 0.90f, 0.72f, 1.0f), vec3(2.6f, 1.45f, 0.55f), 0.8f, 0.0f});
     a.materials.push_back({"Ribs", vec4(0.35f, 0.18f, 0.08f, 1.0f), vec3(0.0f), 0.7f, 0.0f});
     Part paper;
     paper.material = 0;

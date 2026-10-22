@@ -32,8 +32,9 @@ void main() {
     vec3 rd = normalize(far.xyz / far.w - frame.camPos.xyz);
     float y = rd.y;
 
-    vec3 zenith  = vec3(0.20, 0.46, 0.92);
-    vec3 horizon = vec3(0.80, 0.91, 1.00);
+    // The colours come from the scene (frame.skyZenith / skyHorizon), so the same shader draws noon and midnight.
+    vec3 zenith  = frame.skyZenith.rgb;
+    vec3 horizon = frame.skyHorizon.rgb;
     vec3 S = normalize(frame.sunDir.xyz);
 
     // Gradient with a slight warm lift toward the sun.
@@ -42,11 +43,27 @@ void main() {
     vec3 col = mix(horizon, zenith, t);
     col = mix(col, vec3(1.0, 0.86, 0.72), sunAmt * 0.35 * (1.0 - t));
 
-    // Sun disc and halo (HDR so bloom picks it up).
+    // Sun disc and halo (HDR so bloom picks it up). A night sky sets the strength to 0: a moonlit sky must not carry a
+    // second sun, and the halo would otherwise be a bright disc over the lanterns.
     float sd = max(dot(rd, S), 0.0);
     float disc = smoothstep(0.9992, 0.9997, sd);
-    col += vec3(1.0, 0.97, 0.88) * disc * 6.0;
-    col += vec3(1.0, 0.82, 0.58) * (pow(sd, 28.0) * 0.8 + pow(sd, 5.0) * 0.20);
+    col += vec3(1.0, 0.97, 0.88) * disc * 6.0 * frame.skyParams.x;
+    col += vec3(1.0, 0.82, 0.58) * (pow(sd, 28.0) * 0.8 + pow(sd, 5.0) * 0.20) * frame.skyParams.x;
+
+    // Stars: a hashed lattice over the view direction, thresholded so only the brightest cells light up, and faded near
+    // the horizon where the fog and the ground take over. Drawn before the clouds, so an overcast night shows none.
+    float stars = frame.skyHorizon.w;
+    if (stars > 0.0) {
+        vec2 sp = vec2(atan(rd.z, rd.x), asin(clamp(rd.y, -1.0, 1.0))) * vec2(48.0, 96.0);
+        float cell = hash21(floor(sp));
+        float bright = smoothstep(0.994, 1.0, cell);
+        // A pin-point needs sub-cell position, or every star is a whole cell wide.
+        vec2 sub = fract(sp) - 0.5;
+        // smoothstep needs edge0 < edge1; the inverted form is undefined behaviour on some drivers.
+        float point = (1.0 - smoothstep(0.0, 0.30, length(sub))) * bright;
+        float twinkle = 0.75 + 0.25 * sin(frame.screenParams.z * 1.7 + cell * 43.0);
+        col += vec3(0.86, 0.90, 1.00) * point * stars * twinkle * smoothstep(0.02, 0.35, y) * 2.2;
+    }
 
     // Cel-shaded clouds on a plane above the horizon.
     if (y > 0.0) {
@@ -60,7 +77,7 @@ void main() {
         vec3 cloudShade = vec3(0.72, 0.80, 0.94);
         vec3 cloud = mix(cloudShade, cloudLit, lit);
         float fade = smoothstep(0.02, 0.30, y);
-        col = mix(col, cloud, c * fade);
+        col = mix(col, cloud, c * fade * frame.skyZenith.w);
     }
     outColor = vec4(col, 0.0);   // alpha 0: environment (character mask)
 }

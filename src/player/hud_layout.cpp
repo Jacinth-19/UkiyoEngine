@@ -23,8 +23,14 @@ void drawPlayerHud(HudCanvas& hud, const PlayerHudText& text, float scale) {
     // The controls along the bottom edge, and the first warning above the title, where the eye already is.
     hud.rect({0.0f, h - 34.0f * scale, w, 34.0f * scale}, HudColor(0.04f, 0.045f, 0.06f, 0.6f));
     hud.text(pad, h - 27.0f * scale, text.hint, HudColor(0.86f, 0.88f, 0.92f, 0.92f), 13.0f * scale);
+    // The game's own line sits where a player looks for it, under the title, and the warnings move down one slot so a
+    // warning never covers it.
+    if (!text.game.empty()) {
+        hud.textShadowed(pad, 64.0f * scale, text.game, HudColor(1.0f, 0.93f, 0.80f, 1.0f), 18.0f * scale);
+    }
     if (!text.warning.empty()) {
-        hud.textShadowed(pad, 64.0f * scale, text.warning, HudColor(1.0f, 0.78f, 0.35f, 1.0f), 14.0f * scale);
+        const float y = (text.game.empty() ? 64.0f : 88.0f) * scale;
+        hud.textShadowed(pad, y, text.warning, HudColor(1.0f, 0.78f, 0.35f, 1.0f), 14.0f * scale);
     }
 }
 
