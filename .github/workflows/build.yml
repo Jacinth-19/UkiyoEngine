@@ -60,7 +60,9 @@ jobs:
       - name: Annotate compile errors
         if: failure()
         run: |
-          grep -E "error:|Error [0-9]" build.log | head -40 | while IFS= read -r line; do
+          # `undefined reference` is a link failure's actual sentence; without it a missing translation unit shows up as
+          # a bare "collect2: error: ld returned 1 exit status" and says nothing.
+          grep -E "error:|undefined reference|Error [0-9]" build.log | head -40 | while IFS= read -r line; do
             echo "::error::${line//'%'/'%25'}"
           done
       - name: Run Systems Test

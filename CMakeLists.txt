@@ -634,7 +634,8 @@ target_compile_options(player_test PRIVATE ${UKIYO_WARNINGS})
 # The first game (docs/GAME.md): Lantern Run's project, scene and generated assets, checked without a device. A broken
 # model path or a scene that no longer loads fails here, not on a player's machine. game_data_test is the portable half
 # of the same audit, built from the translation units the Android job compiles.
-add_executable(game_data_test tests/game_data_test.cpp)
+add_executable(game_data_test tests/game_data_test.cpp src/engine/build_manifest.cpp
+               src/engine/scene_runtime.cpp src/engine/transform.cpp src/engine/lights.cpp)
 target_include_directories(game_data_test PRIVATE ${CMAKE_SOURCE_DIR}/src)
 target_link_libraries(game_data_test PRIVATE glm::glm nlohmann_json::nlohmann_json)
 target_compile_options(game_data_test PRIVATE ${UKIYO_WARNINGS})
