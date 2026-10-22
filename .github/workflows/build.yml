@@ -523,9 +523,12 @@ jobs:
           ./build/ukiyo_pack --project games/lantern-run --player build/ukiyo_player --platform linux \
             --shaders build/shaders --out dist/lantern-run-linux --zip dist/lantern-run-linux.zip
           mkdir -p renders
+          ls -la dist/lantern-run-linux/run.sh dist/lantern-run-linux/ukiyo_player
+          # `sh` rather than `./`: the package is a folder of files, and a zip on its way to a player does not carry the
+          # executable bit. The launcher has to work either way, so the check runs it the conservative way.
           # The launcher changes into the package directory, so the capture path has to be absolute: a relative --shot
           # would be written inside the package and the artifact upload would find nothing.
-          xvfb-run -a -s "-screen 0 1280x720x24" dist/lantern-run-linux/run.sh --backend vk --headless \
+          xvfb-run -a -s "-screen 0 1280x720x24" sh dist/lantern-run-linux/run.sh --backend vk --headless \
             --seconds 3 --shot "$GITHUB_WORKSPACE/renders/lantern-run.png" 2>&1 | tee /tmp/ukiyo-lantern-run.log
           grep -q "player: 1 script running" /tmp/ukiyo-lantern-run.log
           if grep -q "player: warning:" /tmp/ukiyo-lantern-run.log; then

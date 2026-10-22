@@ -273,8 +273,12 @@ bool build(const std::string& rootDir, const std::string& projectDir, const std:
         r.error = "cannot write the launcher";
         return false;
     }
-    fs::permissions(out / "run.sh", fs::perms::owner_exec | fs::perms::group_exec | fs::perms::others_exec,
-                    fs::perm_options::add, ec);
+    // 0755 outright rather than "add the execute bits": a package assembled on a filesystem or through a copy that
+    // dropped the mode must still produce a launcher a user can run with ./run.sh.
+    fs::permissions(out / "run.sh",
+                    fs::perms::owner_all | fs::perms::group_read | fs::perms::group_exec | fs::perms::others_read |
+                        fs::perms::others_exec,
+                    fs::perm_options::replace, ec);
     if (!writeAll(out / "run.bat", bat.data(), bat.size())) {
         r.error = "cannot write the launcher";
         return false;
