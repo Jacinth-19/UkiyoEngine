@@ -21,6 +21,7 @@
 #include <QHash>
 #include <QPointer>
 #include <functional>
+#include "inspector_filter.h"
 #include "scene_gizmo.h"
 #include "engine_session.h"
 #include "engine/browser_zoom.h"
@@ -81,7 +82,6 @@ inline const QString kTerrainUndoKey = QStringLiteral("terrainUndo");
 
 namespace editor {
 
-class InspectorFilter;
 class LuaEditorDialog;
 class MaterialInspector;
 

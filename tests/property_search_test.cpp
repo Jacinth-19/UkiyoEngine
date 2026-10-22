@@ -1,6 +1,7 @@
 // The Inspector's search rule (Flax 1.13's Properties panel search): one query, a page of labelled rows, which rows stay
 // and which sections still have something in them. Everything here is the rule itself, with the rows an editor would
 // hand it — no window, no widget, no assets.
+#include <cstdint>
 #include <cstdio>
 #include <string>
 #include <vector>
