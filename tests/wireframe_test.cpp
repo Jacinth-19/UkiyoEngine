@@ -16,6 +16,7 @@
 
 #include <glm/glm.hpp>
 
+#include "engine/gpu_types.h"
 #include "rhi/rhi.h"
 
 namespace {
@@ -138,9 +139,11 @@ bool runBackend(rhi::Backend backend, GLFWwindow* window, const char* label) {
         d.dev->setViewport(0, 0, W, H);
         d.dev->bindPipeline(pipeline);
         d.dev->bindDescriptorSet(0, d.hudSet.get());
-        // hud.vert reads the presentation size from the push block's first two floats.
-        float screen[4] = {float(W), float(H), 0.0f, 0.0f};
-        d.dev->pushConstants(screen, sizeof(screen));
+        // hud.vert reads the presentation size from the push block. p0 is not the first member of the block — the
+        // model matrix is — so the size has to be written where the shader reads it, not at offset 0.
+        ukiyo::PushConstants pc{};   // the block the HUD renderer pushes: model matrix, then p0..p3
+        pc.p0 = glm::vec4(float(W), float(H), 0.0f, 0.0f);
+        d.dev->pushConstants(&pc, sizeof(pc));
         d.dev->bindVertexBuffer(d.vb.get());
         d.dev->drawInstanced(d.vertexCount, 1);   // non-indexed: the HUD emits a triangle list of vertices
         d.dev->endPass();

@@ -193,13 +193,6 @@ jobs:
       # start, tick and HUD path main.cpp takes. This is the check that the Build page's output actually runs.
       - name: Run Player Self-Test
         run: ./build/ukiyo_player --selftest --build Build/build.json --project tests/fixtures/player
-      # The same boot with a 2 ms frame budget for loading: the scene arrives over several frames instead of one stall.
-      # The run fails if the load never completes, which is what a budget that is never spent would do.
-      - name: Run Player With a Load Budget
-        run: |-
-          set -o pipefail
-          ./build/ukiyo_player --headless --seconds 4 --load-budget 2 --build Build/build.json --project tests/fixtures/player 2>&1 | tee /tmp/ukiyo-player-budget.log
-          grep -q "player: loaded" /tmp/ukiyo-player-budget.log
       # The figure in docs/PLAYER.md, from the shipping layout. It renders the HUD with the same vertex list the GPU gets.
       - name: Render the player HUD figure
         run: mkdir -p renders && ./build/hud_preview --out renders/player-hud.png --background docs/terrain-hero.png
@@ -476,6 +469,20 @@ jobs:
             --build Build/render.json --project tests/fixtures/player --shot renders/player-frame.png --seconds 1
           ls -la renders/player-frame.png
           python3 tools/frame_check.py renders/player-frame.png
+      # The same boot with a 2 ms frame budget for loading: the scene arrives over several frames instead of one stall,
+      # and the player says so when it is done. A budget that is never spent would never print that line, which is what
+      # the grep is for. This lives in the device job because the player needs a device to reach its frame loop at all;
+      # the plain Linux job has no ICD and no display.
+      - name: Run the player with a load budget
+        env:
+          QT_QPA_PLATFORM: xcb
+        run: |-
+          set -o pipefail
+          export VK_ICD_FILENAMES="$(ls /usr/share/vulkan/icd.d/*lvp* | head -1)"
+          xvfb-run -a -s "-screen 0 1280x720x24" ./build/ukiyo_player --backend vk --headless \
+            --build Build/build.json --project tests/fixtures/player --seconds 4 --load-budget 2 \
+            2>&1 | tee /tmp/ukiyo-player-budget.log
+          grep -q "player: loaded" /tmp/ukiyo-player-budget.log
       - name: Upload the player frame and the logs
         if: always()
         uses: actions/upload-artifact@v4
