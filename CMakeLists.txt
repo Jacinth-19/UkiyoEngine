@@ -703,6 +703,7 @@ if(UKIYO_EDITOR)
       editor/src/main_window.h
       editor/src/inspector_filter.cpp
       editor/src/inspector_filter.h
+      editor/src/foldout.h
       editor/src/inspector_ui.h)
     set_target_properties(ukiyo_editor PROPERTIES AUTOMOC ON CXX_STANDARD 17)
     target_include_directories(ukiyo_editor PRIVATE ${CMAKE_SOURCE_DIR}/editor/src)

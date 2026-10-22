@@ -11,6 +11,8 @@
 namespace editor {
 
 class Foldout : public QWidget {
+    Q_OBJECT
+
 public:
     Foldout(const QString& title, QWidget* body, QWidget* parent = nullptr) : QWidget(parent), body_(body) {
         title_ = title;

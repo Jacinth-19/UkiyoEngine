@@ -56,7 +56,7 @@ size_t InspectorFilter::apply(QWidget* page) {
         page_ = page;
         open_.clear();
     }
-    const std::vector<Foldout*> folds = page->findChildren<Foldout*>();
+    const QList<Foldout*> folds = page->findChildren<Foldout*>();
     if (folds.empty()) return shown_;   // a message page ("Select an object..."): nothing to narrow
 
     // One row per form row, in page order. The two roles can be the same widget: addRow(QWidget*) puts the row in the
