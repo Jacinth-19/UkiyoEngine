@@ -520,8 +520,10 @@ jobs:
           ./build/ukiyo_pack --project games/lantern-run --player build/ukiyo_player --platform linux \
             --shaders build/shaders --out dist/lantern-run-linux --zip dist/lantern-run-linux.zip
           mkdir -p renders
+          # The launcher changes into the package directory, so the capture path has to be absolute: a relative --shot
+          # would be written inside the package and the artifact upload would find nothing.
           xvfb-run -a -s "-screen 0 1280x720x24" dist/lantern-run-linux/run.sh --backend vk --headless \
-            --seconds 3 --shot renders/lantern-run.png 2>&1 | tee /tmp/ukiyo-lantern-run.log
+            --seconds 3 --shot "$GITHUB_WORKSPACE/renders/lantern-run.png" 2>&1 | tee /tmp/ukiyo-lantern-run.log
           grep -q "player: 1 script running" /tmp/ukiyo-lantern-run.log
           if grep -q "player: warning:" /tmp/ukiyo-lantern-run.log; then
             echo "::error::the game started with warnings:"
@@ -660,6 +662,19 @@ jobs:
               Select-Object -First 40 |
               ForEach-Object { Write-Host ("::error::" + ($_.Line -replace '%','%25')) }
           }
+
+      # The Windows build of the first game, packaged before the tests run: the package only needs the compiler to have
+      # succeeded, and a test that fails later must not cost the artifact. (script_test's upstream crash is the reason
+      # this is here rather than at the end of the job.)
+      - name: Package the first game for Windows
+        run: |-
+          ./build/ukiyo_pack.exe --project games/lantern-run --player build/ukiyo_player.exe --platform windows `
+            --shaders build/shaders --out dist/lantern-run-windows --zip dist/lantern-run-windows.zip
+      - name: Upload the Windows package
+        uses: actions/upload-artifact@v4
+        with:
+          name: lantern-run-windows
+          path: dist/lantern-run-windows.zip
 
       # The same tests the Linux job runs, in the same order, in one step: a failing test's own output is the only
       # useful diagnostic, and the job log is not reachable from everywhere, so the last lines go out as annotations.
@@ -828,18 +843,6 @@ jobs:
         run: |
           $env:QT_QPA_PLATFORM = "offscreen"
           ./build/ukiyo_hub.exe --selftest
-
-      # The same game as the Linux job packages, built by MSVC: the Windows player, its shaders and the project in one
-      # folder, zipped. This is the artifact a Windows player downloads.
-      - name: Package the first game for Windows
-        run: |-
-          ./build/ukiyo_pack.exe --project games/lantern-run --player build/ukiyo_player.exe --platform windows `
-            --shaders build/shaders --out dist/lantern-run-windows --zip dist/lantern-run-windows.zip
-      - name: Upload the Windows package
-        uses: actions/upload-artifact@v4
-        with:
-          name: lantern-run-windows
-          path: dist/lantern-run-windows.zip
 
       - name: Upload build log
         if: always()

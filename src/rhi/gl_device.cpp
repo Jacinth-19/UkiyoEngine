@@ -179,7 +179,10 @@ public:
         glVertexArrayAttribFormat(vao_, 6, 2, GL_FLOAT, GL_FALSE, 72);
         glEnableVertexArrayAttrib(vao_, 7);
         glVertexArrayAttribFormat(vao_, 7, 4, GL_FLOAT, GL_FALSE, 80);
-        for (GLuint a = 0; a < 5; ++a) glVertexArrayAttribBinding(vao_, a, 0);
+        // Every enabled attribute reads from the one interleaved buffer. An attribute left unbound reads from its own
+        // (empty) binding slot, which in GL is not an error: it silently yields zeros, so a shader's colour input is
+        // black and nothing on screen says why. All eight are routed to binding 0 — the same buffer, one stride.
+        for (GLuint a = 0; a < 8; ++a) glVertexArrayAttribBinding(vao_, a, 0);
         glBindVertexArray(vao_);
 
         glCreateBuffers(1, &pushUbo_);
