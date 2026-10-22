@@ -546,7 +546,7 @@ target_link_libraries(save_test PRIVATE glm::glm)
 target_compile_options(save_test PRIVATE ${UKIYO_WARNINGS_PEDANTIC})
 
 # HUD text and layout. Needs the repository root for the test font.
-add_executable(hud_test tests/hud_test.cpp src/engine/text_atlas.cpp src/engine/hud.cpp)
+add_executable(hud_test tests/hud_test.cpp src/engine/text_atlas.cpp src/engine/msdf.cpp src/engine/hud.cpp)
 target_include_directories(hud_test PRIVATE ${CMAKE_SOURCE_DIR}/src ${CMAKE_SOURCE_DIR}/third_party)
 target_compile_definitions(hud_test PRIVATE UKIYO_ROOT="${CMAKE_SOURCE_DIR}")
 target_link_libraries(hud_test PRIVATE glm::glm)
