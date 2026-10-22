@@ -48,7 +48,9 @@ if(ANDROID)
     src/engine/msdf.cpp
     src/engine/hud.cpp
     src/player/hud_layout.cpp)
-  foreach(t search_test browser_zoom_test transform_test lights_test manifest_test scene_runtime_test)
+  # game_data_test is the first game's project read through the same portable readers a phone would use: it is built
+  # for both ABIs here, and run on the desktop jobs.
+  foreach(t search_test browser_zoom_test transform_test lights_test manifest_test scene_runtime_test game_data_test)
     add_executable(${t} tests/${t}.cpp ${UKIYO_ANDROID_CORE})
     target_include_directories(${t} PRIVATE ${CMAKE_SOURCE_DIR}/src ${CMAKE_SOURCE_DIR}/third_party
                                ${CMAKE_SOURCE_DIR}/third_party/glm ${CMAKE_SOURCE_DIR}/third_party/nlohmann/include)
@@ -630,7 +632,13 @@ target_compile_definitions(player_test PRIVATE GLFW_INCLUDE_NONE)
 target_compile_options(player_test PRIVATE ${UKIYO_WARNINGS})
 
 # The first game (docs/GAME.md): Lantern Run's project, scene and generated assets, checked without a device. A broken
-# model path or a scene that no longer loads fails here, not on a player's machine.
+# model path or a scene that no longer loads fails here, not on a player's machine. game_data_test is the portable half
+# of the same audit, built from the translation units the Android job compiles.
+add_executable(game_data_test tests/game_data_test.cpp)
+target_include_directories(game_data_test PRIVATE ${CMAKE_SOURCE_DIR}/src)
+target_link_libraries(game_data_test PRIVATE glm::glm nlohmann_json::nlohmann_json)
+target_compile_options(game_data_test PRIVATE ${UKIYO_WARNINGS})
+
 add_executable(game_test tests/game_test.cpp)
 target_link_libraries(game_test PRIVATE ukiyo_core)
 target_compile_options(game_test PRIVATE ${UKIYO_WARNINGS})

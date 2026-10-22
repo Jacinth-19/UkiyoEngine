@@ -193,7 +193,9 @@ bool runBackend(rhi::Backend backend, GLFWwindow* window, const char* label) {
     auto nearEdge = [&](int x, int y) {
         const float px = float(x) + 0.5f, py = float(y) + 0.5f;
         const float x0 = 8.0f, y0 = 8.0f, x1 = float(W) - 8.0f, y1 = float(H) - 8.0f;
-        // Sides: horizontal and vertical segments, then the diagonal from (x1, y0) to (x0, y1).
+        // Sides: horizontal and vertical segments, then the diagonal the two triangles share. The quad is emitted as
+        // (a, b, c) and (a, c, d) with a and c opposite corners, so that edge runs from (x0, y0) to (x1, y1) — not the
+        // other diagonal, which no triangle has and which would mark a correct wireframe as 20 % wrong.
         const float onLeft = std::fabs(px - x0);
         const float onRight = std::fabs(px - x1);
         const float onTop = std::fabs(py - y0);
@@ -202,11 +204,11 @@ bool runBackend(rhi::Backend backend, GLFWwindow* window, const char* label) {
         const bool inY = py >= y0 - 2 && py <= y1 + 2;
         if (inY && (onLeft <= 2.0f || onRight <= 2.0f)) return true;
         if (inX && (onTop <= 2.0f || onBottom <= 2.0f)) return true;
-        // Point-to-line distance for the diagonal: (x1,y0) -> (x0,y1).
-        const float dx = x0 - x1, dy = y1 - y0;
+        // Point-to-segment distance for the diagonal: (x0,y0) -> (x1,y1).
+        const float dx = x1 - x0, dy = y1 - y0;
         const float len = std::sqrt(dx * dx + dy * dy);
-        const float dist = std::fabs((px - x1) * dy - (py - y0) * dx) / len;
-        const float t = ((px - x1) * dx + (py - y0) * dy) / (len * len);
+        const float dist = std::fabs((px - x0) * dy - (py - y0) * dx) / len;
+        const float t = ((px - x0) * dx + (py - y0) * dy) / (len * len);
         return t >= -0.02f && t <= 1.02f && dist <= 2.0f;
     };
     int onEdges = 0, lit = 0;

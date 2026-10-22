@@ -221,6 +221,7 @@ jobs:
       - name: Check the first game
         run: |-
           set -o pipefail
+          ./build/game_data_test games/lantern-run 2>&1 | tee /tmp/ukiyo-test-game_data_test.log
           ./build/game_test games/lantern-run 2>&1 | tee /tmp/ukiyo-test-game_test.log
           # The committed GLBs have to be exactly what the generator writes, or the game and its source have drifted.
           ./build/lantern_assets --check
@@ -695,7 +696,7 @@ jobs:
           $failed = @()
           foreach ($t in @("systems_test", "script_test", "network_test", "project_test", "vgeom_test", "motion_test", "gi_test", "input_test", "trail_test", "search_test", "browser_zoom_test", "ao_test",
                     "contact_shadow_test", "pcss_test", "msdf_test", "alpha_mips_test", "transform_test", "lights_test", "save_test",
-                    "property_search_test", "async_load_test", "game_test", "pack_test",
+                    "property_search_test", "async_load_test", "game_data_test", "game_test", "pack_test",
                     "manifest_test", "scene_runtime_test", "hud_test", "character_test", "player_test")) {
             Write-Host "::group::$t"
             # script_test keeps a trace in a file as well as on stdout: a process that dies on Windows has been seen to
@@ -904,6 +905,7 @@ jobs:
       # for x86-64, both built against Bionic. A build that silently fell back to the host compiler fails here.
       - name: Check the ABIs
         run: |
+          file build-android-arm64/game_data_test build-android-x86_64/game_data_test
           file build-android-arm64/search_test build-android-x86_64/search_test
           file build-android-arm64/browser_zoom_test build-android-x86_64/browser_zoom_test
           file build-android-arm64/transform_test build-android-x86_64/transform_test
