@@ -290,6 +290,11 @@ public:
     // The profiler switch. Play turns it on; a shipped game does not pay for it.
     void setProfiling(bool on);
     bool profiling() const { return profiling_; }
+    // The GPU time of the last rendered frame, one frame behind by design (docs/PROFILER.md). Empty before the
+    // first frame, or on a backend with no timestamps.
+    std::vector<ukiyo::Renderer::GpuStat> gpuStats() const {
+        return renderer_ ? renderer_->lastGpuStats() : std::vector<ukiyo::Renderer::GpuStat>{};
+    }
     // Snapshot of the particles in play (count only, for the Inspector).
     int liveParticles() const;
 

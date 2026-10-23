@@ -467,6 +467,24 @@ public:
         VK_CHECK(vkCreateDescriptorPool(core_.device, &dp, nullptr, &descPool_), "vkCreateDescriptorPool");
         createSetLayouts();
 
+        // The profiler's GPU brackets: two timestamp queries per slot (docs/PROFILER.md). timestampPeriod is the
+        // queue clock's nanoseconds per tick; a device that reports 0 has no clock, and the API then reports no
+        // timings rather than zeros pretending to be measurements.
+        {
+            VkPhysicalDeviceProperties props{};
+            vkGetPhysicalDeviceProperties(core_.phys, &props);
+            if (props.limits.timestampPeriod > 0.0f) {
+                VkQueryPoolCreateInfo qp{VK_STRUCTURE_TYPE_QUERY_POOL_CREATE_INFO};
+                qp.queryType = VK_QUERY_TYPE_TIMESTAMP;
+                qp.queryCount = kGpuTimeSlots * 2;
+                if (vkCreateQueryPool(core_.device, &qp, nullptr, &timePool_) == VK_SUCCESS)
+                    timePeriod_ = props.limits.timestampPeriod;
+                else
+                    timePool_ = VK_NULL_HANDLE;
+                if (timePool_) gpuTimes_.assign(kGpuTimeSlots, 0.0f);
+            }
+        }
+
         VkSemaphoreCreateInfo si{VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO};
         VK_CHECK(vkCreateSemaphore(core_.device, &si, nullptr, &imageAvailable_), "semaphore");
         VkFenceCreateInfo fi{VK_STRUCTURE_TYPE_FENCE_CREATE_INFO};
@@ -497,6 +515,7 @@ public:
         for (auto s : renderFinished_) vkDestroySemaphore(core_.device, s, nullptr);
         vkDestroySemaphore(core_.device, imageAvailable_, nullptr);
         vkDestroyFence(core_.device, inFlight_, nullptr);
+        if (timePool_) vkDestroyQueryPool(core_.device, timePool_, nullptr);
         vkDestroyDescriptorPool(core_.device, descPool_, nullptr);
         vkDestroyCommandPool(core_.device, framePool_, nullptr);
         vkDestroyCommandPool(core_.device, core_.transientPool, nullptr);
@@ -686,8 +705,38 @@ public:
         VkCommandBufferBeginInfo bi{VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO};
         bi.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
         VK_CHECK(vkBeginCommandBuffer(cb_, &bi), "vkBeginCommandBuffer");
+        // The fence above retired the previous frame, so its timestamps read without waiting; the reset is recorded
+        // for this frame's submission and lands after the read. (One frame in flight, per the note at the top of
+        // this file — that is what makes resolve-then-reset in the same place correct.)
+        resolveGpuTimes();
+        if (timePool_) vkCmdResetQueryPool(cb_, 0, kGpuTimeSlots * 2);
         inFrame_ = true;
         return true;
+    }
+
+    // GPU timestamps, written outside every render pass (docs/PROFILER.md). The pair resolves a frame later, when
+    // the fence has retired the frame that wrote it, so the profiler never waits; a slot this frame did not write
+    // stays NOT_READY at resolve time and keeps its previous value.
+    void beginGpuTime(uint32_t slot) override {
+        if (!timePool_ || !inFrame_ || slot >= kGpuTimeSlots) return;
+        vkCmdWriteTimestamp(cb_, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, slot * 2);
+    }
+    void endGpuTime(uint32_t slot) override {
+        if (!timePool_ || !inFrame_ || slot >= kGpuTimeSlots) return;
+        vkCmdWriteTimestamp(cb_, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, slot * 2 + 1);
+    }
+    std::vector<float> gpuTimesMs() override { return timePool_ ? gpuTimes_ : std::vector<float>{}; }
+
+    void resolveGpuTimes() {
+        if (!timePool_) return;
+        for (uint32_t s = 0; s < kGpuTimeSlots; ++s) {
+            uint64_t t[2]{0, 0};
+            if (vkGetQueryPoolResults(core_.device, timePool_, s * 2, 2, sizeof(t), t, sizeof(uint64_t),
+                                       VK_QUERY_RESULT_64_BIT) != VK_SUCCESS)
+                continue;
+            const double ns = double(t[1] > t[0] ? t[1] - t[0] : 0) * double(timePeriod_);
+            gpuTimes_[s] = float(ns / 1.0e6);
+        }
     }
 
     void endFrame(bool capture) override {
@@ -1186,6 +1235,9 @@ public:
     std::unique_ptr<VKBuffer> readback_;
     uint32_t readbackW_ = 0, readbackH_ = 0;
     std::vector<uint8_t> capture_;
+    VkQueryPool timePool_ = VK_NULL_HANDLE;
+    float timePeriod_ = 1.0f;   // ns per timestamp tick (VkPhysicalDeviceProperties::limits.timestampPeriod)
+    std::vector<float> gpuTimes_;
 };
 
 } // namespace

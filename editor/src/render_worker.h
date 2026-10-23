@@ -219,6 +219,7 @@ public:
     ukiyo::FrameTiming playTiming() { return session_.playTiming(); }
     void setProfiling(bool on) { session_.setProfiling(on); }
     bool profiling() const { return session_.profiling(); }
+    std::vector<ukiyo::Renderer::GpuStat> gpuStats() const { return session_.gpuStats(); }
     void playTick(float dt) {
         session_.tickPlay(dt);
         reportScene();

@@ -52,9 +52,10 @@ Any hook may be missing. A script with no `onUpdate` costs nothing per frame.
 
 ## The API
 
-Every bound function lives in the `ukiyo` table — 24 of them — alongside `ukiyo.Vector3`, `ukiyo.Quaternion` and
-`ukiyo.Entity`. The full list, with signatures and one line each, is `ukiyo::script_project::apiDocs()`; the editor stub
-is generated from that same table, so the documentation and an editor's completion cannot drift apart.
+Every bound function lives in the `ukiyo` table — alongside `ukiyo.Vector3`, `ukiyo.Quaternion` and `ukiyo.Entity`.
+The full list, with signatures and one line each, is `ukiyo::script_project::apiDocs()`; the editor stub is generated
+from that same table, so the documentation and an editor's completion cannot drift apart, and `tests/script_test.cpp`
+fails if the engine binds a function the stub does not declare (or documents one the engine does not bind).
 
 ```lua
 ukiyo.log(message)                     -- the editor console and the player log
@@ -66,7 +67,12 @@ ukiyo.setPosition(name, x, y, z)       -- moves a body or an agent with it
 ukiyo.moveTo(name, x, y, z)            -- an agent walks to a point on the navmesh
 ukiyo.impulse(name, x, y, z)           -- newton-seconds on a dynamic body
 ukiyo.setParam(name, param, value)     -- an animation parameter
-ukiyo.playSound(path, entity?)         -- positional with an entity, 2D without
+ukiyo.playSound(path, entity?, bus?)   -- positional with an entity, 2D without; bus: music/sfx/ambient
+ukiyo.playMusic(path, loop?, fade?)    -- streaming music, looped, faded in
+ukiyo.stopMusic(fade?)                 -- fade the music out (0 = now)
+ukiyo.setBusVolume(bus, volume)        -- music/sfx/ambient/master, 0..4
+ukiyo.setBusReverb(bus, wet)           -- 0 dry .. 1 fully through the insert
+ukiyo.frameTiming()                    -- last tick's ms by stage (profiler on)
 ukiyo.spawnEffect(x, y, z, count?)     -- a one-shot particle burst
 ukiyo.raycast(ox, oy, oz, dx, dy, dz, maxDistance)   -- false, or true and the hit point
 ukiyo.setContactFilter(a, b, enabled)  -- stop or allow contacts between two entities

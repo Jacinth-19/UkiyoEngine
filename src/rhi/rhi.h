@@ -26,6 +26,9 @@ namespace rhi {
 
 enum class Backend { OpenGL, Vulkan };
 
+// Number of GPU-time brackets the device records (docs/PROFILER.md). Two timestamp queries per slot.
+constexpr uint32_t kGpuTimeSlots = 8;
+
 enum class Format : uint8_t {
     RGBA8,        // UNORM 8-bit
     RGBA8_SRGB,   // sRGB 8-bit (hardware linearises on sample)
@@ -185,6 +188,16 @@ public:
     // backend cannot resize, in which case the caller keeps its current size.
     // Callers must re-query backbufferWidth/Height and rebuild size-dependent targets.
     virtual bool resizeBackbuffer(uint32_t width, uint32_t height) { (void)width; (void)height; return false; }
+
+    // GPU time, in numbered brackets, for the profiler (docs/PROFILER.md). One pair of timestamps per slot: the
+    // caller brackets a group of passes with beginGpuTime/endGpuTime, outside any render pass, between beginFrame
+    // and endFrame. gpuTimesMs() returns the most recently *resolved* frame — one frame of latency, so the read
+    // never waits for the GPU — as kGpuTimeSlots milliseconds in slot order. A slot the frame did not write keeps
+    // its previous value; a device with no timestamp support returns an empty vector and the profiler falls back
+    // to its CPU stages. The names belong to the caller, not the device.
+    virtual void beginGpuTime(uint32_t slot) { (void)slot; }
+    virtual void endGpuTime(uint32_t slot) { (void)slot; }
+    virtual std::vector<float> gpuTimesMs() { return {}; }
 
     // Commands (recorded between beginFrame/endFrame).
     virtual void beginPass(const PassDesc& pass) = 0;

@@ -169,9 +169,23 @@ const std::vector<ApiDoc>& apiDocs() {
          "Adds an impulse to a dynamic body, in newton-seconds."},
         {"setParam", "ukiyo.setParam(name, param, value)",
          "Sets an animation parameter on an entity that has a state machine."},
-        {"playSound", "ukiyo.playSound(path, entity?)",
-         "Plays a sound file. With an entity the sound is positional; without one it is 2D. Returns false when the file "
-         "cannot be read."},
+        {"playSound", "ukiyo.playSound(path, entity?, bus?)",
+         "Plays a sound file. With an entity the sound is positional; without one it is 2D. The optional bus is one of "
+         "music, sfx (default), ambient — an unknown name is an error. Returns false when the file cannot be read."},
+        {"playMusic", "ukiyo.playMusic(path, loop?, fadeSeconds?)",
+         "Streams music on the music bus, outside the voice limit. A truthy loop repeats; fadeSeconds fades the volume "
+         "in. Returns false when the file cannot be read."},
+        {"stopMusic", "ukiyo.stopMusic(fadeSeconds?)",
+         "Fades the music out over that many seconds — 0 stops at once — then ends it. Returns false when nothing was "
+         "playing."},
+        {"setBusVolume", "ukiyo.setBusVolume(bus, volume)",
+         "Mixes one bus — music, sfx, ambient, or master — at 0..4. Returns false for an unknown bus name."},
+        {"setBusReverb", "ukiyo.setBusReverb(bus, wet)",
+         "How much of one bus (music, sfx, ambient) runs through the reverb insert: 0 is dry, 1 fully wet. Returns "
+         "false for an unknown bus name."},
+        {"frameTiming", "ukiyo.frameTiming()",
+         "The last tick's cost in milliseconds by stage: input, scripts, physics, characters, navigation, animation, "
+         "particles, entities, total. All zero until a profiled tick has run."},
         {"spawnEffect", "ukiyo.spawnEffect(x, y, z, count?)",
          "Draws a one-shot particle burst at a point. Returns the effect's handle."},
         {"raycast", "ukiyo.raycast(ox, oy, oz, dx, dy, dz, maxDistance)",

@@ -1485,7 +1485,8 @@ QWidget* MainWindow::buildProjectSettings() {
     addPage("inventory_2", QStringLiteral("Assets"), [&](QVBoxLayout* v) { fillAssetsPage(v); });
     addPage("translate", QStringLiteral("Localisation"), [&](QVBoxLayout* v) { fillLocalisationPage(v); });
     addPage("fork_left", QStringLiteral("Version Control"), [&](QVBoxLayout* v) { fillVcsPage(v); });
-    addPage("extension", QStringLiteral("Plugins"), [&](QVBoxLayout* v) { fillPluginsPage(v); });
+    // "deployed_code" is the icon material_icons.h actually has — "extension" has no glyph there and rendered blank.
+    addPage("deployed_code", QStringLiteral("Plugins"), [&](QVBoxLayout* v) { fillPluginsPage(v); });
     addPage("space_dashboard", QStringLiteral("Build"), [&](QVBoxLayout* v) { fillBuildPage(v); });
 
     QLineEdit* search = new QLineEdit;
@@ -5512,6 +5513,20 @@ void MainWindow::paintGameOverlay(QPainter& p) {
                 ranked << QStringLiteral("%1 %2").arg(QString::fromLatin1(st.name)).arg(double(st.ms), 0, 'f', 2);
             }
             if (!ranked.isEmpty()) lines << QStringLiteral("  ") + ranked.join(QStringLiteral(" · "));
+        }
+        // The GPU's share of the same frame, one frame behind by design: the device resolves its timestamp queries
+        // when the next frame begins, so reading them never waits for the GPU (docs/PROFILER.md).
+        std::vector<ukiyo::Renderer::GpuStat> gpu;
+        if (playing_) runOnWorker([&] { gpu = worker_->gpuStats(); });
+        if (!gpu.empty()) {
+            float total = 0.0f;
+            QStringList ranked;
+            for (const auto& g : gpu) {
+                total += g.ms;
+                ranked << QStringLiteral("%1 %2").arg(QString::fromLatin1(g.name)).arg(double(g.ms), 0, 'f', 2);
+            }
+            lines << QStringLiteral("GPU: %1 ms").arg(double(total), 0, 'f', 2);
+            lines << QStringLiteral("  ") + ranked.join(QStringLiteral(" · "));
         }
         const QFontMetrics fm(p.font());
         int textW = 0;

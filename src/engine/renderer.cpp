@@ -856,8 +856,17 @@ void Renderer::render(const OrbitCamera& cam, const std::vector<Model*>& models,
         drawWith(r, pipe, frameSet, r.prim->material->set.get(), p0);
     };
 
+    // The GPU brackets the device resolved when this frame began: one frame behind, never a wait (docs/PROFILER.md).
+    gpuStats_.clear();
+    if (const std::vector<float> gpu = dev_.gpuTimesMs(); !gpu.empty()) {
+        static const char* kGpuNames[] = {"shadows", "depth", "scene", "post", "hud"};
+        const size_t n = std::min(gpu.size(), sizeof(kGpuNames) / sizeof(kGpuNames[0]));
+        for (size_t i = 0; i < n; ++i) gpuStats_.push_back({kGpuNames[i], gpu[i]});
+    }
+
     // 1. Cascaded shadow atlas. The pass always runs so the atlas is cleared.
     {
+        dev_.beginGpuTime(0);
         rhi::PassDesc sp;
         sp.colors.clear();
         sp.depth = shadowAtlas_.get();
@@ -886,8 +895,10 @@ void Renderer::render(const OrbitCamera& cam, const std::vector<Model*>& models,
             }
         }
         dev_.endPass();
+        dev_.endGpuTime(0);
     }
 
+    dev_.beginGpuTime(1);
     // 2a. Depth prepass: the in-view opaque toon draws write depth first, so the colour pass shades each pixel once
     // (its depth test is LESS_OR_EQUAL, so equal depths pass). The depth shader runs the colour shaders' discards.
     if (s.depthPrepass) {
@@ -900,6 +911,8 @@ void Renderer::render(const OrbitCamera& cam, const std::vector<Model*>& models,
             bindAndDraw(r, pDepth_[r.prim->material->doubleSided ? 1 : 0].get(), frameSet_.get(), glm::vec4(0.0f));
         dev_.endPass();
     }
+
+    dev_.endGpuTime(1);
 
     // Blended draws. Without water they follow the opaque draws in the scene pass. With water they run after the
     // water surface, in a pass of their own.
@@ -930,6 +943,7 @@ void Renderer::render(const OrbitCamera& cam, const std::vector<Model*>& models,
         trailTriangles_ = alphaTris + addTris;
     };
 
+    dev_.beginGpuTime(2);
     // 2. Scene: sky, infinite grid, toon materials, outlines, then blended materials.
     {
         rhi::PassDesc hp;
@@ -1231,6 +1245,9 @@ void Renderer::render(const OrbitCamera& cam, const std::vector<Model*>& models,
         dev_.endPass();
     }
 
+    dev_.endGpuTime(2);
+    dev_.beginGpuTime(3);
+
     // 2b2. Real-time GI (the iGPU path tracer, docs/PATHTRACE.md §4). Two passes at half resolution: trace one bounce
     // per half-res pixel against the heightfield, accumulate it over frames, and leave the result in a texture the
     // effects pass composites at full resolution with a depth-guided bilateral filter. The rays read this frame's
@@ -1463,6 +1480,7 @@ void Renderer::render(const OrbitCamera& cam, const std::vector<Model*>& models,
         dev_.drawFullscreen();
         dev_.endPass();
     }
+    dev_.endGpuTime(3);
 }
 
 void Renderer::setHudAtlas(FontAtlas* atlas) {
@@ -1471,19 +1489,25 @@ void Renderer::setHudAtlas(FontAtlas* atlas) {
 }
 
 uint32_t Renderer::drawHud(const std::vector<HudVertex>& vertices, uint32_t screenW, uint32_t screenH) {
-    if (!hudAtlas_ || !hudAtlas_->loaded() || vertices.empty()) return 0;
-    if (!hud_) hud_ = std::make_unique<HudRenderer>(dev_, rhi::Format::Backbuffer);
-    hud_->syncAtlas(dev_, *hudAtlas_);
-    rhi::PassDesc pass;
-    pass.backbuffer = true;
-    pass.clearColor = false;   // load the finished frame
-    pass.clearDepth = false;
-    dev_.beginPass(pass);
-    const uint32_t w = dev_.backbufferWidth();
-    const uint32_t h = dev_.backbufferHeight();
-    dev_.setViewport(0, 0, static_cast<int>(w), static_cast<int>(h));
-    const uint32_t drawn = hud_->draw(dev_, vertices, screenW ? screenW : w, screenH ? screenH : h);
-    dev_.endPass();
+    // One GPU bracket for the whole call (docs/PROFILER.md): it opens before the early-out, so the slot's pair is
+    // written on every path and the empty-HUD frame measures zero instead of leaving a dangling timestamp.
+    dev_.beginGpuTime(4);
+    uint32_t drawn = 0;
+    if (hudAtlas_ && hudAtlas_->loaded() && !vertices.empty()) {
+        if (!hud_) hud_ = std::make_unique<HudRenderer>(dev_, rhi::Format::Backbuffer);
+        hud_->syncAtlas(dev_, *hudAtlas_);
+        rhi::PassDesc pass;
+        pass.backbuffer = true;
+        pass.clearColor = false;   // load the finished frame
+        pass.clearDepth = false;
+        dev_.beginPass(pass);
+        const uint32_t w = dev_.backbufferWidth();
+        const uint32_t h = dev_.backbufferHeight();
+        dev_.setViewport(0, 0, static_cast<int>(w), static_cast<int>(h));
+        drawn = hud_->draw(dev_, vertices, screenW ? screenW : w, screenH ? screenH : h);
+        dev_.endPass();
+    }
+    dev_.endGpuTime(4);
     return drawn;
 }
 

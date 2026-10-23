@@ -131,6 +131,7 @@ bool runBackend(rhi::Backend backend, GLFWwindow* window, const char* label) {
 
     auto render = [&](rhi::Pipeline* pipeline) {
         if (!d.dev->beginFrame()) return Pixels{};
+        d.dev->beginGpuTime(0);   // the profiler's bracket around one draw (docs/PROFILER.md)
         rhi::PassDesc pass;
         pass.backbuffer = true;          // the presentation target
         pass.clearColor = true;
@@ -148,6 +149,7 @@ bool runBackend(rhi::Backend backend, GLFWwindow* window, const char* label) {
         d.dev->bindVertexBuffer(d.vb.get());
         d.dev->drawInstanced(d.vertexCount, 1);   // non-indexed: the HUD emits a triangle list of vertices
         d.dev->endPass();
+        d.dev->endGpuTime(0);
         d.dev->endFrame(true);
         Pixels px;
         px.rgba = d.dev->takeCapture();
@@ -163,6 +165,26 @@ bool runBackend(rhi::Backend backend, GLFWwindow* window, const char* label) {
     // the renderer.
     render(fill.get());
     const Pixels filled = render(fill.get());
+
+    // The warm-up frame wrote its bracket; the frame after it resolved the queries, so they are readable now with no
+    // wait in between — the profiler's whole contract (docs/PROFILER.md). An empty vector is the honest absence of
+    // timestamp support (the API's documented fallback) and is a skip rather than a zero that lies.
+    const std::vector<float> gpuTimes = d.dev->gpuTimesMs();
+    if (gpuTimes.empty()) {
+        std::printf("SKIP  %s: this device reports no GPU timestamps\n", label);
+        g_skipped = true;
+    } else {
+        check(gpuTimes.size() == rhi::kGpuTimeSlots, "the profiler's slot vector is whole",
+              std::to_string(gpuTimes.size()) + " slots");
+        bool nonNegative = true, positive = false;
+        for (float ms : gpuTimes) {
+            if (ms < 0.0f) nonNegative = false;
+            if (ms > 0.0f) positive = true;
+        }
+        check(nonNegative, "no GPU slot reports negative time");
+        check(positive, "the bracket around a real draw measured GPU time",
+              "slot0 " + std::to_string(gpuTimes[0]) + " ms");
+    }
     const Pixels edged = render(wire.get());
     if (filled.rgba.empty() || edged.rgba.empty()) {
         check(false, "captured a frame in both modes",

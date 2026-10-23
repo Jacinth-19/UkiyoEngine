@@ -233,6 +233,24 @@ int l_playSound(lua_State* L) {
     return 1;
 }
 
+// ukiyo.frameTiming() -> table. The last tick's breakdown in milliseconds: input, scripts, physics, characters,
+// navigation, animation, particles, entities, total. Zeros until a profiled tick has run (World::setProfiling).
+// This is the number a script-side debug HUD prints; the editor's overlay reads the same struct directly.
+int l_frameTiming(lua_State* L) {
+    const FrameTiming& t = worldOf(L)->lastTiming();
+    lua_createtable(L, 0, 9);
+    const struct { const char* name; float ms; } stages[] = {
+        {"input", t.input},         {"scripts", t.scripts},   {"physics", t.physics},
+        {"characters", t.characters}, {"navigation", t.navigation}, {"animation", t.animation},
+        {"particles", t.particles}, {"entities", t.entities}, {"total", t.total},
+    };
+    for (const auto& st : stages) {
+        lua_pushnumber(L, st.ms);
+        lua_setfield(L, -2, st.name);
+    }
+    return 1;
+}
+
 // ukiyo.playMusic(path, loop[, fadeInSeconds]) -> bool. Streaming, on the Music bus, never stolen by the voice
 // limit. `loop` is a boolean; a non-zero number works, as lua_toboolean accepts any value.
 int l_playMusic(lua_State* L) {
@@ -628,6 +646,7 @@ const std::vector<ScriptApiBinding>& World::apiBindings() {
         {"releaseLoad", l_releaseLoad},
         {"preloadModel", l_preloadModel},
         {"setContactFilter", l_setContactFilter},
+        {"frameTiming", l_frameTiming},
         {"Entity", l_entityNew},
     };
     return list;

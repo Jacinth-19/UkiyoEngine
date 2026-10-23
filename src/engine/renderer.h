@@ -272,6 +272,15 @@ public:
     // Triangles the trail draw produced in the last render().
     uint32_t lastTrailTriangles() const { return trailTriangles_; }
 
+    // The GPU brackets of the last render(), filled from the frame the device resolved when this one began — one
+    // frame of latency by design, so the read never waits (docs/PROFILER.md). Empty when the backend reports no
+    // timestamps. The names are the renderer's own: shadows, depth, scene, post, hud.
+    struct GpuStat {
+        const char* name;
+        float ms;
+    };
+    const std::vector<GpuStat>& lastGpuStats() const { return gpuStats_; }
+
     // Mesh draw calls issued by the last render(), across the shadow and scene passes.
     uint32_t lastDrawCalls() const { return drawCalls_; }
     uint32_t lastTriangles() const { return triangles_; }
@@ -354,6 +363,7 @@ private:
     uint32_t drawCalls_ = 0;
     uint32_t triangles_ = 0;     // triangles in the mesh draws of the last frame
     VGeomStats vgeomStats_{};
+    std::vector<GpuStat> gpuStats_;
     float bloomScale_ = 0.5f;     // bloom size the targets were built with
     uint32_t scale_ = 0;          // internal resolution scale (1 or 2); 0 = not built
     uint32_t displayW_ = 0, displayH_ = 0;

@@ -189,6 +189,14 @@ public:
         glNamedBufferStorage(pushUbo_, 128, nullptr, GL_DYNAMIC_STORAGE_BIT);
         glBindBufferBase(GL_UNIFORM_BUFFER, kPushUboBinding, pushUbo_);
 
+        // The profiler's GPU brackets (docs/PROFILER.md): two timestamp queries per slot. The query counter is GL
+        // 4.3 core; a context that somehow lacks it leaves the pointers null and the API reports no timings.
+        if (glad_glGenQueries && glad_glQueryCounter && glad_glGetQueryObjectui64v) {
+            glGenQueries(static_cast<GLsizei>(kGpuTimeSlots * 2), timeQ_);
+            times_ = true;
+            gpuTimes_.assign(kGpuTimeSlots, 0.0f);
+        }
+
         width_ = cfg.width;
         height_ = cfg.height;
         if (headless_) {
@@ -211,6 +219,7 @@ public:
 
     ~GLDevice() override {
         glFinish();
+        if (times_) glDeleteQueries(static_cast<GLsizei>(kGpuTimeSlots * 2), timeQ_);
         if (offscreenFbo_) glDeleteFramebuffers(1, &offscreenFbo_);
         glDeleteBuffers(1, &pushUbo_);
         glDeleteVertexArrays(1, &vao_);
@@ -274,6 +283,10 @@ public:
     }
 
     bool beginFrame() override {
+        // Resolve last frame's brackets first: the swap after it has pushed the driver's queue at least as far as
+        // that frame, and the read below only asks for queries already finished (never waits — the profiler's one
+        // frame of latency is the point). A query still running keeps its slot's previous value.
+        resolveGpuTimes();
         if (!headless_) {
             int fw = 0, fh = 0;
             glfwGetFramebufferSize(window_, &fw, &fh);
@@ -282,6 +295,34 @@ public:
             height_ = static_cast<uint32_t>(fh);
         }
         return true;
+    }
+
+    // GPU timestamps (docs/PROFILER.md): glQueryCounter pairs written outside every render pass, resolved at the
+    // next beginFrame. A bracket the frame did not write still answers with its previous result, which is why the
+    // readiness check is per slot and the old value is what a skipped slot keeps.
+    void beginGpuTime(uint32_t slot) override {
+        if (!times_ || slot >= kGpuTimeSlots) return;
+        glQueryCounter(timeQ_[slot * 2], GL_TIMESTAMP);
+    }
+    void endGpuTime(uint32_t slot) override {
+        if (!times_ || slot >= kGpuTimeSlots) return;
+        glQueryCounter(timeQ_[slot * 2 + 1], GL_TIMESTAMP);
+    }
+    std::vector<float> gpuTimesMs() override { return times_ ? gpuTimes_ : std::vector<float>{}; }
+
+    void resolveGpuTimes() {
+        if (!times_) return;
+        for (uint32_t s = 0; s < kGpuTimeSlots; ++s) {
+            GLuint ready = 0;
+            glGetQueryObjectuiv(timeQ_[s * 2], GL_QUERY_RESULT_AVAILABLE, &ready);
+            if (!ready) continue;
+            glGetQueryObjectuiv(timeQ_[s * 2 + 1], GL_QUERY_RESULT_AVAILABLE, &ready);
+            if (!ready) continue;
+            GLuint64 a = 0, b = 0;
+            glGetQueryObjectui64v(timeQ_[s * 2], GL_QUERY_RESULT, &a);
+            glGetQueryObjectui64v(timeQ_[s * 2 + 1], GL_QUERY_RESULT, &b);
+            gpuTimes_[s] = float(double(b > a ? b - a : 0) / 1.0e6);
+        }
     }
 
     void endFrame(bool capture) override {
@@ -449,6 +490,9 @@ private:
     GLuint offscreenFbo_ = 0;
     std::unique_ptr<GLTexture> offscreenColor_;
     std::vector<uint8_t> capture_;
+    GLuint timeQ_[kGpuTimeSlots * 2]{};   // [begin, end] per slot
+    bool times_ = false;
+    std::vector<float> gpuTimes_;
 };
 
 } // namespace
