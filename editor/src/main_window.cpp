@@ -7168,6 +7168,7 @@ void MainWindow::gizmoRelease() {
     if (!gizmoDragging_) return;
     gizmoDragging_ = false;
     // A press with no movement leaves no undo step behind.
+    if (gizmoPushed_ && !gizmoChanged_) dropTopEdit();
     gizmoPushed_ = false;
     updateEditActions();
     if (hierarchy_->currentItem()) showPropertiesFor(hierarchy_->currentItem());   // Inspector shows the new values

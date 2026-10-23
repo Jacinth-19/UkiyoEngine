@@ -494,24 +494,21 @@ jobs:
         env:
           QT_QPA_PLATFORM: xcb
         run: |
-          set -o pipefail
-          export VK_ICD_FILENAMES="$(ls /usr/share/vulkan/icd.d/*lvp* | head -1)"
+          mkdir -p selftest
+          # tee writes into the workspace, not /tmp, so the log is still there for the upload step below when the run
+          # fails — including when the editor dies before it prints anything.
           if xvfb-run -a -s "-screen 0 1600x1000x24" ./build/ukiyo_editor --selftest --no-splash 2>&1 |
-             tee /tmp/ukiyo-editor-selftest.log; then
+             tee selftest/editor-selftest.log; then
             exit 0
           fi
-          # The log is an artifact, which a reviewer cannot read from the run page; the failing checks are lifted into a
-          # single annotation (newlines as %0A) so the run itself says what broke.
-          msg="$(grep -E '^FAIL' /tmp/ukiyo-editor-selftest.log | head -40 | sed 's/%/%25/g' |
-                 awk 'NR>1{printf "%s", "%0A"} {printf "%s", $0}')"
-          echo "::error::editor self-test:${msg:-no FAIL line, see the log}"
-          # A job's log cannot be read back through the API from here, and the annotation holds forty lines at most.
-          # The log itself is an artifact, so whoever fixes the failure reads the check that failed with its detail.
-          mkdir -p selftest
-          cp /tmp/ukiyo-editor-selftest.log selftest/editor-selftest.log 2>/dev/null || true
+          # A job's log cannot be read back through the API, and the annotation carries forty lines at most, so the last
+          # forty lines go into one annotation and the whole log goes up as an artifact.
+          tail -40 selftest/editor-selftest.log | sed 's/%/%25/g' |
+            awk 'NR>1{printf "%s", "%0A"} {printf "%s", $0}' > selftest/tail.txt
+          echo "::error::editor self-test:$(cat selftest/tail.txt)"
           exit 1
       - name: Upload the editor self-test log
-        if: failure()
+        if: always()
         uses: actions/upload-artifact@v4
         with:
           name: editor-selftest-log
