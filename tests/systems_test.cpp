@@ -591,6 +591,65 @@ static void testAudio() {
     audio.stop(id);
     check(near > 0.0 && far * 3.0 < near, "audio: a sound 20 m away is much quieter than at 1 m",
           "near " + num(near) + ", far " + num(far));
+
+    // ---- the mixer: voices, the voice limit, buses, the reverb insert, streaming music ----
+    AudioEngine mix(true);
+    check(mix.ok(), "mixer: the engine starts", mix.lastError());
+    const AudioEngine::SoundId tone = mix.load(wav);
+    check(tone != 0, "mixer: the WAV registers");
+
+    // A sound overlaps itself: two play calls are two voices, which is what audio.h has always promised.
+    mix.play(tone);
+    mix.play(tone);
+    check(mix.activeVoices() == 2, "mixer: the same sound overlaps itself", std::to_string(mix.activeVoices()));
+
+    // The voice limit steals the oldest voice rather than refusing the newest sound.
+    mix.setVoiceLimit(4);
+    for (int i = 0; i < 10; ++i) mix.play(tone);
+    check(mix.activeVoices() == 4, "mixer: the voice limit holds", std::to_string(mix.activeVoices()));
+    mix.stop(tone);
+    check(mix.activeVoices() == 0, "mixer: stop clears every voice of that sound");
+
+    // Bus volume: a muted bus makes the same voice silent.
+    mix.setBusVolume(AudioEngine::Bus::Sfx, 0.0f);
+    mix.play(tone);
+    const double muted = pumpRms(mix, 2400);
+    mix.stop(tone);
+    check(muted < 1e-4, "mixer: a muted bus is silent", num(muted));
+    mix.setBusVolume(AudioEngine::Bus::Sfx, 1.0f);
+    check(mix.busVolume(AudioEngine::Bus::Sfx) == 1.0f, "mixer: the bus volume reads back");
+
+    // The reverb insert: on a short click, the tail rings after the source has ended; off, it is silence.
+    const std::string click = writeToneWav("ukiyo_systems_test_click.wav", 0.03, 880.0, 0.9);
+    const AudioEngine::SoundId tick = mix.load(click);
+    check(tick != 0, "mixer: a second file registers");
+    mix.setBusReverb(AudioEngine::Bus::Ambient, 1.0f);
+    mix.playOn(tick, AudioEngine::Bus::Ambient);
+    pumpRms(mix, 2400);                                  // the source is 1440 frames; the rest is its own tail
+    const double wetTail = pumpRms(mix, 9600);           // 0.2 s after the source has ended
+    mix.stop(tick);
+    check(wetTail > 1e-4, "mixer: the reverb tail keeps ringing after the source stops", num(wetTail));
+    mix.setBusReverb(AudioEngine::Bus::Ambient, 0.0f);
+    mix.playOn(tick, AudioEngine::Bus::Ambient);
+    pumpRms(mix, 2400);
+    const double dryTail = pumpRms(mix, 9600);
+    mix.stop(tick);
+    check(dryTail < 1e-4, "mixer: with the insert off the tail is silent", num(dryTail));
+
+    // Streaming music: its own voice on the Music bus, fading in, and a stop that completes on the audio thread.
+    check(mix.playMusic(wav, true, 0.1f), "mixer: music starts", mix.lastError());
+    check(mix.musicPlaying(), "mixer: and reports itself as playing");
+    const double fadeEarly = pumpRms(mix, 960);          // the first tenth of a 0.1 s fade
+    const double fadeLate = pumpRms(mix, 3840);          // the fade's second half
+    check(fadeEarly > 0.0 && fadeEarly < fadeLate * 0.5, "mixer: music fades in",
+          num(fadeEarly) + " early vs " + num(fadeLate) + " late");
+    mix.stopMusic(0.05f);
+    pumpRms(mix, 4800);                                  // 0.1 s of device time: the scheduled stop lands
+    check(!mix.musicPlaying(), "mixer: a faded stop finishes without anyone telling it to");
+    mix.playMusic(wav, false, 0.0f);
+    check(mix.musicPlaying(), "mixer: it starts again");
+    mix.stopMusic(0.0f);
+    check(!mix.musicPlaying(), "mixer: and stops immediately when asked");
 }
 
 // --- Animation state machine ---------------------------------------------------------------

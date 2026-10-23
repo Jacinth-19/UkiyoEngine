@@ -58,7 +58,9 @@ fs::path makeProject(const fs::path& root) {
               R"({"format":"ukiyo-scene","version":2,"models":[
                     {"name":"Prop","path":"../../shared/prop.glb"},
                     {"name":"Runner","empty":true,"components":{"script":{"path":"Scripts/run.lua"}}}]})");
-    writeFile(root / "games" / "tiny" / "Scripts" / "run.lua", "function onUpdate(dt) end\n");
+    writeFile(root / "games" / "tiny" / "Sound" / "beep.wav", "RIFF....WAVE a tone\n");
+    writeFile(root / "games" / "tiny" / "Scripts" / "run.lua",
+              "function onUpdate(dt) ukiyo.playMusic(\"Sound/beep.wav\", true) end\n");
     writeFile(root / "games" / "tiny" / "notes.txt", "not referenced, still part of the project\n");
     return root / "games" / "tiny";
 }
@@ -132,6 +134,8 @@ int main() {
           "everything in the project directory ships, referenced or not");
     check(has("shared/font.ttf"), "the font outside the project ships at the path the project names it by");
     check(has("shared/prop.glb"), "so does a model a scene points at");
+    check(has("games/tiny/Sound/beep.wav"),
+          "a soundtrack the script names by string ships with the package");
 
     // --- build ---------------------------------------------------------------------------
     ukiyo::pack::Result result;

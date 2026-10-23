@@ -128,6 +128,11 @@ public:
     void setScriptSearchPaths(std::vector<std::string> roots) { scripts.setSearchPaths(std::move(roots)); }
     // Loads a sound by file and caches it. Returns 0 when the file cannot be read.
     AudioEngine::SoundId soundFor(const std::string& path);
+    // The project root the world runs inside. A media path from a script ("Sound/beep.wav") resolves against it
+    // first and falls back to the path as written, so the same script works in the editor, in a packaged game whose
+    // layout is the checkout's, and on Android where the staged tree is the working directory.
+    void setProjectRoot(std::string root) { projectRoot_ = std::move(root); }
+    std::string resolveMediaPath(const std::string& path) const;
 
     // One frame: script, physics, navigation, entity sync, animation, particles, listener.
     void tick(float dt);
@@ -233,6 +238,7 @@ private:
     std::unique_ptr<ukiyo::input::InputSystem> players_;
     std::map<std::string, Entity> entities_;   // std::map keeps the update order deterministic
     std::map<std::string, AudioEngine::SoundId> sounds_;
+    std::string projectRoot_;
     std::string hudText_;
     LocaleCatalog locale_;
     FrameTiming timing_;

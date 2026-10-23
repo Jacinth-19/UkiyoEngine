@@ -236,7 +236,9 @@ void android_main(android_app* state) {
         return;
     }
 
-    ukiyo::PlayerApp app(false);   // the game has no audio of its own yet, and a phone has no device to spare
+    // Audio is on: miniaudio opens AAudio on API 26+ (this game's floor is 33) and falls back to OpenSL ES. If the
+    // device refuses, AudioEngine reports it and the game runs silent - one path, three platforms, no #ifdef.
+    ukiyo::PlayerApp app(true);
     std::string error;
     const std::string project = "games/lantern-run";
     if (!app.start(project + "/Build/build.json", project, &error)) {

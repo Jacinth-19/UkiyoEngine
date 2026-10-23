@@ -1,9 +1,11 @@
 #include "pack/pack.h"
 
 #include <algorithm>
+#include <cctype>
 #include <cstdio>
 #include <filesystem>
 #include <fstream>
+#include <iterator>
 #include <set>
 
 #include <nlohmann/json.hpp>
@@ -148,6 +150,40 @@ bool collect(const std::string& rootDir, const std::string& projectDir, std::vec
             references.push_back(candidate.is_absolute() ? candidate : project / candidate);
         }
     }
+    // A script can name a soundtrack no component field mentions: ukiyo.playMusic("Sound/beep.wav") is a string
+    // inside a .lua file. The scripts the scenes reference are read for double-quoted media paths and resolved
+    // against the project root exactly as World::resolveMediaPath resolves them at run time, so a package ships the
+    // music instead of failing on the player's machine. The paths are then checked by the same existence loop as
+    // every other reference: a script naming a file that is not there fails the build, which is the correct
+    // outcome, and the message says which file.
+    const size_t fromScenes = references.size();
+    for (size_t i = 0; i < fromScenes; ++i) {
+        const fs::path& script = references[i];
+        if (script.extension() != ".lua") continue;
+        std::ifstream in(script, std::ios::binary);
+        if (!in) continue;
+        const std::string text((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+        for (size_t q = 0; q < text.size(); ++q) {
+            if (text[q] != '"') continue;
+            const size_t end = text.find_first_of("\"\n", q + 1);
+            if (end == std::string::npos || text[end] == '\n') break;   // an unclosed quote ends at the line
+            std::string token = text.substr(q + 1, end - q - 1);
+            q = end;
+            std::string lower = token;
+            std::transform(lower.begin(), lower.end(), lower.begin(),
+                           [](unsigned char c) { return char(std::tolower(c)); });
+            const size_t dot = lower.rfind('.');
+            if (dot == std::string::npos) continue;
+            const char* exts[] = {".wav", ".ogg", ".mp3", ".flac"};
+            bool media = false;
+            for (const char* e : exts)
+                if (lower.compare(dot, lower.size() - dot, e) == 0) media = true;
+            if (!media) continue;
+            const fs::path candidate(token);
+            references.push_back(candidate.is_absolute() ? candidate : project / candidate);
+        }
+    }
+
     if (references.empty()) {
         *error = "the manifest names no font and no scenes";
         return false;

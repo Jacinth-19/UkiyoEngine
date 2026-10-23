@@ -129,6 +129,7 @@ bool PlayerApp::loadScene(const std::string& relativePath, std::string* error) {
 
 void PlayerApp::buildWorld() {
     world_ = std::make_unique<World>(!audio_);
+    world_->setProjectRoot(projectRoot_);
     lastEntityPos_.assign(instances_.size(), glm::vec3(0.0f));
     speed_.assign(instances_.size(), 0.0f);
 

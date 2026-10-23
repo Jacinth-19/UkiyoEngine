@@ -4,6 +4,7 @@
 #include <chrono>
 #include <cmath>
 #include <cstdio>
+#include <cstring>
 #include <new>
 
 #include <glm/gtc/quaternion.hpp>
@@ -199,10 +200,22 @@ int l_setParam(lua_State* L) {
     return 0;
 }
 
-// ukiyo.playSound(path, name) -> bool. Plays at the entity's position when name is given.
+// The mixer bus a script names, or false for an unknown word.
+bool busFromName(const char* name, AudioEngine::Bus* out) {
+    if (std::strcmp(name, "music") == 0) { *out = AudioEngine::Bus::Music; return true; }
+    if (std::strcmp(name, "sfx") == 0) { *out = AudioEngine::Bus::Sfx; return true; }
+    if (std::strcmp(name, "ambient") == 0) { *out = AudioEngine::Bus::Ambient; return true; }
+    return false;
+}
+
+// ukiyo.playSound(path, name[, bus]) -> bool. Plays at the entity's position when name is given; on the named
+// mixer bus ("music", "sfx", "ambient") when bus is given, on Sfx otherwise.
 int l_playSound(lua_State* L) {
     World* w = worldOf(L);
     const AudioEngine::SoundId id = w->soundFor(luaL_checkstring(L, 1));
+    AudioEngine::Bus bus = AudioEngine::Bus::Sfx;
+    if (lua_isstring(L, 3) && !busFromName(lua_tostring(L, 3), &bus))
+        return luaL_error(L, "playSound: unknown bus \"%s\" (music, sfx, ambient)", lua_tostring(L, 3));
     bool ok = false;
     if (id) {
         if (lua_isstring(L, 2)) {
@@ -214,10 +227,50 @@ int l_playSound(lua_State* L) {
         } else {
             w->audio.setSpatial(id, false);
         }
-        ok = w->audio.play(id);
+        ok = w->audio.playOn(id, bus);
     }
     lua_pushboolean(L, ok);
     return 1;
+}
+
+// ukiyo.playMusic(path, loop[, fadeInSeconds]) -> bool. Streaming, on the Music bus, never stolen by the voice
+// limit. `loop` is a boolean; a non-zero number works, as lua_toboolean accepts any value.
+int l_playMusic(lua_State* L) {
+    World* w = worldOf(L);
+    const bool loop = lua_toboolean(L, 2) != 0;
+    const float fade = float(luaL_optnumber(L, 3, 0.0));
+    lua_pushboolean(L, w->audio.playMusic(w->resolveMediaPath(luaL_checkstring(L, 1)), loop, fade));
+    return 1;
+}
+
+// ukiyo.stopMusic([fadeOutSeconds])
+int l_stopMusic(lua_State* L) {
+    worldOf(L)->audio.stopMusic(float(luaL_optnumber(L, 1, 0.0)));
+    return 0;
+}
+
+// ukiyo.setBusVolume(bus, volume). `master` is the engine's own volume; the other three are the mixer's buses.
+int l_setBusVolume(lua_State* L) {
+    World* w = worldOf(L);
+    const char* bus = luaL_checkstring(L, 1);
+    const float v = float(luaL_checknumber(L, 2));
+    AudioEngine::Bus b;
+    if (std::strcmp(bus, "master") == 0) w->audio.setMasterVolume(v);
+    else if (busFromName(bus, &b)) w->audio.setBusVolume(b, v);
+    else return luaL_error(L, "setBusVolume: unknown bus \"%s\" (master, music, sfx, ambient)", bus);
+    return 0;
+}
+
+// ukiyo.setBusReverb(bus, wet). Wet is how much of the bus runs through the reverb insert, 0..1.
+int l_setBusReverb(lua_State* L) {
+    World* w = worldOf(L);
+    const char* bus = luaL_checkstring(L, 1);
+    const float wet = float(luaL_checknumber(L, 2));
+    AudioEngine::Bus b;
+    if (!busFromName(bus, &b))
+        return luaL_error(L, "setBusReverb: unknown bus \"%s\" (music, sfx, ambient)", bus);
+    w->audio.setBusReverb(b, wet);
+    return 0;
 }
 
 // ukiyo.spawnEffect(x, y, z, count) -> handle. Emits a one-shot burst of particles.
@@ -564,6 +617,10 @@ const std::vector<ScriptApiBinding>& World::apiBindings() {
         {"impulse", l_impulse},
         {"setParam", l_setParam},
         {"playSound", l_playSound},
+        {"playMusic", l_playMusic},
+        {"stopMusic", l_stopMusic},
+        {"setBusVolume", l_setBusVolume},
+        {"setBusReverb", l_setBusReverb},
         {"spawnEffect", l_spawnEffect},
         {"raycast", l_raycast},
         {"loadScene", l_loadScene},
@@ -680,10 +737,30 @@ std::vector<std::string> World::takePreloads() {
     return out;
 }
 
+namespace {
+bool fileExists(const std::string& p) {
+    if (std::FILE* f = std::fopen(p.c_str(), "rb")) {
+        std::fclose(f);
+        return true;
+    }
+    return false;
+}
+} // namespace
+
+std::string World::resolveMediaPath(const std::string& path) const {
+    if (path.empty()) return path;
+    const bool absolute = path.front() == '/' || path.front() == '\\' || (path.size() > 2 && path[1] == ':');
+    if (absolute || projectRoot_.empty()) return path;
+    const std::string joined = projectRoot_ + "/" + path;
+    // The project-root candidate wins only when it exists; otherwise the path as written is what load() will report,
+    // which is the string the script author recognises.
+    return fileExists(joined) ? joined : path;
+}
+
 AudioEngine::SoundId World::soundFor(const std::string& path) {
     auto it = sounds_.find(path);
     if (it != sounds_.end()) return it->second;
-    const AudioEngine::SoundId id = audio.load(path);
+    const AudioEngine::SoundId id = audio.load(resolveMediaPath(path));
     if (id) sounds_[path] = id;
     return id;
 }
@@ -930,6 +1007,7 @@ void World::tick(float dt) {
     // master is updated here, so the players only mirror and evaluate.
     input_.update(dt);
     if (players_) players_->update(dt);
+    audio.tick();   // reaps finished voices; the music fades themselves are scheduled on the audio thread
     auto t1 = mark();
     dt *= timeScale_;
     scripts.callUpdate(dt);

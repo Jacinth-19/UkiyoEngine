@@ -1298,6 +1298,7 @@ bool EngineSession::startPlay(QString* error) {
     auto world = std::make_unique<World>(false);   // silent when the machine has no audio device
     world->audio.setMasterVolume(audioMuted_ ? 0.0f : masterVolume_);
     world->setProfiling(profiling_);
+    world->setProjectRoot(projectRoot_.toStdString());
     // The project's language, so ukiyo.tr in a script returns the same text the player would show.
     if (!projectRoot_.isEmpty()) {
         LocaleCatalog catalog;
