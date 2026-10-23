@@ -131,7 +131,7 @@ std::vector<InstanceInfo> RenderWorker::instances() const {
         in.yawDeg = p.yawDeg;
         in.pitchDeg = p.pitchDeg;
         in.rollDeg = p.rollDeg;
-        for (int k = 0; k < 3; ++k) in.scale[k] = p.scale[k];
+        in.scale = glm::vec3(p.scale[0], p.scale[1], p.scale[2]);
         in.prefab = QString::fromStdString(p.prefab);
         in.prefabId = QString::fromStdString(p.prefabId);
         for (const std::string& k : p.overrides) in.overrides << QString::fromStdString(k);

@@ -3176,7 +3176,8 @@ void MainWindow::showMultiInstances(const std::vector<int>& indices) {
             if (idx >= static_cast<int>(now.size())) continue;
             const float pos[3] = {now[idx].position[0] + float(dx), now[idx].position[1] + float(dy),
                                   now[idx].position[2] + float(dz)};
-            applyInstanceTransform(idx, pos, now[idx].yawDeg + float(dyaw));
+            const float scv[3] = {now[idx].scale.x, now[idx].scale.y, now[idx].scale.z};
+            applyInstanceTransform(idx, pos, now[idx].yawDeg + float(dyaw), now[idx].pitchDeg, now[idx].rollDeg, scv);
         }
         // The deltas are used once, so the spin boxes go back to zero without emitting again.
         for (QDoubleSpinBox* sp : {move[0], move[1], move[2], turn}) {
@@ -7295,9 +7296,9 @@ void MainWindow::gizmoDrag(QPointF sPos) {
         if (gizmoPart_ == gizmo::Part::ScaleUniform) {
             // The centre handle scales all three axes by the same factor, from the ratio of the pointer's distance to
             // the gizmo: drag to twice the radius and the object doubles.
-            const float f = gizmo::scaleRadial(glm::vec2(float(gizmoCenter0_.x()), float(gizmoCenter0_.y())),
-                                               glm::vec2(float(gizmoMouse0_.x()), float(gizmoMouse0_.y())), at);
-            for (int k = 0; k < 3; ++k) scale[k] = gizmo::snapScale(gizmoScale0_[k] * f, step);
+            const float f = ukiyo::gizmo::scaleRadial(glm::vec2(float(gizmoCenter0_.x()), float(gizmoCenter0_.y())),
+                                                      glm::vec2(float(gizmoMouse0_.x()), float(gizmoMouse0_.y())), at);
+            for (int k = 0; k < 3; ++k) scale[k] = ukiyo::gizmo::snapScale(gizmoScale0_[k] * f, step);
         } else {
             // An axis handle scales only its own axis, measured along the handle: drag the cube out by one handle length
             // and that axis doubles. The handle is measured on screen, so the view's angle does not change the feel.
@@ -7308,9 +7309,9 @@ void MainWindow::gizmoDrag(QPointF sPos) {
                 !gizmo::project(gameCam_, w, h, gizmoOrigin0_ + axis * gizmo::handleLength(gameCam_, gizmoOrigin0_), &tip))
                 return;
             const glm::vec2 axisPixels(float(tip.x() - base.x()), float(tip.y() - base.y()));
-            const float travelled = gizmo::scaleDelta(glm::vec2(float(gizmoMouse0_.x()), float(gizmoMouse0_.y())), at,
-                                                      axisPixels, nullptr);
-            scale[k] = gizmo::snapScale(gizmoScale0_[k] * (1.0f + travelled), step);
+            const float travelled = ukiyo::gizmo::scaleDelta(glm::vec2(float(gizmoMouse0_.x()), float(gizmoMouse0_.y())),
+                                                             at, axisPixels, nullptr);
+            scale[k] = ukiyo::gizmo::snapScale(gizmoScale0_[k] * (1.0f + travelled), step);
         }
         break;
     }

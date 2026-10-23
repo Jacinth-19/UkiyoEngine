@@ -68,7 +68,7 @@ struct InstanceInfo {
     float yawDeg = 0.0f;
     float pitchDeg = 0.0f;
     float rollDeg = 0.0f;
-    float scale[3] = {1.0f, 1.0f, 1.0f};   // per-axis scale
+    glm::vec3 scale{1.0f};   // per-axis scale
     QString prefab;             // linked .ukprefab, empty for a plain model
     QString prefabId;
     QStringList overrides;      // "translation", "yawDeg"
