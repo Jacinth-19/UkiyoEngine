@@ -23,11 +23,11 @@ namespace fs = std::filesystem;
 static int failures = 0;
 static int checks = 0;
 
-static void check(bool ok, const std::string& what) {
+static void check(bool ok, const std::string& what, const std::string& detail = std::string()) {
     ++checks;
     if (!ok) {
         ++failures;
-        std::printf("FAIL %s\n", what.c_str());
+        std::printf("FAIL %s%s%s\n", what.c_str(), detail.empty() ? "" : " -- ", detail.c_str());
     }
 }
 
@@ -218,6 +218,46 @@ end
         check(game.hudText(0, 0).warning == "saved", "the notification reaches the HUD");
         game.notify("");
         check(game.hudText(0, 0).warning.empty(), "clearing the notification clears the HUD warning");
+    }
+
+    // A tilted instance (the gizmo's X and Z rings): the scene's rotation reaches the entity and the collider, the
+    // crate that lands on the ramp slides down it, and a save carries the whole rotation back.
+    {
+        sb.write("Scenes/Tilted.ukscene", R"({
+          "format": "ukiyo-scene",
+          "models": [
+            {"name": "Ramp", "empty": true, "position": [0, 0, 0], "rotation": [0, 0, 25],
+             "components": {"body": {"dynamic": false, "box": true, "halfExtents": [4, 0.1, 4]}}},
+            {"name": "Ground", "empty": true, "position": [0, -4, 0],
+             "components": {"body": {"dynamic": false, "box": true, "halfExtents": [12, 0.5, 12]}}},
+            {"name": "Crate", "empty": true, "position": [0, 3, 0],
+             "components": {"body": {"dynamic": true, "box": true, "halfExtents": [0.4, 0.4, 0.4], "mass": 5}}}
+          ]
+        })");
+        sb.write("Build/tilted.json", buildManifestJson(makeManifest({"Scenes/Tilted.ukscene"}, "")));
+        PlayerApp tilt(false);
+        check(tilt.start("Build/tilted.json", sb.str(), &error), "the tilted scene boots: " + error);
+        check(tilt.instances().size() == 3, "the tilted scene has its three instances");
+        size_t ramp = 0, crate = 0;
+        for (size_t i = 0; i < tilt.instances().size(); ++i) {
+            if (tilt.instances()[i].name == "Ramp") ramp = i;
+            if (tilt.instances()[i].name == "Crate") crate = i;
+        }
+        check(near(tilt.instances()[ramp].local.rotationDeg.z, 25.0f), "the scene's rotation loads into the instance");
+        for (int i = 0; i < 240; ++i) tilt.tick(1.0f / 60.0f);
+        // A positive turn about Z lifts the +x end, so downhill is -x; the crate leaves the ramp and lands on the floor.
+        check(tilt.instances()[crate].local.position.x < -0.5f,
+              "the crate slides down the ramp the scene tilted (x = " + std::to_string(tilt.instances()[crate].local.position.x) + ")");
+        const glm::vec3 turned = tilt.instances()[crate].local.rotationDeg;
+        check(std::fabs(turned.z) > 1.0f, "the crate is drawn turned, the way physics left it",
+              std::to_string(turned.z));
+        const std::string tiltSave = (sb.root / "Build" / "tilt.uksv").string();
+        check(tilt.saveGame(tiltSave, &error), "the tilted scene saves: " + error);
+        for (int i = 0; i < 30; ++i) tilt.tick(1.0f / 60.0f);
+        check(tilt.loadGame(tiltSave, &error), "the tilted save loads: " + error);
+        check(glm::length(tilt.instances()[crate].local.rotationDeg - turned) < 1e-3f,
+              "the load restores the crate's whole rotation, not only its yaw");
+        check(near(tilt.instances()[ramp].local.rotationDeg.z, 25.0f), "the load keeps the ramp's tilt");
     }
 
     // The capsule character (item 4): a character component makes an instance walkable. W walks it forward along the

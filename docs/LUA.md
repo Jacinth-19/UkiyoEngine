@@ -75,7 +75,8 @@ ukiyo.playerCount() / leavePlayer(i)
 ukiyo.playerActionDown(i, action) / playerActionValue(i, action) / playerActionVector2(i, action)
 ukiyo.loadScene(path) / holdLoad() / releaseLoad(token)
 ukiyo.preloadModel(path)
-ukiyo.Entity(name)                     -- .position (writable), .yaw (writable), .name
+ukiyo.Entity(name)                     -- .position (writable), .rotation (writable degrees),
+                                       -- .yaw (writable, the y of .rotation), .name
 ukiyo.Vector3(x, y, z)                 -- a value with arithmetic and a readable tostring
 ukiyo.Quaternion.lookRotation(x, y, z)
 ```

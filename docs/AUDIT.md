@@ -39,7 +39,7 @@ Ratings are judgement, not measurement: 5 = production-ready, 3 = works with kno
 | Virtual geometry | **3** | 128-triangle cluster tree, screen-space cut, disk cache | CPU cut + per-cluster draws: no compute/indirect path (the doc says so) |
 | Animation | **4** | State machine, blend trees, timeline/curve editor, motion matching, 2-bone + FABRIK IK, face SDF | No root motion (discarded by design), no bone masks or additive layers, no runtime retarget UI |
 | Physics | **2** | Jolt; static box/mesh, dynamic sphere/box, one raycast, contact events, pair filter, merged trimesh world | No capsule/character controller, no joints, no triggers, no layer masks, no shape casts, no heightfield |
-| Scene model | **2** | Flat instance list, prefabs + variants + overrides, empty objects | Position + yaw only, no scale/pitch/roll, no parenting, one camera, one sun |
+| Scene model | **2** | Flat instance list, prefabs + variants + overrides, empty objects | (At the time of the audit) position + yaw only, no scale/pitch/roll, no parenting, one camera, one sun — since then the transform carries a full rotation and a per-axis scale, and the hierarchy is real; see `docs/EDITOR.md` |
 | Audio | **2** | miniaudio; load/play/stop/volume/loop/spatial/listener, stereo pump | No buses, filters, reverb, snapshots, voice limit, streaming music |
 | Networking | **2** | UDP, reliability layer, byte IO, client/server, stats | Everything above transport: no snapshots, RPC, prediction, lobby — though README claims snapshots |
 | Scripting | **2** | Lua 5.4 sandbox, 23 `ukiyo.*` functions, entity handles, scene switching | One script per scene; no hot reload, debugger, script editor, modules, spawn/despawn or save API |
@@ -91,7 +91,7 @@ then a minimal retained canvas (`Panel`, `Label`, `Image`, `Button`) fed by the 
 struct SceneEntry {
     QString path;
     float position[3] = {0,0,0};
-    float yawDeg = 0.0f;     // <- the only rotation
+    float yawDeg = 0.0f;     // <- the only rotation (at the time of the audit)
     ...
 };
 ```
@@ -461,7 +461,7 @@ unblocks the next one rather than so each phase is individually satisfying.
 | Claim | Where |
 | --- | --- |
 | Build page says packaging is not included | `editor/src/main_window.cpp:13346` |
-| Scene transform is position + yaw | `editor/src/scene_file.h:21-33` |
+| Scene transform is position + yaw | `editor/src/scene_file.h:21-33` (at the time of the audit; `transform.h` now carries rotation and scale) |
 | Scale gizmo disabled | `editor/src/main_window.cpp:6334-6336` |
 | One camera, one light as fixed hierarchy rows | `editor/src/main_window.cpp:3311, 3314` |
 | Hierarchy children are the model's nodes | `editor/src/main_window.cpp:3369-3379` |

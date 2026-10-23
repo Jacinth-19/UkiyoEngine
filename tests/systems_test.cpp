@@ -343,7 +343,7 @@ static void testEntityHandles() {
     check(luaBool(w.sceneScript(), "unknownBlocked"), "entity: an unknown field is an error");
     check(luaBool(w.sceneScript(), "same") && !luaBool(w.sceneScript(), "other"), "entity: handles compare by name");
     check(luaText(w.sceneScript(), "text") == "Entity(hero)", "entity: tostring names the entity");
-    check(w.findEntity("hero") != nullptr && w.findEntity("hero")->yawDeg == 45.0f,
+    check(w.findEntity("hero") != nullptr && w.findEntity("hero")->rotationDeg.y == 45.0f,
           "entity: writes go to the world entity");
 }
 
@@ -641,6 +641,73 @@ static void testScript() {
 
 // --- World: scripts drive the systems ---------------------------------------------------
 
+// A collider turned the way the gizmo drew its object. The editor can turn an instance about X and Z; if the body
+// stayed axis-aligned, a plank tilted into a ramp would still be a shelf to everything that walks on it, and a box
+// that tumbles would be drawn the way it was authored.
+static void testRotatedColliders() {
+    // The same plank, flat and tilted 20 degrees about Z, and the same sphere dropped on each.
+    PhysicsWorld flat;
+    flat.addStaticBox(glm::vec3(0, 0, 0), glm::vec3(6, 0.1f, 6));
+    const PhysicsWorld::Handle still = flat.addDynamicSphere(glm::vec3(0, 2, 0), 0.3f, 1.0f);
+
+    PhysicsWorld tilted;
+    // A positive turn about Z lifts the plank's +x end (R = Ry * Rx * Rz, and Rz sends +x towards +y), so downhill
+    // is -x. A floor catches the sphere once it rolls off the end.
+    const PhysicsWorld::Handle plank = tilted.addStaticBox(glm::vec3(0, 0, 0), glm::vec3(6, 0.1f, 6), glm::vec3(0, 0, 20));
+    tilted.addStaticBox(glm::vec3(0, -4, 0), glm::vec3(20, 0.5f, 20));
+    const PhysicsWorld::Handle rolling = tilted.addDynamicSphere(glm::vec3(0, 2, 0), 0.3f, 1.0f);
+    check(std::fabs(tilted.rotationDeg(plank).z - 20.0f) < 0.01f, "physics: a body made with a rotation reports it in degrees",
+          num(tilted.rotationDeg(plank).z));
+
+    for (int i = 0; i < 240; ++i) {
+        flat.step(1.0f / 60.0f);
+        tilted.step(1.0f / 60.0f);
+    }
+    check(std::fabs(flat.position(still).x) < 0.2f, "physics: a sphere dropped on a flat plank stays put",
+          num(flat.position(still).x));
+    check(tilted.position(rolling).x < -1.0f, "physics: a sphere on a plank tilted about Z rolls down it",
+          num(tilted.position(rolling).x));
+    check(tilted.position(rolling).y < flat.position(still).y, "physics: rolling down the plank leaves the sphere lower",
+          num(tilted.position(rolling).y));
+
+    // A dynamic box keeps the rotation it was made with, and setRotation turns one that already exists.
+    PhysicsWorld spun;
+    const PhysicsWorld::Handle box = spun.addDynamicBox(glm::vec3(0, 5, 0), glm::vec3(0.5f), 1.0f, glm::vec3(0, 0, 45));
+    check(std::fabs(spun.rotationDeg(box).z - 45.0f) < 0.01f, "physics: a box made tilted is tilted", num(spun.rotationDeg(box).z));
+    spun.setRotation(box, glm::vec3(0, 90, 0));
+    check(std::fabs(spun.rotationDeg(box).y - 90.0f) < 0.01f, "physics: setRotation turns a body that exists",
+          num(spun.rotationDeg(box).y));
+
+    // The entity carries the whole rotation, not a yaw: a crate spawned lying along a ramp is drawn lying along it.
+    World w(true);
+    w.entity("crate").position = glm::vec3(0, 5, 0);
+    w.attachDynamicBox("crate", glm::vec3(0.4f), 4.0f, glm::vec3(0, 0, 30));
+    w.tick(1.0f / 60.0f);
+    const Entity* crate = w.findEntity("crate");
+    check(crate && std::fabs(crate->rotationDeg.z - 30.0f) < 0.5f,
+          "world: an entity made tilted is drawn tilted", crate ? num(crate->rotationDeg.z) : "missing");
+
+    // A script writes the whole rotation, and reads a yaw that agrees with it.
+    World s(true);
+    std::string err;
+    const bool loaded = s.sceneScript().loadString(
+        "function onStart()\n"
+        "  local e = ukiyo.Entity('prop')\n"
+        "  e.rotation = ukiyo.Vector3(10, 20, 30)\n"
+        "  seen = e.yaw\n"
+        "end\n", "rotation", &err);
+    check(loaded, "script: a script that writes an entity rotation loads", err);
+    s.sceneScript().callStart();
+    s.notifySceneLoaded();
+    const Entity* prop = s.findEntity("prop");
+    check(prop && std::fabs(prop->rotationDeg.x - 10.0f) < 1e-3f && std::fabs(prop->rotationDeg.z - 30.0f) < 1e-3f,
+          "script: a script can turn an entity about X and Z, not only about Y", prop ? num(prop->rotationDeg.z) : "missing");
+    lua_getglobal(s.sceneScript().state(), "seen");
+    const double seen = lua_tonumber(s.sceneScript().state(), -1);
+    lua_pop(s.sceneScript().state(), 1);
+    check(std::fabs(seen - 20.0) < 1e-6, "script: .yaw is the y of .rotation", num(seen));
+}
+
 static void testWorld() {
     World w(true);
     w.physics.addStaticBox(glm::vec3(0, -0.5f, 0), glm::vec3(20, 0.5f, 20));
@@ -797,7 +864,7 @@ static void testActions() {
     w.setAction("spinner", spin, glm::vec3(0.0f), 10.0f);
     w.tick(0.5f);
     const ukiyo::Entity* s = w.findEntity("spinner");
-    check(s && std::fabs(s->yawDeg - 55.0f) < 1e-3f, "actions: a spin at 90 deg/s turns 45 degrees in half a second", s ? num(s->yawDeg) : "missing");
+    check(s && std::fabs(s->rotationDeg.y - 55.0f) < 1e-3f, "actions: a spin at 90 deg/s turns 45 degrees in half a second", s ? num(s->rotationDeg.y) : "missing");
 
     ukiyo::EntityAction pp;
     pp.on = true;
@@ -819,12 +886,12 @@ static void testActions() {
     w.setAction("late", late, glm::vec3(0.0f), 0.0f);
     w.tick(0.5f);
     const ukiyo::Entity* l1 = w.findEntity("late");
-    check(l1 && std::fabs(l1->yawDeg) < 1e-3f, "actions: a spin waits at rest during its start offset",
-          l1 ? num(l1->yawDeg) : "missing");
+    check(l1 && std::fabs(l1->rotationDeg.y) < 1e-3f, "actions: a spin waits at rest during its start offset",
+          l1 ? num(l1->rotationDeg.y) : "missing");
     w.tick(1.0f);
     const ukiyo::Entity* l2 = w.findEntity("late");
-    check(l2 && std::fabs(l2->yawDeg - 45.0f) < 1e-3f, "actions: a spin runs for its time after the offset ends",
-          l2 ? num(l2->yawDeg) : "missing");
+    check(l2 && std::fabs(l2->rotationDeg.y - 45.0f) < 1e-3f, "actions: a spin runs for its time after the offset ends",
+          l2 ? num(l2->rotationDeg.y) : "missing");
 }
 
 static void testSceneSwitch() {
@@ -1905,6 +1972,7 @@ int main() {
     testVfx();
     testSceneSwitch();
     testPhysicsInterpolation();
+    testRotatedColliders();
     testLuaMath();
     testVisibility();
     testContacts();

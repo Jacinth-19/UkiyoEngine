@@ -54,6 +54,14 @@ std::string joinPath(const std::string& root, const std::string& rel) {
     return root + "/" + rel;
 }
 
+// The rotation part of an instance's world matrix, in the engine's ZXY degrees. A collider is built from it so a
+// tilted prop, or one parented to something tilted, collides the way it is drawn.
+glm::vec3 worldRotationOf(const glm::mat4& world) {
+    Transform t;
+    if (!decompose(world, &t)) return glm::vec3(0.0f);
+    return t.rotationDeg;
+}
+
 } // namespace
 
 PlayerApp::PlayerApp(bool audio) : audio_(audio) {}
@@ -143,13 +151,17 @@ void PlayerApp::buildWorld() {
         // has no body. An entity with no component is inert — it costs a map entry and nothing per frame.
         Entity& e = world_->entity(in.name);
         e.position = in.position;
-        e.yawDeg = in.local.rotationDeg.y;
+        e.rotationDeg = in.local.rotationDeg;
         if (c.body.enabled) {
+            // The collider is turned the way the instance is drawn. A ramp the gizmo tilted about X or Z has to be a
+            // ramp to the physics as well, so it takes the world rotation: a child of a tilted parent tilts with it.
+            const glm::vec3 worldTurn = worldRotationOf(in.world);
             if (c.body.dynamic) {
-                if (c.body.box) world_->attachDynamicBox(in.name, c.body.halfExtents, c.body.mass);
+                if (c.body.box) world_->attachDynamicBox(in.name, c.body.halfExtents, c.body.mass, worldTurn);
                 else world_->attachDynamicSphere(in.name, c.body.radius, c.body.mass);
             } else {
-                e.body = world_->physics.addStaticBox(in.position, c.body.box ? c.body.halfExtents : glm::vec3(c.body.radius));
+                e.body = world_->physics.addStaticBox(in.position, c.body.box ? c.body.halfExtents : glm::vec3(c.body.radius),
+                                                     worldTurn);
             }
         }
         if (c.character.enabled) {
@@ -220,9 +232,10 @@ void PlayerApp::syncInstancesFromWorld() {
         const Entity* e = world_->findEntity(in.name);
         if (!e) continue;
         in.position = e->position;
-        // The entity drives the root transform's position; rotation and scale stay as authored.
+        // The entity drives the root transform's position and, for anything physics moves, its rotation: a box that
+        // tumbles is drawn tumbling. Scale stays as authored.
         in.local.position = e->position;
-        in.local.rotationDeg.y = e->yawDeg;
+        in.local.rotationDeg = e->rotationDeg;
     }
     std::vector<HierarchyNode> nodes(instances_.size());
     for (size_t i = 0; i < instances_.size(); ++i) {
@@ -278,6 +291,8 @@ bool PlayerApp::saveGame(const std::string& path, std::string* error) const {
         const std::string prefix = "i" + std::to_string(i) + ".";
         save.setString(prefix + "name", instances_[i].name);
         save.setVec3(prefix + "position", instances_[i].local.position);
+        // The full rotation, and the yaw on its own for a save read by a build that only knew yaw.
+        save.setVec3(prefix + "rotation", instances_[i].local.rotationDeg);
         save.setFloat(prefix + "yaw", instances_[i].local.rotationDeg.y);
     }
     if (!save.saveToFile(path)) {
@@ -305,23 +320,32 @@ bool PlayerApp::loadGame(const std::string& path, std::string* error) {
     }
     // The whole file is validated before anything is applied, so a rejected save leaves the game exactly as it was.
     std::vector<glm::vec3> positions(instances_.size());
-    std::vector<double> yaws(instances_.size());
+    std::vector<glm::vec3> rotations(instances_.size());
     for (size_t i = 0; i < instances_.size(); ++i) {
         const std::string prefix = "i" + std::to_string(i) + ".";
         std::string name;
         if (!save.getString(prefix + "name", &name) || name != instances_[i].name ||
-            !save.getVec3(prefix + "position", &positions[i]) || !save.getFloat(prefix + "yaw", &yaws[i])) {
+            !save.getVec3(prefix + "position", &positions[i])) {
             if (error) *error = "the save does not match this scene";
             return false;
+        }
+        // A save written before an instance could tilt carries a yaw alone; that is still a whole rotation.
+        if (!save.getVec3(prefix + "rotation", &rotations[i])) {
+            double yaw = 0.0;
+            if (!save.getFloat(prefix + "yaw", &yaw)) {
+                if (error) *error = "the save does not match this scene";
+                return false;
+            }
+            rotations[i] = glm::vec3(0.0f, static_cast<float>(yaw), 0.0f);
         }
     }
     for (size_t i = 0; i < instances_.size(); ++i) {
         instances_[i].local.position = positions[i];
-        instances_[i].local.rotationDeg.y = static_cast<float>(yaws[i]);
+        instances_[i].local.rotationDeg = rotations[i];
         if (world_) {
             if (Entity* e = world_->findEntity(instances_[i].name)) {
                 e->position = positions[i];
-                e->yawDeg = static_cast<float>(yaws[i]);
+                e->rotationDeg = rotations[i];
             }
         }
     }

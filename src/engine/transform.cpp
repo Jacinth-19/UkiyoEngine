@@ -70,6 +70,15 @@ glm::mat4 rotationMatrix(const glm::vec3& eulerDeg) {
     return eulerToMatrix(eulerDeg);
 }
 
+glm::quat eulerToQuat(const glm::vec3& eulerDeg) {
+    return glm::normalize(glm::quat_cast(glm::mat3(eulerToMatrix(eulerDeg))));
+}
+
+glm::vec3 quatToEuler(const glm::quat& q) {
+    const glm::vec3 e = matrixToEuler(glm::mat3_cast(glm::normalize(q)));
+    return glm::vec3(wrapDeg(e.x), wrapDeg(e.y), wrapDeg(e.z));
+}
+
 glm::mat4 localMatrix(const Transform& t) {
     glm::mat4 m = eulerToMatrix(t.rotationDeg);
     m[0] *= t.scale.x;

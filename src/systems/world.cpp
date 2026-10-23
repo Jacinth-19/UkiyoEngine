@@ -426,7 +426,8 @@ int entityIndex(lua_State* L) {
     Entity* e = r->world->findEntity(r->name);
     if (key == "name") lua_pushstring(L, r->name.c_str());
     else if (key == "position") pushVec3(L, e ? e->position : glm::vec3(0.0f));
-    else if (key == "yaw") lua_pushnumber(L, e ? e->yawDeg : 0.0);
+    else if (key == "yaw") lua_pushnumber(L, e ? e->rotationDeg.y : 0.0);
+    else if (key == "rotation") pushVec3(L, e ? e->rotationDeg : glm::vec3(0.0f));
     else if (key == "body") lua_pushinteger(L, e ? static_cast<lua_Integer>(e->body) : 0);
     else if (key == "impulse") lua_pushcfunction(L, [](lua_State* L2) -> int {
         EntityRef* r2 = checkEntity(L2, 1);
@@ -459,7 +460,15 @@ int entityNewIndex(lua_State* L) {
         r->world->setEntityPosition(r->name, *v);
     } else if (key == "yaw") {
         Entity& e = r->world->entity(r->name);
-        e.yawDeg = static_cast<float>(luaL_checknumber(L, 3));
+        e.rotationDeg.y = static_cast<float>(luaL_checknumber(L, 3));
+    } else if (key == "rotation") {
+        const glm::vec3* v = testVec3(L, 3);
+        if (!v) return luaL_error(L, "ukiyo.Entity.rotation needs a Vector3");
+        Entity& e = r->world->entity(r->name);
+        e.rotationDeg = *v;
+        // A body follows the entity, or the prop would be drawn turned and still collide straight.
+        if (e.body != PhysicsWorld::kNone && r->world->physics.isDynamic(e.body))
+            r->world->physics.setRotation(e.body, *v);
     } else if (key == "name" || key == "body") return luaL_error(L, "ukiyo.Entity.%s is read-only", key.c_str());
     else return luaL_error(L, "ukiyo.Entity has no writable field '%s'", key.c_str());
     return 0;
@@ -588,10 +597,11 @@ void World::attachDynamicSphere(const std::string& name, float radius, float mas
     e.body = physics.addDynamicSphere(e.position, radius, mass);
 }
 
-void World::attachDynamicBox(const std::string& name, const glm::vec3& halfExtents, float mass) {
+void World::attachDynamicBox(const std::string& name, const glm::vec3& halfExtents, float mass,
+                             const glm::vec3& rotationDeg) {
     Entity& e = entity(name);
     if (e.body != PhysicsWorld::kNone) physics.removeBody(e.body);
-    e.body = physics.addDynamicBox(e.position, halfExtents, mass);
+    e.body = physics.addDynamicBox(e.position, halfExtents, mass, rotationDeg);
 }
 
 void World::attachAgent(const std::string& name, float maxSpeed) {
@@ -688,14 +698,19 @@ void World::updateCharacters(float dt) {
         e.characterJump = false;
         // The capsule turns to face the way it is walking, which is what the animation and the camera read.
         if (glm::length(glm::vec2(e.characterVelocity.x, e.characterVelocity.z)) > 0.1f)
-            e.yawDeg = glm::degrees(std::atan2(e.characterVelocity.x, e.characterVelocity.z));
-        physics.setCharacterYaw(e.character, glm::radians(e.yawDeg));
+            e.rotationDeg.y = glm::degrees(std::atan2(e.characterVelocity.x, e.characterVelocity.z));
+        physics.setCharacterYaw(e.character, glm::radians(e.rotationDeg.y));
     }
 }
 
 void World::syncEntities() {
     for (auto& [name, e] : entities_) {
-        if (e.body != PhysicsWorld::kNone) e.position = physics.position(e.body);
+        // A dynamic body owns the whole transform: a box that lands on a tilted plank is drawn tilted, which is the
+        // point of letting X and Z turn. A static body never moves, so its rotation stays as authored.
+        if (e.body != PhysicsWorld::kNone) {
+            e.position = physics.position(e.body);
+            if (physics.isDynamic(e.body)) e.rotationDeg = physics.rotationDeg(e.body);
+        }
         else if (e.agent >= 0) e.position = nav.agentPosition(e.agent);
     }
 }
@@ -720,7 +735,7 @@ void World::updateAnimation(float dt) {
 void World::updateListener() {
     Entity* l = findEntity("listener");
     if (!l) return;
-    const float yaw = glm::radians(l->yawDeg);
+    const float yaw = glm::radians(l->rotationDeg.y);
     const glm::vec3 forward(std::sin(yaw), 0.0f, std::cos(yaw));
     audio.setListener(l->position, forward);
 }
@@ -801,7 +816,8 @@ void World::setAction(const std::string& name, const EntityAction& a, const glm:
     e.action.restYaw = restYaw;
     e.action.t = -std::max(0.0f, a.startOffset);
     e.position = rest;
-    e.yawDeg = restYaw;
+    // A spin turns the yaw and leaves pitch and roll as they were authored: the action is a turntable, not a tumble.
+    e.rotationDeg.y = restYaw;
 }
 
 void World::updateActions(float dt) {
@@ -817,7 +833,7 @@ void World::updateActions(float dt) {
             axis = len > 1e-6f ? axis / len : glm::vec3(0.0f, 1.0f, 0.0f);
             e.position = a.rest + axis * (a.amplitude * pingPongWeight(a.t * a.speed, a.ease));
         } else {
-            e.yawDeg = a.restYaw + a.speed * a.t;
+            e.rotationDeg.y = a.restYaw + a.speed * a.t;
         }
     }
 }

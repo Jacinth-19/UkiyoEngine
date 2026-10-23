@@ -1356,12 +1356,16 @@ bool EngineSession::startPlay(QString* error) {
         const std::string name = entityName(i);
         Entity& e = world->entity(name);
         e.position = in.position;
+        // The collider is turned the way the gizmo drew the instance: a ramp tilted about X or Z is a ramp to the
+        // physics too, which is the whole point of letting the gizmo turn those axes.
+        e.rotationDeg = glm::vec3(in.pitchDeg, in.yawDeg, in.rollDeg);
         if (c.body.enabled) {
             if (c.body.dynamic) {
-                if (c.body.box) world->attachDynamicBox(name, c.body.halfExtents, c.body.mass);
+                if (c.body.box) world->attachDynamicBox(name, c.body.halfExtents, c.body.mass, e.rotationDeg);
                 else world->attachDynamicSphere(name, c.body.radius, c.body.mass);
             } else {
-                e.body = world->physics.addStaticBox(in.position, c.body.box ? c.body.halfExtents : glm::vec3(c.body.radius));
+                e.body = world->physics.addStaticBox(in.position, c.body.box ? c.body.halfExtents : glm::vec3(c.body.radius),
+                                                    e.rotationDeg);
             }
         }
         if (c.character.enabled) {
@@ -1392,7 +1396,7 @@ bool EngineSession::startPlay(QString* error) {
             a.amplitude = c.action.amplitude;
             a.ease = c.action.ease;
             a.startOffset = c.action.startOffset;
-            world->setAction(name, a, in.position, world->entity(name).yawDeg);
+            world->setAction(name, a, in.position, in.yawDeg);
         }
         if (c.audio.enabled && c.audio.playOnStart) {
             if (c.audio.sound.empty()) {
@@ -1658,7 +1662,12 @@ void EngineSession::tickPlay(float dt) {
         if (!e) continue;
         if (c.body.enabled || c.agent.enabled) {
             const float pos[3] = {e->position.x, e->position.y, e->position.z};
-            setInstancePlacement(static_cast<int>(i), pos, instances_[i].yawDeg);
+            // A body owns its rotation too: a box that lands on a tilted plank is drawn lying along it. An agent has
+            // no rotation of its own, so its yaw stays as authored.
+            const bool bodyOwns = c.body.enabled;
+            setInstancePlacement(static_cast<int>(i), pos, bodyOwns ? e->rotationDeg.y : instances_[i].yawDeg,
+                                 bodyOwns ? e->rotationDeg.x : instances_[i].pitchDeg,
+                                 bodyOwns ? e->rotationDeg.z : instances_[i].rollDeg);
         }
         const glm::vec3 moved = e->position - playLast_[i];
         playSpeed_[i] = std::sqrt(moved.x * moved.x + moved.z * moved.z) / dt;

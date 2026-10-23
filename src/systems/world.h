@@ -66,7 +66,10 @@ float pingPongWeight(float phase, bool ease);
 struct Entity {
     std::string name;
     glm::vec3 position{0.0f};
-    float yawDeg = 0.0f;
+    // The full rotation, x = pitch, y = yaw, z = roll, in the engine's ZXY order. It used to be a yaw alone, which
+    // was enough for a character on flat ground and nothing else: a plank tilted in the editor arrived at run time
+    // standing up straight, and a box that physics tumbled was drawn the way it was authored.
+    glm::vec3 rotationDeg{0.0f};
     PhysicsWorld::Handle body = PhysicsWorld::kNone;   // driven by physics when set
     int agent = -1;                                    // driven by the navmesh crowd when >= 0
     CharacterHandle character = 0;                     // driven by the capsule controller when set
@@ -96,7 +99,8 @@ public:
     Entity* findEntity(const std::string& name);
     // Physics drives the entity from now on. Its position is copied from the body each tick.
     void attachDynamicSphere(const std::string& name, float radius, float mass);
-    void attachDynamicBox(const std::string& name, const glm::vec3& halfExtents, float mass);
+    void attachDynamicBox(const std::string& name, const glm::vec3& halfExtents, float mass,
+                          const glm::vec3& rotationDeg = glm::vec3(0.0f));
     // A navmesh agent drives the entity once a navmesh is built.
     void attachAgent(const std::string& name, float maxSpeed = 3.5f);
     // A capsule character drives the entity (item 4). The capsule stands on the entity's current position.

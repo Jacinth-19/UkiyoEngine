@@ -57,16 +57,23 @@ public:
     int positionSolverSteps() const;
 
     // Static geometry: a box, or a triangle mesh (the same triangles a navigation mesh is built from).
-    Handle addStaticBox(const glm::vec3& center, const glm::vec3& halfExtents);
+    // `rotationDeg` is the engine's ZXY Euler triple, so a plank tilted by the gizmo is a ramp you can walk up
+    // instead of an axis-aligned block standing where the plank is.
+    Handle addStaticBox(const glm::vec3& center, const glm::vec3& halfExtents,
+                        const glm::vec3& rotationDeg = glm::vec3(0.0f));
     Handle addStaticMesh(const std::vector<glm::vec3>& vertices, const std::vector<uint32_t>& indices);
     // Dynamic bodies move under gravity and collide with everything.
     Handle addDynamicSphere(const glm::vec3& position, float radius, float mass);
-    Handle addDynamicBox(const glm::vec3& position, const glm::vec3& halfExtents, float mass);
+    Handle addDynamicBox(const glm::vec3& position, const glm::vec3& halfExtents, float mass,
+                         const glm::vec3& rotationDeg = glm::vec3(0.0f));
     void removeBody(Handle h);
 
     glm::vec3 position(Handle h) const;
     glm::quat rotation(Handle h) const;
+    // The same rotation as Euler angles, for the callers that speak degrees: an entity, the editor, a script.
+    glm::vec3 rotationDeg(Handle h) const;
     void setPosition(Handle h, const glm::vec3& p);
+    void setRotation(Handle h, const glm::vec3& rotationDeg);
     void addImpulse(Handle h, const glm::vec3& impulse);
     bool isDynamic(Handle h) const;
 

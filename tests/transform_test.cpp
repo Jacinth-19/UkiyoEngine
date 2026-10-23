@@ -196,6 +196,27 @@ void testDeepChain() {
     check(depth[255] == 255, "depth of the last node is 255");
 }
 
+void testQuaternionRoundTrip() {
+    // The editor writes Euler degrees, Jolt holds a quaternion, and the entity reads degrees again: a tilt the gizmo
+    // made about X or Z has to survive the way there and back without being quietly flattened to a yaw.
+    const glm::vec3 cases[] = {{0, 0, 0}, {90, 0, 0}, {0, 0, 90}, {30, 45, -60}, {-15, 170, 25}};
+    for (const glm::vec3& e : cases) {
+        const glm::quat q = eulerToQuat(e);
+        const glm::vec3 back = quatToEuler(q);
+        check(near3(back, e, 1e-3f), "a quaternion round trip keeps the Euler angles", fmt(back) + " for " + fmt(e));
+        const glm::vec3 byMatrix = glm::mat3(rotationMatrix(e)) * glm::vec3(1, 0, 0);
+        const glm::vec3 byQuat = glm::mat3_cast(q) * glm::vec3(1, 0, 0);
+        check(near3(byQuat, byMatrix, 1e-4f), "eulerToQuat is the rotation rotationMatrix builds", fmt(byQuat));
+    }
+    // A yaw alone matches the placement matrices every scene written before this change was built from.
+    const glm::vec3 spun = glm::mat3_cast(eulerToQuat(glm::vec3(0, 37, 0))) * glm::vec3(0, 0, 1);
+    const glm::vec3 legacy = glm::vec3(placementOf(glm::vec3(0.0f), 37.0f) * glm::vec4(0, 0, 1, 1));
+    check(near3(spun, legacy, 1e-5f), "a yaw-only quaternion is the legacy placement", fmt(spun));
+    // A quaternion is a unit quaternion whatever the angles.
+    check(near(glm::length(eulerToQuat(glm::vec3(12, -130, 400))), 1.0f, 1e-5f),
+          "eulerToQuat returns a unit quaternion", fmt(glm::vec3(glm::length(eulerToQuat(glm::vec3(12, -130, 400))))));
+}
+
 } // namespace
 
 int main() {
@@ -210,6 +231,7 @@ int main() {
     testCycles();
     testWouldCycle();
     testDeepChain();
+    testQuaternionRoundTrip();
     std::printf("transform_test: %d checks, %d failures\n", checks, failures);
     return failures == 0 ? 0 : 1;
 }

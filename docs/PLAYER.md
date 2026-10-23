@@ -85,7 +85,9 @@ A script can call `ukiyo.loadScene("Scenes/X.ukscene")`. The switch is deferred 
 loaded, the generation counter moves, and `main.cpp` reloads models on the change.
 
 The player also **saves and loads** (`F5` / `F9` in a window). `src/systems/save_game.{h,cpp}` writes a versioned,
-CRC-checked `UKSV` file; `PlayerApp::saveGame` stores the scene path, the play time and every instance's position and yaw.
+CRC-checked `UKSV` file; `PlayerApp::saveGame` stores the scene path, the play time and every instance's position and
+full rotation (`rotation`, with `yaw` also written for a build that reads yaw alone; a save carrying only `yaw` still
+loads, as a rotation about Y).
 `loadGame` validates the checksum, the scene path and the instance names before it applies anything, so a save from
 another scene or a corrupted byte leaves the running game untouched.
 
@@ -131,7 +133,7 @@ Eight CPU-only binaries, run on Linux and Windows; the runtime core is also comp
 
 | Test | Checks | What it pins |
 | --- | --- | --- |
-| `transform_test` | 71 | Euler order (ZXY), matrices, decompose, hierarchy resolution, cycle detection |
+| `transform_test` | 83 | Euler order (ZXY), matrices, decompose, the quaternion pair, hierarchy resolution, cycle detection |
 | `lights_test` | 22 | Light packing to the 64-byte GPU layout, selection scores, cone maths |
 | `save_test` | 33 | `UKSV` round trip, CRC failure, exact float bits, truncation |
 | `manifest_test` | 71 | The writer always parses; every refusal; old `productName` files; clamps |
@@ -154,5 +156,3 @@ actual binary boots a project the way a player would.
   what it still cannot do.
 - **One sun.** Scene lights are parsed and packed, but the renderer still lights with its own sun and fill; wiring the
   scene's lights into the MToon path is tracked in `docs/AUDIT.md`.
-- **Scale and full rotation** reach the runtime, the scene reader and the transform code, but not yet the editor's gizmo
-  or its scene writer, which still store position and yaw.

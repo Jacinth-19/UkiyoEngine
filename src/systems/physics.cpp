@@ -28,6 +28,7 @@
 #include <Jolt/Physics/PhysicsSystem.h>
 #include <Jolt/RegisterTypes.h>
 
+#include "engine/transform.h"
 #include "engine/water.h"
 
 
@@ -92,6 +93,7 @@ void initJoltOnce() {
 
 JPH::Vec3 toJolt(const glm::vec3& v) { return JPH::Vec3(v.x, v.y, v.z); }
 glm::vec3 fromJolt(JPH::Vec3 v) { return glm::vec3(v.GetX(), v.GetY(), v.GetZ()); }
+JPH::Quat toJolt(const glm::quat& q) { return JPH::Quat(q.x, q.y, q.z, q.w); }
 
 // An unordered body pair as a key: the smaller handle first. Returned by value (std::minmax would hand back
 // references to temporaries here).
@@ -173,7 +175,12 @@ struct PhysicsWorld::Impl {
     float alpha = 1.0f;
     std::unordered_map<uint32_t, Pose> prev;
     // Body changes requested while `defer` is on. They run at the start of the next step().
-    struct Deferred { enum class Op { SetPosition, AddImpulse, Remove } op; uint32_t h; glm::vec3 v; };
+    struct Deferred {
+        enum class Op { SetPosition, SetRotation, AddImpulse, Remove } op;
+        uint32_t h;
+        glm::vec3 v;
+        glm::quat q{1.0f, 0.0f, 0.0f, 0.0f};
+    };
     std::vector<Deferred> deferred;
     bool defer = false;
     // Characters (item 4). CharacterVirtual is not a body, so it is not in the body map; the handle is ours.
@@ -240,11 +247,11 @@ void PhysicsWorld::setSolverSteps(int velocity, int position) {
 int PhysicsWorld::velocitySolverSteps() const { return static_cast<int>(impl_->system.GetPhysicsSettings().mNumVelocitySteps); }
 int PhysicsWorld::positionSolverSteps() const { return static_cast<int>(impl_->system.GetPhysicsSettings().mNumPositionSteps); }
 
-PhysicsWorld::Handle PhysicsWorld::addStaticBox(const glm::vec3& c, const glm::vec3& h) {
+PhysicsWorld::Handle PhysicsWorld::addStaticBox(const glm::vec3& c, const glm::vec3& h, const glm::vec3& rotationDeg) {
     JPH::BoxShapeSettings settings(toJolt(h));
     JPH::ShapeRefC shape = settings.Create().Get();
-    JPH::BodyCreationSettings bcs(shape, JPH::RVec3(c.x, c.y, c.z), JPH::Quat::sIdentity(), JPH::EMotionType::Static,
-                                  Layers::NON_MOVING);
+    JPH::BodyCreationSettings bcs(shape, JPH::RVec3(c.x, c.y, c.z), toJolt(eulerToQuat(rotationDeg)),
+                                  JPH::EMotionType::Static, Layers::NON_MOVING);
     JPH::BodyID id = impl_->system.GetBodyInterface().CreateAndAddBody(bcs, JPH::EActivation::DontActivate);
     ++bodies_;
     return id.GetIndexAndSequenceNumber();
@@ -281,9 +288,10 @@ PhysicsWorld::Handle PhysicsWorld::addDynamicSphere(const glm::vec3& p, float ra
     return id.GetIndexAndSequenceNumber();
 }
 
-PhysicsWorld::Handle PhysicsWorld::addDynamicBox(const glm::vec3& p, const glm::vec3& h, float mass) {
+PhysicsWorld::Handle PhysicsWorld::addDynamicBox(const glm::vec3& p, const glm::vec3& h, float mass,
+                                                 const glm::vec3& rotationDeg) {
     JPH::BoxShapeSettings settings(toJolt(h));
-    JPH::BodyCreationSettings bcs(settings.Create().Get(), JPH::RVec3(p.x, p.y, p.z), JPH::Quat::sIdentity(),
+    JPH::BodyCreationSettings bcs(settings.Create().Get(), JPH::RVec3(p.x, p.y, p.z), toJolt(eulerToQuat(rotationDeg)),
                                   JPH::EMotionType::Dynamic, Layers::MOVING);
     bcs.mOverrideMassProperties = JPH::EOverrideMassProperties::CalculateInertia;
     bcs.mMassPropertiesOverride.mMass = mass;
@@ -443,6 +451,20 @@ void PhysicsWorld::setPosition(Handle h, const glm::vec3& p) {
     if (it != impl_->prev.end()) it->second = readPose(impl_->system.GetBodyInterface(), h);
 }
 
+glm::vec3 PhysicsWorld::rotationDeg(Handle h) const { return quatToEuler(rotation(h)); }
+
+void PhysicsWorld::setRotation(Handle h, const glm::vec3& rotationDeg) {
+    if (impl_->defer) {
+        impl_->deferred.push_back({Impl::Deferred::Op::SetRotation, h, glm::vec3(0.0f), eulerToQuat(rotationDeg)});
+        return;
+    }
+    impl_->system.GetBodyInterface().SetRotation(JPH::BodyID(h), toJolt(eulerToQuat(rotationDeg)),
+                                                 JPH::EActivation::Activate);
+    // A turned body jumps. Its previous pose becomes the new one, so nothing is blended across the jump.
+    const auto it = impl_->prev.find(h);
+    if (it != impl_->prev.end()) it->second = readPose(impl_->system.GetBodyInterface(), h);
+}
+
 void PhysicsWorld::addImpulse(Handle h, const glm::vec3& impulse) {
     if (impl_->defer) {
         impl_->deferred.push_back({Impl::Deferred::Op::AddImpulse, h, impulse});
@@ -471,6 +493,13 @@ void PhysicsWorld::applyDeferred() {
     for (const Impl::Deferred& op : ops) {
         switch (op.op) {
         case Impl::Deferred::Op::SetPosition: setPosition(op.h, op.v); break;
+        case Impl::Deferred::Op::SetRotation:
+            impl_->system.GetBodyInterface().SetRotation(JPH::BodyID(op.h), toJolt(op.q), JPH::EActivation::Activate);
+            {   // A turned body jumps: its previous pose becomes the new one, so nothing blends across the jump.
+                const auto it = impl_->prev.find(op.h);
+                if (it != impl_->prev.end()) it->second = readPose(impl_->system.GetBodyInterface(), op.h);
+            }
+            break;
         case Impl::Deferred::Op::AddImpulse: addImpulse(op.h, op.v); break;
         case Impl::Deferred::Op::Remove: removeBody(op.h); break;
         }

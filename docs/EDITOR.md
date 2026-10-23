@@ -143,6 +143,13 @@ the three angles and the three scale axes; a scene file writes `yawDeg` while a 
 `rotation: [pitch, yaw, roll]` plus `scale` (a number when even, a vector when not) once it is tilted or
 stretched — the same fields `SceneRuntime` reads.
 
+The three angles travel the whole way to the running game, which is what makes the X and Z rings worth having: an
+entity carries the full rotation (`Entity::rotationDeg`), a box collider is built turned
+(`PhysicsWorld::addStaticBox(center, halfExtents, rotationDeg)`), so a plank tilted into a ramp is a ramp to the
+physics; a body that tumbles writes its rotation back onto its instance, so a crate that lands along a ramp is drawn
+along it; a script reads and writes `entity.rotation`, a vector of three degrees; and a save stores `rotation`, falling
+back to `yaw` in a file written before a scene could tilt.
+
 The view gizmo sits in the top-right corner of the Scene view: six handles on a unit sphere, drawn back to
 front and mixed toward the view background by depth, so a ball behind reads as behind. Clicking one looks along
 that axis and switches the view to orthographic, which is what the widget is for — checking a silhouette or a

@@ -179,7 +179,8 @@ const std::vector<ApiDoc>& apiDocs() {
         {"setContactFilter", "ukiyo.setContactFilter(a, b, enabled)",
          "Stops (false) or allows (true) new contacts between two entities that have bodies."},
         {"Entity", "ukiyo.Entity(name)",
-         "An entity handle: .position (Vector3, writable), .yaw (number, writable), .name (read only)."},
+         "An entity handle: .position (Vector3, writable), .rotation (Vector3, writable degrees), "
+         ".yaw (number, writable, the y of rotation), .name (read only)."},
         {"Vector3", "ukiyo.Vector3(x, y, z)",
          "A value: x, y, z fields, addition, subtraction, scaling, and a readable tostring."},
         {"Quaternion", "ukiyo.Quaternion.lookRotation(x, y, z)",
@@ -288,7 +289,8 @@ std::string apiStub() {
            "--- An entity in the running scene.\n"
            "---@class Ukiyo.Entity\n"
            "---@field position Ukiyo.Vector3  writable\n"
-           "---@field yaw number              writable, degrees\n"
+           "---@field rotation Ukiyo.Vector3  writable, degrees, x = pitch, y = yaw, z = roll\n"
+           "---@field yaw number              writable, degrees, the y of rotation\n"
            "---@field name string             read only\n"
            "local Entity = {}\n\n"
            "--- An entity handle for a name in the running scene.\n"

@@ -35,6 +35,12 @@ struct Transform {
 // Rotation matrix for ZXY Euler angles in degrees.
 glm::mat4 rotationMatrix(const glm::vec3& eulerDeg);
 
+// The same rotation as a quaternion, and back. The engine speaks Euler at every boundary - the scene file, the
+// inspector, a script - while Jolt and the renderer want a quaternion, so both conversions live here and no caller
+// builds one by multiplying matrices by hand.
+glm::quat eulerToQuat(const glm::vec3& eulerDeg);
+glm::vec3 quatToEuler(const glm::quat& q);
+
 // The local matrix: T * R * S.
 glm::mat4 localMatrix(const Transform& t);
 
