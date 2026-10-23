@@ -154,6 +154,11 @@ const std::vector<ApiDoc>& apiDocs() {
          "True while the named Gameplay action is held for the local player."},
         {"hud", "ukiyo.hud(text)",
          "Sets the player's status line under the title; an empty string leaves the player's own message alone."},
+        {"tr", "ukiyo.tr(key, fallback?)",
+         "The text for a key in the language the project loaded (assets/locales/<code>.json). A missing key returns the "
+         "fallback, or the key itself, so an untranslated line still says where it came from."},
+        {"locale", "ukiyo.locale()",
+         "The language code the game loaded, such as \"en\" or \"ja\"."},
         {"getPosition", "ukiyo.getPosition(name)",
          "Returns x, y, z of an entity, in metres."},
         {"setPosition", "ukiyo.setPosition(name, x, y, z)",

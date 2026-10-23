@@ -809,6 +809,12 @@ if(UKIYO_EDITOR)
     # ukiyo_pack_core is the package command: the Build page calls the same argument builder the packer and its test do.
     target_link_libraries(ukiyo_editor PRIVATE ukiyo_core ukiyo_systems ukiyo_pack_core ukiyo_nodeeditor Qt6::Widgets)
     target_compile_options(ukiyo_editor PRIVATE ${UKIYO_WARNINGS})
+    # main_window.cpp is one translation unit of several tens of thousands of lines, and it is now past the point where
+    # MSVC can put all of its symbols in the default number of COFF sections: C1128, "number of sections exceeded object
+    # file format limit". /bigobj raises that limit; it changes nothing else about the object file.
+    if(MSVC)
+      target_compile_options(ukiyo_editor PRIVATE /bigobj)
+    endif()
     # main_window.cpp is very large. Optimising it at -O3 needs more memory than the build machine has,
     # so this one file is built at -O0 (the build machine has about 1 GB; -O1 runs out of memory here).
     # The rest of the editor keeps the Release flags. MSVC has no -O0; /Od is its equivalent and its optimiser copes
