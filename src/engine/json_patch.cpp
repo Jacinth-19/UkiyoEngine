@@ -41,7 +41,8 @@ std::vector<std::string> tokens(const std::string& path, bool* ok) {
     return out;
 }
 
-size_t indexOf(const json& container, const std::string& key, bool* ok) {
+// An array step must be a whole number. Anything else is a patch that does not fit the document.
+size_t indexOf(const std::string& key, bool* ok) {
     try {
         size_t used = 0;
         const unsigned long long v = std::stoull(key, &used);
@@ -62,7 +63,7 @@ const json* at(const json& doc, const std::vector<std::string>& path) {
             cur = &*it;
         } else if (cur->is_array()) {
             bool ok = false;
-            const size_t idx = indexOf(*cur, key, &ok);
+            const size_t idx = indexOf(key, &ok);
             if (!ok || idx >= cur->size()) return nullptr;
             cur = &(*cur)[idx];
         } else {
@@ -159,7 +160,7 @@ bool applyJsonPatch(json* doc, const JsonPatch& patch, std::string* error) {
             }
         } else if (container->is_array()) {
             bool indexOk = false;
-            const size_t idx = indexOf(*container, key, &indexOk);
+            const size_t idx = indexOf(key, &indexOk);
             if (!indexOk) {
                 if (error) *error = "not an array index: " + op.path;
                 return false;

@@ -21,7 +21,6 @@ std::string slash(const fs::path& p) {
     return s;
 }
 
-bool startsWith(const std::string& s, const std::string& prefix) { return s.rfind(prefix, 0) == 0; }
 
 bool isMetaPath(const std::string& p) { return p.size() > 5 && p.compare(p.size() - 5, 5, ".meta") == 0; }
 

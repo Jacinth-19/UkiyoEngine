@@ -5439,6 +5439,9 @@ void MainWindow::pumpRender() {
 
     RenderRequest req;
     req.game = gameViewActive();
+    // Until the Game view has been moved or played, it shows what the Scene view shows: the first press of Play then
+    // starts from the view the author was working in rather than from a camera they have never seen.
+    if (req.game && !playing_ && playCamFollows_) playCam_ = gameCam_;
     // The Scene view and the Game view look through different cameras: an orthographic blocking view is not what the
     // player sees, and orbiting in one must not move the other.
     req.cam = req.game ? playCam_ : gameCam_;

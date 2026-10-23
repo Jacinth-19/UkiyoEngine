@@ -34,6 +34,7 @@
 #include "asset_ops.h"
 #include <QAbstractItemView>
 #include <QElapsedTimer>
+#include <QJsonArray>
 #include <QJsonObject>
 #include "engine/project_settings.h"
 #include <QMenu>
@@ -385,6 +386,10 @@ private:
     // was written.
     static nlohmann::json docToJson(const QJsonObject& doc);
     static QJsonObject jsonToDoc(const nlohmann::json& j);
+    // Defined further down with the stacks they describe. Forward-declared here because the method that returns one is
+    // declared with the other edit commands.
+    struct SceneEdit;
+    struct PrefabEdit;
     PrefabEdit capturePrefabStage() const;
     void updateEditActions();
     // Edit menu on model instances (rows listed under the scene in the Hierarchy).
