@@ -52,7 +52,7 @@ static int import_csv(void* userData, const char* path) {
     return 0;                    /* zero: imported */
 }
 
-int ukiyo_plugin_load(const UkiyoEditorApi* api, UkiyoPluginInfo* info) {
+UKIYO_PLUGIN_EXPORT int ukiyo_plugin_load(const UkiyoEditorApi* api, UkiyoPluginInfo* info) {
     /* The rule: the table can be shorter than the header you compiled against. Never touch a field you have not
        checked for. Version 1 has everything below. */
     if (!api || api->version < UKIYO_PLUGIN_API_VERSION) return 2;
@@ -69,7 +69,7 @@ int ukiyo_plugin_load(const UkiyoEditorApi* api, UkiyoPluginInfo* info) {
     return 0;
 }
 
-void ukiyo_plugin_unload(void) { g_api = NULL; }
+UKIYO_PLUGIN_EXPORT void ukiyo_plugin_unload(void) { g_api = NULL; }
 ```
 
 Build it as a shared library with no prefix:
@@ -81,6 +81,17 @@ cl /LD csv_plugin.c /I <engine>\src /Fe:<project>\Plugins\csv.dll
 
 The header is C99 and includes nothing but `<stdint.h>` — if it stops compiling as C, that is a bug in the header and
 not in your plugin, and `plugin_test` fails on it.
+
+Two things about the two functions themselves:
+
+* **`UKIYO_PLUGIN_EXPORT` on both definitions.** The header defines it as `__declspec(dllexport)` on Windows, where a
+  symbol otherwise stays inside the DLL and the editor's `GetProcAddress` comes back empty, and as nothing anywhere
+  else. If your build already exports every symbol its own way, define `UKIYO_PLUGIN_EXPORT` to that before including
+  the header and the macro steps aside.
+* **Include the header before you define them, in C++ too.** The header declares both functions inside `extern "C"`,
+  so a definition in C++ that follows it and matches it exactly keeps C linkage; a plugin that defines them without
+  the header's declaration gets C++-mangled names the editor cannot look up. Signatures have to match the header —
+  `const UkiyoEditorApi*` and all.
 
 ### What the table gives you
 

@@ -52,7 +52,7 @@ static void command_second(void* userData) {
     write_line(g_output, "second ran");
 }
 
-int ukiyo_plugin_load(const UkiyoEditorApi* api, UkiyoPluginInfo* info) {
+UKIYO_PLUGIN_EXPORT int ukiyo_plugin_load(const UkiyoEditorApi* api, UkiyoPluginInfo* info) {
     const char* out;
     /* The rule every plugin has to follow: the table may be shorter than the header it was compiled against. */
     if (!api || api->version < UKIYO_PLUGIN_API_VERSION) return 2;
@@ -77,4 +77,4 @@ int ukiyo_plugin_load(const UkiyoEditorApi* api, UkiyoPluginInfo* info) {
     return 0;
 }
 
-void ukiyo_plugin_unload(void) { g_api = NULL; }
+UKIYO_PLUGIN_EXPORT void ukiyo_plugin_unload(void) { g_api = NULL; }

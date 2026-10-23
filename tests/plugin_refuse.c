@@ -6,7 +6,7 @@
 
 static void doomed_command(void* userData) { (void)userData; }
 
-int ukiyo_plugin_load(const UkiyoEditorApi* api, UkiyoPluginInfo* info) {
+UKIYO_PLUGIN_EXPORT int ukiyo_plugin_load(const UkiyoEditorApi* api, UkiyoPluginInfo* info) {
     /* It registers something first, which the host has to take back when it refuses the plugin. */
     api->registerCommand(api->userData, "before-failure", "Should never appear", doomed_command, NULL);
     if (info) {
@@ -17,4 +17,4 @@ int ukiyo_plugin_load(const UkiyoEditorApi* api, UkiyoPluginInfo* info) {
     return 7;   /* "I cannot work in this editor" */
 }
 
-void ukiyo_plugin_unload(void) {}
+UKIYO_PLUGIN_EXPORT void ukiyo_plugin_unload(void) {}

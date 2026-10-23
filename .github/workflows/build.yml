@@ -1038,18 +1038,31 @@ jobs:
           # own value stays as the fallback for anyone linking the APK by hand.
           version_code="${{ github.run_number }}"
 
+          # Name the step a failure happens in, as an annotation: job logs are not always fetchable after the fact,
+          # and "exit code 1" alone says nothing about which command broke.
+          assemble_step="start"
+          on_assemble_error() { echo "::error::Lantern Run assembly failed in step: $assemble_step"; }
+          trap on_assemble_error ERR
+
           # The launcher icon, five densities of the same drawing (tools/android_icon.cpp), linked as @mipmap/ic_launcher.
+          # --dir belongs to aapt2 compile, not link; link takes the compiled zip as an input file.
+          assemble_step="aapt2 compile android/res"
+          "$build_tools/aapt2" compile --dir android/res -o apk/res.zip
+          assemble_step="aapt2 link"
           "$build_tools/aapt2" link -o apk/unaligned.apk -I "$platform/android.jar" \
             --manifest apk/AndroidManifest.xml -A apk/assets \
             --version-code "$version_code" --min-sdk-version 33 --target-sdk-version 34 \
-            --dir android/res
+            apk/res.zip
+          assemble_step="zip the native libraries"
           ( cd apk && zip -q -r unaligned.apk lib )
+          assemble_step="zipalign"
           "$build_tools/zipalign" -f 4 apk/unaligned.apk apk/aligned.apk
 
           # Signing: a key that outlives the run, so a second build installs over the first instead of refusing to. The
           # repository carries a CI key (android/lantern-run-ci.p12, password in this file) so any run signs the same
           # way; a project with real release keys sets the secrets and they win. Generating a fresh throwaway key per
           # run - what this used to do - produced an APK nobody could update.
+          assemble_step="sign"
           if [ -n "${{ secrets.ANDROID_KEYSTORE_B64 }}" ]; then
             printf '%s' "${{ secrets.ANDROID_KEYSTORE_B64 }}" | base64 -d > apk/release.ks
             ks="apk/release.ks"
@@ -1063,10 +1076,13 @@ jobs:
             "$build_tools/apksigner" sign --ks "$ks" --ks-type pkcs12 --ks-pass pass:lantern-run-ci \
               --key-pass pass:lantern-run-ci --out LanternRun.apk apk/aligned.apk
           fi
+          assemble_step="verify"
           "$build_tools/apksigner" verify LanternRun.apk
+          assemble_step="report"
           # The version the phone will see, printed so a run's number is readable from its log.
           "$build_tools/aapt2" dump badging LanternRun.apk | grep -E "^package:|^application:" | head -4
           unzip -l LanternRun.apk | grep -E "lib/|mipmap|lantern-run-ci" | tail -6
+          trap - ERR
 
       # The APK is the deliverable, so it is attached to the run: an Android build nobody can install is a build log.
       - uses: actions/upload-artifact@v4

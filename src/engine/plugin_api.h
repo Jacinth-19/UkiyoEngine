@@ -20,6 +20,10 @@
 #ifndef UKIYO_PLUGIN_API_H
 #define UKIYO_PLUGIN_API_H
 
+#ifdef __cplusplus
+extern "C" {
+#endif
+
 #include <stdint.h>
 
 /* Bumped whenever a field is added to UkiyoEditorApi, or one changes meaning. */
@@ -65,7 +69,22 @@ typedef struct UkiyoEditorApi {
 
    ukiyo_plugin_unload is called before the library is unloaded, and may be null. Anything the plugin registered is
    dropped by the host either way, so this is only for the plugin's own cleanup. */
-int ukiyo_plugin_load(const UkiyoEditorApi* api, UkiyoPluginInfo* info);
-void ukiyo_plugin_unload(void);
+/* On Windows nothing leaves a DLL unless it says so: a plugin defines its two functions with UKIYO_PLUGIN_EXPORT
+   (empty on platforms where every symbol is exported by default), or brings its own visibility mechanism. The host
+   never references the functions by name - it looks them up - so the macro costs it nothing. */
+#if defined(UKIYO_PLUGIN_EXPORT)
+/* the plugin already chose */
+#elif defined(_WIN32)
+#  define UKIYO_PLUGIN_EXPORT __declspec(dllexport)
+#else
+#  define UKIYO_PLUGIN_EXPORT
+#endif
+
+UKIYO_PLUGIN_EXPORT int ukiyo_plugin_load(const UkiyoEditorApi* api, UkiyoPluginInfo* info);
+UKIYO_PLUGIN_EXPORT void ukiyo_plugin_unload(void);
+
+#ifdef __cplusplus
+} /* extern "C" */
+#endif
 
 #endif /* UKIYO_PLUGIN_API_H */
