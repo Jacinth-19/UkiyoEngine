@@ -505,7 +505,18 @@ jobs:
           msg="$(grep -E '^FAIL' /tmp/ukiyo-editor-selftest.log | head -40 | sed 's/%/%25/g' |
                  awk 'NR>1{printf "%s", "%0A"} {printf "%s", $0}')"
           echo "::error::editor self-test:${msg:-no FAIL line, see the log}"
+          # A job's log cannot be read back through the API from here, and the annotation holds forty lines at most.
+          # The log itself is an artifact, so whoever fixes the failure reads the check that failed with its detail.
+          mkdir -p selftest
+          cp /tmp/ukiyo-editor-selftest.log selftest/editor-selftest.log 2>/dev/null || true
           exit 1
+      - name: Upload the editor self-test log
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: editor-selftest-log
+          path: selftest/editor-selftest.log
+          if-no-files-found: warn
       # The player, end to end: a real window on the virtual display, a real device, a real model, the HUD over it. The
       # capture is then checked for content, because a black or empty frame is the failure mode a green exit code hides.
       - name: Run the player and capture a frame

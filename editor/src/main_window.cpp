@@ -5361,7 +5361,7 @@ void MainWindow::paintGameOverlay(QPainter& p) {
         // What the game's own update cost this frame, measured inside World::tick on the render thread. The render
         // time above is the whole frame; this is the part the game's systems own.
         ukiyo::FrameTiming timing;
-        runOnWorker([&] { timing = worker_->playTiming(); });
+        if (playing_) runOnWorker([&] { timing = worker_->playTiming(); });
         if (timing.total > 0.0f) {
             lines << QStringLiteral("Update: %1 ms").arg(double(timing.total), 0, 'f', 2);
             const struct { const char* name; float ms; } stages[] = {
@@ -6645,13 +6645,28 @@ bool MainWindow::beginEdit(const QString& key) {
         lastEditTimer_.restart();
         return false;   // part of the same edit as the step already taken
     }
-    // The document as the previous edit left it is what this step diffs from.
-    flushEdit();
-    redoStack_.clear();
+    // A step is taken at the start of every edit, as it always was: what is new is that the step is the difference the
+    // last edit made rather than another copy of the document. Taking it here is what makes Undo available the moment an
+    // edit starts, and it is what lets a failed operation drop the step it took (dropTopEdit).
     if (prefabStage_) {
-        prefabRedo_.clear();
         prefabUndo_.push_back(capturePrefabStage());
         if (static_cast<int>(prefabUndo_.size()) > kUndoLimit) prefabUndo_.erase(prefabUndo_.begin());
+        prefabRedo_.clear();
+    } else {
+        const nlohmann::json doc = docToJson(sceneDocument());
+        SceneEdit e;
+        if (undoTopValid_) {
+            e.patch = ukiyo::diffJson(undoTopDoc_, doc);
+            e.inverse = ukiyo::invertJsonPatch(e.patch, undoTopDoc_);
+            e.terrain = pendingTerrain_;
+        }
+        pendingTerrain_ = QJsonArray();
+        e.label = key;
+        undoTopDoc_ = doc;
+        undoTopValid_ = true;
+        undoStack_.push_back(std::move(e));
+        if (static_cast<int>(undoStack_.size()) > kUndoLimit) undoStack_.erase(undoStack_.begin());
+        redoStack_.clear();
     }
     lastEditKey_ = key;
     lastEditTimer_.restart();
@@ -6660,27 +6675,30 @@ bool MainWindow::beginEdit(const QString& key) {
 }
 
 void MainWindow::flushEdit() {
+    // The edit in progress has not been recorded yet: beginEdit records what the *previous* edit did. Undo, save and
+    // play all call this first, so none of them loses the last change.
     if (loadingScene_ || prefabStage_) return;
-    const QJsonObject now = sceneDocument();
-    const nlohmann::json doc = docToJson(now);
+    const nlohmann::json doc = docToJson(sceneDocument());
     if (!undoTopValid_) {
         undoTopDoc_ = doc;
         undoTopValid_ = true;
         return;
     }
-    ukiyo::JsonPatch patch = ukiyo::diffJson(undoTopDoc_, doc);
-    if (!patch.empty()) {
-        SceneEdit e;
-        e.inverse = ukiyo::invertJsonPatch(patch, undoTopDoc_);
-        e.patch = std::move(patch);
-        e.terrain = pendingTerrain_;
-        e.label = lastEditKey_;
-        pendingTerrain_ = QJsonArray();
-        undoStack_.push_back(std::move(e));
-        if (static_cast<int>(undoStack_.size()) > kUndoLimit) undoStack_.erase(undoStack_.begin());
-        updateEditActions();
+    SceneEdit e;
+    e.patch = ukiyo::diffJson(undoTopDoc_, doc);
+    if (e.patch.empty() && pendingTerrain_.isEmpty()) {
+        undoTopDoc_ = doc;
+        return;
     }
+    e.inverse = ukiyo::invertJsonPatch(e.patch, undoTopDoc_);
+    e.terrain = pendingTerrain_;
+    e.label = lastEditKey_;
+    pendingTerrain_ = QJsonArray();
     undoTopDoc_ = doc;
+    undoStack_.push_back(std::move(e));
+    if (static_cast<int>(undoStack_.size()) > kUndoLimit) undoStack_.erase(undoStack_.begin());
+    redoStack_.clear();
+    updateEditActions();
 }
 
 void MainWindow::dropTopEdit() {
@@ -6700,8 +6718,9 @@ void MainWindow::dropTopEdit() {
 }
 
 void MainWindow::cancelEdit() {
-    // A failed operation applied nothing, so the next flush sees no change and records no step. Ending the debounce
-    // window keeps the next real edit from being merged into this one.
+    // The step beginEdit took belongs to an operation that failed. Dropping it leaves the stack where it was, and the
+    // document base goes back with it, so the next edit diffs from the truth.
+    dropTopEdit();
     lastEditKey_.clear();
     lastEditTimer_.invalidate();
     updateEditActions();
@@ -7149,7 +7168,6 @@ void MainWindow::gizmoRelease() {
     if (!gizmoDragging_) return;
     gizmoDragging_ = false;
     // A press with no movement leaves no undo step behind.
-    if (gizmoPushed_ && gizmoChanged_) flushEdit();   // the drag is one step, recorded when it ends
     gizmoPushed_ = false;
     updateEditActions();
     if (hierarchy_->currentItem()) showPropertiesFor(hierarchy_->currentItem());   // Inspector shows the new values
