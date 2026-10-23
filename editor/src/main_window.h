@@ -418,6 +418,8 @@ private:
     void buildGizmoToolbar();
     void setGizmoTool(gizmo::Tool tool);
     bool gizmoTarget(int* index, InstanceInfo* info);
+    // Every instance selected in the Hierarchy, the active one first: the gizmo edits all of them.
+    std::vector<int> selectedInstances() const;
     // The selected model instance, whichever view is showing.
     bool selectionTarget(int* index, InstanceInfo* info);
     bool gizmoPress(QPointF s);
@@ -447,6 +449,9 @@ private:
     void updateMemoryStatus();
     void applyInstanceTransform(int index, const float position[3], float yawDeg, float pitchDeg, float rollDeg,
                                 const float scale[3]);
+    // The same write for a whole selection, in one round trip to the worker and one refresh: a drag of fifty objects
+    // that made fifty round trips and refreshed fifty times would not be draggable.
+    void applyInstanceTransforms(const std::vector<PlacementWrite>& writes);
     void copyInstance(int index);
     void duplicateInstance(int index);
     void deleteInstance(int index);
@@ -616,6 +621,18 @@ private:
     bool gizmoDragging_ = false;
     bool gizmoPushed_ = false;    // this drag pushed an undo step
     bool gizmoChanged_ = false;
+    // One instance's placement. The rotation is (pitch, yaw, roll) because that is the order the Inspector and the
+    // scene file write. A drag edits every instance selected in the Hierarchy, not only the active one, so where each
+    // of them stood at the press is remembered: a drag is measured from where it started, never accumulated per frame.
+    struct PlacementWrite {
+        int index = -1;
+        glm::vec3 position{0.0f};
+        glm::vec3 rotationDeg{0.0f};
+        glm::vec3 scale{1.0f};
+    };
+    using GizmoStart = PlacementWrite;
+    std::vector<GizmoStart> gizmoStart_;    // every instance the drag is writing to, and where each began
+    std::vector<int> gizmoTargets_;         // the selection the drag began with, in Hierarchy order
     glm::vec3 gizmoScale0_{1.0f};   // the instance's scale when the drag began
     QPointF gizmoCenter0_;          // the gizmo's screen centre, for the uniform scale handle
     QPointF gizmoMouse0_;           // where the pointer was when the drag began

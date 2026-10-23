@@ -1,5 +1,7 @@
 #include "engine/gizmo_math.h"
 
+#include "engine/transform.h"
+
 #include <algorithm>
 #include <cmath>
 
@@ -124,6 +126,38 @@ float snapScale(float scale, float step) {
 float snapAngle(float deg, float stepDeg) {
     if (stepDeg <= 0.0f) return deg;
     return std::round(deg / stepDeg) * stepDeg;
+}
+
+glm::vec3 selectionPivot(const std::vector<glm::vec3>& positions) {
+    if (positions.empty()) return glm::vec3(0.0f);
+    glm::vec3 sum(0.0f);
+    for (const glm::vec3& p : positions) sum += p;
+    return sum / float(positions.size());
+}
+
+glm::vec3 movedBy(const glm::vec3& position, const glm::vec3& delta) { return position + delta; }
+
+Placement rotatedAbout(const Placement& p, const glm::vec3& pivot, const glm::vec3& deltaDeg) {
+    const glm::quat turn = eulerToQuat(deltaDeg);
+    Placement out = p;
+    // The position swings around the pivot on the same turn the object makes.
+    out.position = pivot + turn * (p.position - pivot);
+    // The rotation composes: the turn is applied on top of what the object already had, in the engine's ZXY order,
+    // because adding to one Euler angle of an already tilted object turns it about the wrong axis.
+    out.rotationDeg = quatToEuler(turn * eulerToQuat(p.rotationDeg));
+    return out;
+}
+
+Placement scaledAbout(const Placement& p, const glm::vec3& pivot, const glm::vec3& factor) {
+    const glm::vec3 f = glm::vec3(std::max(factor.x, 0.01f), std::max(factor.y, 0.01f), std::max(factor.z, 0.01f));
+    Placement out = p;
+    // The position moves out from the pivot by the same factor the object grows by, so two objects twice as far apart
+    // stay twice as far apart after a uniform drag.
+    out.position = pivot + f * (p.position - pivot);
+    // The scale keeps the same hundredth-of-its-size floor the scale handles use, so a drag cannot flatten a
+    // selection into a plane it can never be unflattened from.
+    out.scale = glm::max(p.scale * f, glm::vec3(0.01f));
+    return out;
 }
 
 } // namespace ukiyo::gizmo

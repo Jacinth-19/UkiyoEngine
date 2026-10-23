@@ -18,6 +18,14 @@ void check(bool ok, const char* what, const std::string& detail = std::string())
     }
 }
 bool near(float a, float b, float eps = 1e-4f) { return std::fabs(a - b) <= eps; }
+bool near3(const glm::vec3& a, const glm::vec3& b, float eps = 1e-4f) {
+    return near(a.x, b.x, eps) && near(a.y, b.y, eps) && near(a.z, b.z, eps);
+}
+std::string fmt(const glm::vec3& v) {
+    char b[96];
+    std::snprintf(b, sizeof(b), "(%.2f, %.2f, %.2f)", v.x, v.y, v.z);
+    return b;
+}
 } // namespace
 
 int main() {
@@ -125,6 +133,66 @@ int main() {
         check(a == b, "the same axis gives the same reference every time");
         check(near(glm::dot(a, glm::vec3(0.0f, 1.0f, 0.0f)), 0.0f), "and it is perpendicular");
         check(near(glm::length(a), 1.0f), "and unit length");
+    }
+
+    // --- A whole selection at once ---------------------------------------------------------------------
+    {
+        // The pivot is the middle of the selection; with one object, it is that object.
+        check(near3(selectionPivot({}), glm::vec3(0.0f)), "an empty selection pivots at the origin");
+        check(near3(selectionPivot({glm::vec3(1, 0, 0), glm::vec3(3, 0, 0)}), glm::vec3(2, 0, 0)),
+              "two objects pivot midway between them");
+        check(near3(selectionPivot({glm::vec3(-2, 4, 0), glm::vec3(0, -2, 6), glm::vec3(2, 1, 0)}), glm::vec3(0, 1, 2)),
+              "three objects pivot at the mean of their positions");
+
+        // A move carries every object by the same delta, so the selection keeps its shape.
+        const glm::vec3 a = movedBy(glm::vec3(1, 2, 3), glm::vec3(0.5f, -1.0f, 0.0f));
+        const glm::vec3 b = movedBy(glm::vec3(4, 2, 3), glm::vec3(0.5f, -1.0f, 0.0f));
+        check(near3(a, glm::vec3(1.5f, 1, 3)) && near3(b - a, glm::vec3(3, 0, 0)),
+              "a move drag keeps the gap between two objects");
+
+        // A turn swings the positions around the pivot . . .
+        Placement left;
+        left.position = glm::vec3(2, 0, 0);
+        Placement right;
+        right.position = glm::vec3(4, 0, 0);
+        const glm::vec3 pivot = selectionPivot({left.position, right.position});   // (3, 0, 0)
+        const Placement l2 = rotatedAbout(left, pivot, glm::vec3(0, 90, 0));
+        const Placement r2 = rotatedAbout(right, pivot, glm::vec3(0, 90, 0));
+        check(near3(l2.position, glm::vec3(3, 0, 1)) && near3(r2.position, glm::vec3(3, 0, -1)),
+              "a quarter turn about the pivot swings two objects round it",
+              fmt(l2.position) + " " + fmt(r2.position));
+        check(near(glm::length(r2.position - l2.position), 2.0f),
+              "and they are still as far apart as they were");
+        // . . . and composes with the rotation each one already had.
+        Placement tilted;
+        tilted.rotationDeg = glm::vec3(30, 0, 0);
+        const Placement twice = rotatedAbout(tilted, glm::vec3(0.0f), glm::vec3(0, 90, 0));
+        check(near(twice.rotationDeg.x, 30.0f, 0.01f) && near(twice.rotationDeg.y, 90.0f, 0.01f),
+              "a yaw on top of a pitch keeps the pitch", fmt(twice.rotationDeg));
+        // One object turning about its own position does not move.
+        Placement solo;
+        solo.position = glm::vec3(5, 1, 0);
+        const Placement spun = rotatedAbout(solo, solo.position, glm::vec3(0, 45, 0));
+        check(near3(spun.position, solo.position), "one object selected turns where it stands");
+        check(near(spun.rotationDeg.y, 45.0f), "and takes the turned angle", fmt(spun.rotationDeg));
+
+        // A scale carries the positions out from the pivot and multiplies the scale.
+        const Placement ls = scaledAbout(left, pivot, glm::vec3(2, 2, 2));
+        const Placement rs = scaledAbout(right, pivot, glm::vec3(2, 2, 2));
+        check(near3(ls.position, glm::vec3(1, 0, 0)) && near3(rs.position, glm::vec3(5, 0, 0)),
+              "doubling a selection pushes the objects twice as far from the pivot",
+              fmt(ls.position) + " " + fmt(rs.position));
+        Placement big;
+        big.scale = glm::vec3(0.5f, 1.0f, 1.0f);
+        const Placement bigger = scaledAbout(big, glm::vec3(0.0f), glm::vec3(2, 1, 1));
+        check(near(bigger.scale.x, 1.0f) && near(bigger.scale.y, 1.0f), "one axis handle scales one axis",
+              fmt(bigger.scale));
+        const Placement flat = scaledAbout(big, glm::vec3(0.0f), glm::vec3(0, 0, 0));
+        check(flat.scale.x >= 0.01f, "a snap to nothing cannot flatten a selection away", fmt(flat.scale));
+        Placement single;
+        single.position = glm::vec3(3, 0, 0);
+        check(near3(scaledAbout(single, single.position, glm::vec3(3, 3, 3)).position, single.position),
+              "one object selected scales where it stands");
     }
 
     std::printf("gizmo_math_test: %d checks, %d failures\n", checks, failures);

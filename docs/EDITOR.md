@@ -155,7 +155,33 @@ front and mixed toward the view background by depth, so a ball behind reads as b
 that axis and switches the view to orthographic, which is what the widget is for — checking a silhouette or a
 side elevation against a known direction.
 
+## Multi-object transform
+
+Select several objects in the Hierarchy (click, then Ctrl-click or Shift-click) and there is still one gizmo, standing
+at the middle of them, and one drag edits all of them:
+
+| Tool | What a drag does to the selection |
+| --- | --- |
+| Move | every object moves by the same delta, so the selection keeps its shape |
+| Rotate | every position swings around the pivot, and every object takes the turned angle *on top of* the rotation it had |
+| Scale | every position moves out from the pivot by the factor, and every scale multiplies by it |
+
+The pivot is the mean of the selected positions. With one object selected it is that object's own position, which is
+why a single-object drag behaves exactly as it did before any of this existed — the same code runs, with two objects a
+metre apart instead of one.
+
+Two details are worth knowing, because they are where multi-object transforms usually go wrong:
+
+* **A turn composes, it does not add.** The turned angle is applied as a rotation on top of the object's own, in the
+  engine's ZXY order, so a prop that was already tilted about X stays tilted about X while the selection yaws. Adding
+  the angle to one of its Euler angles would instead turn it about the wrong axis and flatten the tilt.
+* **A scale carries the positions.** Doubling a selection doubles the distance between its objects, not only their
+  sizes; scaling about each object's own centre would pile them up on each other.
+
+The rules live in `src/engine/gizmo_math.h` (`selectionPivot`, `movedBy`, `rotatedAbout`, `scaledAbout`) with the rest of
+the gizmo arithmetic, so they are tested without a window. A drag writes every instance in one round trip to the
+render worker and takes **one** undo step, however many objects it moves.
+
 ## What is not here yet
 
-* Multi-object transform. The gizmo edits the selected instance.
 * A plugin API for editor extensions.

@@ -2379,39 +2379,82 @@ void MainWindow::setInstanceTransform(int index, const float position[3], float 
 // Writes a transform without an undo step. Gizmo drags call this, with one step taken at the start.
 void MainWindow::applyInstanceTransform(int index, const float position[3], float yawDeg, float pitchDeg,
                                         float rollDeg, const float scale[3]) {
+    applyInstanceTransforms({{index,
+                              glm::vec3(position[0], position[1], position[2]),
+                              glm::vec3(pitchDeg, yawDeg, rollDeg),
+                              glm::vec3(scale[0], scale[1], scale[2])}});
+}
+
+// Writes a transform without an undo step, for every instance in one go. The list form is what a multi-object drag
+// needs: one read of the instances, one write, one refresh, however many objects the hand is moving.
+void MainWindow::applyInstanceTransforms(const std::vector<PlacementWrite>& writes) {
+    if (writes.empty()) return;
     std::vector<InstanceInfo> list;
     runOnWorker([&] { list = worker_->instances(); });
-    if (index < 0 || index >= static_cast<int>(list.size())) return;
-    const InstanceInfo cur = list[index];
 
-    // A linked instance records an override for a key only while its value differs from the prefab's.
-    // Setting a value back to the prefab's makes that key inherit again.
-    QStringList overrides = cur.overrides;
-    overrides.removeAll(QStringLiteral("translation"));
-    overrides.removeAll(QStringLiteral("yawDeg"));
-    overrides.removeAll(QStringLiteral("scale"));
-    overrides.removeAll(QStringLiteral("pitchDeg"));
-    overrides.removeAll(QStringLiteral("rollDeg"));
-    if (!cur.prefab.isEmpty()) {
-        prefab::Pose world;
-        QString err;
-        if (!linkedNodeWorld(projectRoot_, cur.prefab, cur.prefabId, &world, &err)) {
-            log("error: " + err);
-            return;
+    struct Job {
+        int index = -1;
+        glm::vec3 position{0.0f};
+        float yawDeg = 0.0f, pitchDeg = 0.0f, rollDeg = 0.0f;
+        glm::vec3 scale{1.0f};
+        QString prefab;
+        QString prefabId;
+        QStringList overrides;
+        bool linked = false;
+    };
+    std::vector<Job> jobs;
+    for (const PlacementWrite& w : writes) {
+        if (w.index < 0 || w.index >= static_cast<int>(list.size())) continue;
+        const InstanceInfo cur = list[static_cast<size_t>(w.index)];
+        const float position[3] = {w.position.x, w.position.y, w.position.z};
+        const float scale[3] = {w.scale.x, w.scale.y, w.scale.z};
+        Job j;
+        j.index = w.index;
+        j.position = w.position;
+        j.yawDeg = w.rotationDeg.y;
+        j.pitchDeg = w.rotationDeg.x;
+        j.rollDeg = w.rotationDeg.z;
+        j.scale = w.scale;
+
+        // A linked instance records an override for a key only while its value differs from the prefab's.
+        // Setting a value back to the prefab's makes that key inherit again.
+        QStringList overrides = cur.overrides;
+        overrides.removeAll(QStringLiteral("translation"));
+        overrides.removeAll(QStringLiteral("yawDeg"));
+        overrides.removeAll(QStringLiteral("scale"));
+        overrides.removeAll(QStringLiteral("pitchDeg"));
+        overrides.removeAll(QStringLiteral("rollDeg"));
+        if (!cur.prefab.isEmpty()) {
+            prefab::Pose world;
+            QString err;
+            if (!linkedNodeWorld(projectRoot_, cur.prefab, cur.prefabId, &world, &err)) {
+                log("error: " + err);
+                continue;
+            }
+            const bool moved = std::fabs(position[0] - world.pos[0]) > 1e-5f ||
+                               std::fabs(position[1] - world.pos[1]) > 1e-5f ||
+                               std::fabs(position[2] - world.pos[2]) > 1e-5f;
+            if (moved) overrides << QStringLiteral("translation");
+            if (std::fabs(j.yawDeg - world.yaw) > 1e-4f) overrides << QStringLiteral("yawDeg");
+            // A prefab node has no scale of its own yet, so any scale is the instance's and is written as an override.
+            if (std::fabs(scale[0] - 1.0f) > 1e-4f || std::fabs(scale[1] - 1.0f) > 1e-4f ||
+                std::fabs(scale[2] - 1.0f) > 1e-4f)
+                overrides << QStringLiteral("scale");
+            j.prefab = cur.prefab;
+            j.prefabId = cur.prefabId;
+            j.overrides = overrides;
+            j.linked = true;
         }
-        const bool moved = std::fabs(position[0] - world.pos[0]) > 1e-5f ||
-                           std::fabs(position[1] - world.pos[1]) > 1e-5f ||
-                           std::fabs(position[2] - world.pos[2]) > 1e-5f;
-        if (moved) overrides << QStringLiteral("translation");
-        if (std::fabs(yawDeg - world.yaw) > 1e-4f) overrides << QStringLiteral("yawDeg");
-        // A prefab node has no scale of its own yet, so any scale is the instance's and is written as an override.
-        if (std::fabs(scale[0] - 1.0f) > 1e-4f || std::fabs(scale[1] - 1.0f) > 1e-4f ||
-            std::fabs(scale[2] - 1.0f) > 1e-4f)
-            overrides << QStringLiteral("scale");
+        jobs.push_back(std::move(j));
     }
+    if (jobs.empty()) return;
     runOnWorker([&] {
-        worker_->setInstancePlacement(index, position, yawDeg, pitchDeg, rollDeg, scale);
-        if (!cur.prefab.isEmpty()) worker_->setInstanceLink(index, cur.prefab, cur.prefabId, overrides);
+        for (const Job& j : jobs) {
+            const float position[3] = {j.position.x, j.position.y, j.position.z};
+            const float scale[3] = {j.scale.x, j.scale.y, j.scale.z};
+            worker_->setInstancePlacement(j.index, position, j.yawDeg, j.pitchDeg, j.rollDeg, scale);
+            if (j.linked) worker_->setInstanceLink(j.index, j.prefab, j.prefabId, j.overrides);
+        }
     });
     markDirty();
     refresh();
@@ -6969,6 +7012,22 @@ int MainWindow::selectedInstance() const {
     return isInstanceRow(kind) ? kItemInstanceBase - kind : -1;
 }
 
+// Every instance selected in the Hierarchy, in the order the rows appear, with the active one first: the gizmo edits
+// all of them at once, and the active one is the one the Inspector shows and a rotate or scale drag measures from.
+std::vector<int> MainWindow::selectedInstances() const {
+    std::vector<int> out;
+    const int active = selectedInstance();
+    if (active >= 0) out.push_back(active);
+    for (QTreeWidgetItem* item : hierarchy_->selectedItems()) {
+        if (!item) continue;
+        const int kind = item->data(0, Qt::UserRole).toInt();
+        if (!isInstanceRow(kind)) continue;
+        const int index = kItemInstanceBase - kind;
+        if (index >= 0 && std::find(out.begin(), out.end(), index) == out.end()) out.push_back(index);
+    }
+    return out;
+}
+
 void MainWindow::copyInstance(int index) {
     std::vector<InstanceInfo> instances;
     runOnWorker([&] { instances = worker_->instances(); });
@@ -7196,6 +7255,21 @@ bool MainWindow::selectionTarget(int* index, InstanceInfo* info) {
     if (sel >= static_cast<int>(list.size())) return false;
     *index = sel;
     *info = list[sel];
+    // Several selected instances share one gizmo, standing at the middle of them: that is the point a drag turns and
+    // scales the whole selection about, and a handle has to be drawn where the drag is measured from. With one
+    // selected, the pivot is that instance's own position and nothing below changes.
+    const std::vector<int> picked = selectedInstances();
+    if (picked.size() > 1) {
+        std::vector<glm::vec3> at;
+        for (int i : picked) {
+            if (i < 0 || i >= static_cast<int>(list.size())) continue;
+            at.push_back(glm::vec3(list[i].position[0], list[i].position[1], list[i].position[2]));
+        }
+        const glm::vec3 pivot = ukiyo::gizmo::selectionPivot(at);
+        info->position[0] = pivot.x;
+        info->position[1] = pivot.y;
+        info->position[2] = pivot.z;
+    }
     return true;
 }
 
@@ -7212,6 +7286,24 @@ bool MainWindow::gizmoPress(QPointF sPos) {
     gizmoIndex_ = index;
     gizmoPart_ = part;
     gizmoOrigin0_ = origin;
+    // The whole selection moves together, so where each of them started is part of the drag's state: a drag is
+    // measured from the press, never accumulated from the last frame.
+    gizmoTargets_ = selectedInstances();
+    if (gizmoTargets_.empty()) gizmoTargets_.push_back(index);
+    gizmoStart_.clear();
+    {
+        std::vector<InstanceInfo> picked;
+        runOnWorker([&] { picked = worker_->instances(); });
+        for (int i : gizmoTargets_) {
+            if (i < 0 || i >= static_cast<int>(picked.size())) continue;
+            GizmoStart s;
+            s.index = i;
+            s.position = glm::vec3(picked[i].position[0], picked[i].position[1], picked[i].position[2]);
+            s.rotationDeg = glm::vec3(picked[i].pitchDeg, picked[i].yawDeg, picked[i].rollDeg);
+            s.scale = picked[i].scale;
+            gizmoStart_.push_back(s);
+        }
+    }
     gizmoYaw0_ = info.yawDeg;
     gizmoPitch0_ = info.pitchDeg;
     gizmoRoll0_ = info.rollDeg;
@@ -7322,7 +7414,44 @@ void MainWindow::gizmoDrag(QPointF sPos) {
                          scale[0] != gizmoScale0_.x || scale[1] != gizmoScale0_.y || scale[2] != gizmoScale0_.z;
     if (!differs && !gizmoChanged_) return;   // nothing to write yet
     gizmoChanged_ = gizmoChanged_ || differs;
-    applyInstanceTransform(gizmoIndex_, pos, yaw, pitch, roll, scale);
+
+    // The numbers above are the active instance's new transform. Turn them back into the thing the hand did - a move
+    // of this much, a turn of this much, a factor of this much - and hand that to the whole selection. Then two
+    // objects dragged together keep their shape, and each keeps the rotation and scale it had.
+    std::vector<PlacementWrite> writes;
+    switch (gizmoTool_) {
+    case gizmo::Tool::Move: {
+        const glm::vec3 delta = glm::vec3(pos[0], pos[1], pos[2]) - gizmoOrigin0_;
+        for (const GizmoStart& s : gizmoStart_)
+            writes.push_back({s.index, ukiyo::gizmo::movedBy(s.position, delta), s.rotationDeg, s.scale});
+        break;
+    }
+    case gizmo::Tool::Rotate: {
+        const glm::vec3 deltaDeg(pitch - gizmoPitch0_, yaw - gizmoYaw0_, roll - gizmoRoll0_);
+        for (const GizmoStart& s : gizmoStart_) {
+            const ukiyo::gizmo::Placement out =
+                ukiyo::gizmo::rotatedAbout({s.position, s.rotationDeg, s.scale}, gizmoOrigin0_, deltaDeg);
+            writes.push_back({s.index, out.position, out.rotationDeg, out.scale});
+        }
+        break;
+    }
+    case gizmo::Tool::Scale: {
+        // The factor is what the active instance's scale was multiplied by, so every object grows by the same amount
+        // and lands wherever its own scale times that factor puts it.
+        glm::vec3 factor(1.0f);
+        for (int k = 0; k < 3; ++k) {
+            const float start = k == 0 ? gizmoScale0_.x : k == 1 ? gizmoScale0_.y : gizmoScale0_.z;
+            factor[k] = std::fabs(start) > 1e-6f ? scale[k] / start : 1.0f;
+        }
+        for (const GizmoStart& s : gizmoStart_) {
+            const ukiyo::gizmo::Placement out =
+                ukiyo::gizmo::scaledAbout({s.position, s.rotationDeg, s.scale}, gizmoOrigin0_, factor);
+            writes.push_back({s.index, out.position, out.rotationDeg, out.scale});
+        }
+        break;
+    }
+    }
+    applyInstanceTransforms(writes);
     viewport_->update();
 }
 
@@ -7344,9 +7473,10 @@ void MainWindow::gizmoRelease() {
 
 void MainWindow::cancelGizmoDrag() {
     if (!gizmoDragging_) return;
-    const float pos[3] = {gizmoOrigin0_.x, gizmoOrigin0_.y, gizmoOrigin0_.z};
-    const float scale[3] = {gizmoScale0_.x, gizmoScale0_.y, gizmoScale0_.z};
-    applyInstanceTransform(gizmoIndex_, pos, gizmoYaw0_, gizmoPitch0_, gizmoRoll0_, scale);
+    // Every instance the drag touched goes back where it started, not only the active one.
+    std::vector<PlacementWrite> writes;
+    for (const GizmoStart& s : gizmoStart_) writes.push_back(s);
+    applyInstanceTransforms(writes);
     gizmoChanged_ = false;   // back where it started, so the release drops the undo step
     gizmoRelease();
 }
@@ -7589,6 +7719,20 @@ void MainWindow::paintGizmo(QPainter& p) {
     const glm::vec3 origin(info.position[0], info.position[1], info.position[2]);
     gizmo::paint(p, gameCam_, viewport_->width(), viewport_->height(), gizmoTool_, origin, gizmoHover_,
                  gizmoDragging_ ? gizmoPart_ : gizmo::Part::None);
+    // A selection of several shares one gizmo. Saying how many the next drag will move is the difference between a
+    // drag that surprises and one that does not, and it costs one line of text next to the handles.
+    const int picked = gizmoDragging_ ? static_cast<int>(gizmoStart_.size())
+                                      : static_cast<int>(selectedInstances().size());
+    if (picked > 1) {
+        QPointF centre;
+        if (gizmo::project(gameCam_, viewport_->width(), viewport_->height(), origin, &centre)) {
+            QFont f = p.font();
+            f.setPointSizeF(std::max(7.0, f.pointSizeF() - 1.0));
+            p.setFont(f);
+            p.setPen(QColor(255, 224, 102));
+            p.drawText(QPointF(centre.x() + 14.0, centre.y() - 10.0), QStringLiteral("%1 objects").arg(picked));
+        }
+    }
 }
 
 void MainWindow::paintViewGizmo(QPainter& p) {
@@ -9594,6 +9738,130 @@ int MainWindow::runSelfTest() {
             snapAction_->setChecked(false);
             moveSnapBox_->setCurrentIndex(1);
             settle();
+
+            // Multi-object transform: with two models selected the gizmo stands between them, and one drag moves,
+            // turns or scales both. Everything else in this section drags one model, so nothing here can pass by
+            // accident.
+            {
+                selectInstanceRow(0);
+                settle();
+                duplicateSelected();
+                settle();
+                int now = 0;
+                runOnWorker([&] { now = static_cast<int>(worker_->instances().size()); });
+                auto rowFor = [this](int index) -> QTreeWidgetItem* {
+                    QTreeWidgetItemIterator it(hierarchy_);
+                    while (*it) {
+                        if ((*it)->data(0, Qt::UserRole).toInt() == kItemInstanceBase - index) return *it;
+                        ++it;
+                    }
+                    return nullptr;
+                };
+                QTreeWidgetItem* rowA = now >= 2 ? rowFor(0) : nullptr;
+                QTreeWidgetItem* rowB = now >= 2 ? rowFor(now - 1) : nullptr;
+                check(rowA && rowB, "the scene has two instances to select");
+                if (rowA && rowB) {
+                    // Put the copy beside the original, so the gizmo's pivot is a known point between them.
+                    const glm::vec3 at(0.8f, 0.0f, 0.0f);
+                    const float pa[3] = {o.x, o.y, o.z};
+                    const float pb[3] = {o.x + at.x, o.y + at.y, o.z + at.z};
+                    setInstanceTransform(0, pa, 0.0f);
+                    settle();
+                    setInstanceTransform(now - 1, pb, 0.0f);
+                    settle();
+
+                    hierarchy_->clearSelection();
+                    hierarchy_->setCurrentItem(rowA);
+                    rowB->setSelected(true);
+                    settle();
+                    check(selectedInstances().size() == 2, "two selected rows are two instances",
+                          QString::number(selectedInstances().size()));
+
+                    int mi = -1;
+                    InstanceInfo mInfo;
+                    check(gizmoTarget(&mi, &mInfo), "a selection of two gets a gizmo");
+                    const glm::vec3 pivot(mInfo.position[0], mInfo.position[1], mInfo.position[2]);
+                    check(near(pivot.x, o.x + at.x * 0.5f, 1e-4f) && near(pivot.y, o.y, 1e-4f),
+                          "the gizmo stands midway between the two selected models");
+
+                    const float mlen = gizmo::handleLength(gameCam_, pivot);
+                    // Move: drag the X arrow, and both models travel the same distance.
+                    const int undoTwo = static_cast<int>(undoStack_.size());
+                    QPointF mg, mt;
+                    gizmo::project(gameCam_, w, h, pivot + ax * (mlen * 0.5f), &mg);
+                    gizmo::project(gameCam_, w, h, pivot + ax * (mlen * 0.5f + 0.4f), &mt);
+                    sendMouse(QEvent::MouseButtonPress, mg, Qt::LeftButton, Qt::LeftButton);
+                    sendMouse(QEvent::MouseMove, mt, Qt::NoButton, Qt::LeftButton);
+                    sendMouse(QEvent::MouseButtonRelease, mt, Qt::LeftButton, Qt::NoButton);
+                    settle();
+                    const InstanceInfo ma = posOf(0), mb = posOf(now - 1);
+                    check(near(ma.position[0], o.x + 0.4f, 0.05f) && near(mb.position[0], o.x + at.x + 0.4f, 0.05f),
+                          "a move drag carries both selected models by the same amount");
+                    check(near(mb.position[0] - ma.position[0], at.x, 0.02f), "and they keep the distance between them");
+                    check(static_cast<int>(undoStack_.size()) == undoTwo + 1, "a multi-object drag is one undo step");
+                    undoEdit();
+                    settle();
+                    check(near(posOf(0).position[0], o.x, 1e-4f) && near(posOf(now - 1).position[0], o.x + at.x, 1e-4f),
+                          "undo puts both selected models back");
+
+                    // Turn: the yaw ring swings both models around the pivot, and turns each of them.
+                    setGizmoTool(gizmo::Tool::Rotate);
+                    settle();
+                    auto ringTwo = [&](float deg) {
+                        QPointF pt;
+                        gizmo::project(gameCam_, w, h,
+                                       pivot + mlen * glm::vec3(std::sin(glm::radians(deg)), 0.0f, std::cos(glm::radians(deg))),
+                                       &pt);
+                        return pt;
+                    };
+                    const InstanceInfo ra = posOf(0), rb = posOf(now - 1);
+                    sendMouse(QEvent::MouseButtonPress, ringTwo(60.0f), Qt::LeftButton, Qt::LeftButton);
+                    sendMouse(QEvent::MouseMove, ringTwo(90.0f), Qt::NoButton, Qt::LeftButton);
+                    sendMouse(QEvent::MouseButtonRelease, ringTwo(90.0f), Qt::LeftButton, Qt::NoButton);
+                    settle();
+                    const InstanceInfo ta = posOf(0), tb = posOf(now - 1);
+                    check(near(ta.yawDeg, ra.yawDeg + 30.0f, 1.0f) && near(tb.yawDeg, rb.yawDeg + 30.0f, 1.0f),
+                          "a turn turns both selected models");
+                    const bool swung = std::fabs(ta.position[0] - ra.position[0]) > 0.05f &&
+                                       std::fabs(tb.position[2] - rb.position[2]) > 0.05f;
+                    check(swung, "and swings them around the pivot between them");
+                    check(near(glm::length(glm::vec2(tb.position[0] - ta.position[0], tb.position[2] - ta.position[2])),
+                               glm::length(glm::vec2(rb.position[0] - ra.position[0], rb.position[2] - ra.position[2])),
+                               0.05f),
+                          "without changing the distance between them");
+                    undoEdit();
+                    settle();
+
+                    // Scale: the centre handle doubles both models and carries them twice as far apart.
+                    setGizmoTool(gizmo::Tool::Scale);
+                    settle();
+                    const InstanceInfo sa = posOf(0), sb = posOf(now - 1);
+                    // The centre cube is a 28 pixel target, and the factor is the ratio of the pointer's distance
+                    // from the centre: twice as far out, twice as big.
+                    QPointF centre;
+                    gizmo::project(gameCam_, w, h, pivot, &centre);
+                    const QPointF out(centre.x() + 10.0, centre.y());
+                    const QPointF twice(centre.x() + 20.0, centre.y());
+                    sendMouse(QEvent::MouseButtonPress, out, Qt::LeftButton, Qt::LeftButton);
+                    sendMouse(QEvent::MouseMove, twice, Qt::NoButton, Qt::LeftButton);
+                    sendMouse(QEvent::MouseButtonRelease, twice, Qt::LeftButton, Qt::NoButton);
+                    settle();
+                    const InstanceInfo ua = posOf(0), ub = posOf(now - 1);
+                    const float fa = ua.scale.x / std::max(1e-4f, sa.scale.x);
+                    const float fb = ub.scale.x / std::max(1e-4f, sb.scale.x);
+                    check(near(fa, fb, 0.02f) && near(fa, 2.0f, 0.1f),
+                          "a uniform drag scales both selected models by one factor",
+                          QString::number(fa) + " / " + QString::number(fb));
+                    check(near(glm::length(glm::vec2(ub.position[0] - ua.position[0], ub.position[2] - ua.position[2])),
+                               fa * glm::length(glm::vec2(sb.position[0] - sa.position[0], sb.position[2] - sa.position[2])),
+                               0.05f),
+                          "and carries them out from the pivot by it");
+                    undoEdit();
+                    settle();
+                    setGizmoTool(gizmo::Tool::Move);
+                    settle();
+                }
+            }
         }
 
         // Put the scene back the way the tests found it.

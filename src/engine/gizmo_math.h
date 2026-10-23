@@ -14,6 +14,8 @@
 //   * a ring drag can cross the ±180° seam of atan2, so the delta is unwrapped rather than trusted.
 #pragma once
 
+#include <vector>
+
 #include <glm/glm.hpp>
 
 namespace ukiyo::gizmo {
@@ -69,5 +71,34 @@ float snapScale(float scale, float step);
 
 // Snaps an angle in degrees to `stepDeg` when stepDeg > 0.
 float snapAngle(float deg, float stepDeg);
+
+// ---- A whole selection at once -----------------------------------------------------------------------------------
+// The gizmo edits every object in the selection, not only the active one. The rules are here rather than in the window
+// because they are the part that is easy to get subtly wrong: a turn has to swing each position around the shared pivot
+// *and* compose with the rotation each object already had, and a scale has to carry the positions out from the pivot as
+// well as multiply the scale. With one object selected the pivot is that object's own position, so all three of these
+// do exactly what the single-object drag did.
+
+struct Placement {
+    glm::vec3 position{0.0f};
+    glm::vec3 rotationDeg{0.0f};   // x = pitch, y = yaw, z = roll, the engine's ZXY order
+    glm::vec3 scale{1.0f};
+};
+
+// The point a multi-object drag turns and scales about: the middle of the selection's positions.
+glm::vec3 selectionPivot(const std::vector<glm::vec3>& positions);
+
+// A move drag: every object moves by the same delta, so the selection keeps its shape.
+glm::vec3 movedBy(const glm::vec3& position, const glm::vec3& delta);
+
+// A turn about the pivot by `deltaDeg` (one angle at a time, as the rings give it): the position swings around the
+// pivot, and the turned angle composes with the rotation the object already had rather than being added to one of its
+// Euler angles, which is what makes a tilted object stay tilted the way the hand expects.
+Placement rotatedAbout(const Placement& p, const glm::vec3& pivot, const glm::vec3& deltaDeg);
+
+// A scale about the pivot. The factor is per axis - an X handle passes (f, 1, 1) - the position moves out from the
+// pivot by it, and the scale multiplies by it. Neither the factor nor the scale it lands on goes below a hundredth, so
+// a drag cannot flatten a selection into a plane it can never be unflattened from.
+Placement scaledAbout(const Placement& p, const glm::vec3& pivot, const glm::vec3& factor);
 
 } // namespace ukiyo::gizmo
