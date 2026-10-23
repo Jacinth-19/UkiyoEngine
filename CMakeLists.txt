@@ -649,6 +649,26 @@ target_include_directories(editor_tools_test PRIVATE ${CMAKE_SOURCE_DIR}/src)
 target_link_libraries(editor_tools_test PRIVATE nlohmann_json::nlohmann_json)
 target_compile_options(editor_tools_test PRIVATE ${UKIYO_WARNINGS_PEDANTIC})
 
+# The plugin ABI, against real shared libraries. CMake builds two plugins with the C compiler and passes their paths
+# in, so the test exercises dlopen/LoadLibrary, the exported symbols and the table a plugin calls back through - the
+# three places a plugin API is wrong in a way a mock would never show.
+add_library(plugin_sample SHARED tests/plugin_sample.c)
+target_include_directories(plugin_sample PRIVATE ${CMAKE_SOURCE_DIR}/src)
+set_target_properties(plugin_sample PROPERTIES PREFIX "" C_STANDARD 11)
+add_library(plugin_refuse SHARED tests/plugin_refuse.c)
+target_include_directories(plugin_refuse PRIVATE ${CMAKE_SOURCE_DIR}/src)
+set_target_properties(plugin_refuse PROPERTIES PREFIX "" C_STANDARD 11)
+add_executable(plugin_test tests/plugin_test.cpp src/engine/plugin_host.cpp)
+target_include_directories(plugin_test PRIVATE ${CMAKE_SOURCE_DIR}/src)
+target_link_libraries(plugin_test PRIVATE ${CMAKE_DL_LIBS})
+target_compile_options(plugin_test PRIVATE ${UKIYO_WARNINGS_PEDANTIC})
+add_dependencies(plugin_test plugin_sample plugin_refuse)
+# The paths are baked in rather than passed by a test runner: this project has no CTest convention, and CI runs the
+# executables by name.
+target_compile_definitions(plugin_test PRIVATE
+  UKIYO_PLUGIN_SAMPLE="$<TARGET_FILE:plugin_sample>"
+  UKIYO_PLUGIN_REFUSE="$<TARGET_FILE:plugin_refuse>")
+
 # The camera the Scene view builds with: perspective, orthographic, zoom, pan and flying.
 # The Scene view's gizmos: only the geometry, so it runs without a window. Pointing, plane and ring drags, Blender's
 # visibility rule, snapping, and the view gizmo's layout.
@@ -659,10 +679,19 @@ target_compile_options(gizmo_math_test PRIVATE ${UKIYO_WARNINGS_PEDANTIC})
 
 # The figure in docs/EDITOR.md: the three transform tools and the corner view widget, drawn with the geometry above, so
 # the figure moves when the geometry does and the tool stops building when that API does.
-add_executable(gizmo_preview tools/gizmo_preview.cpp src/engine/gizmo_math.cpp src/engine/camera.cpp)
+# transform.cpp with gizmo_math.cpp: the selection maths calls the engine's Euler/quaternion pair, and the figure
+# is built from the same translation units the editor uses, so it cannot drift from them.
+add_executable(gizmo_preview tools/gizmo_preview.cpp src/engine/gizmo_math.cpp src/engine/transform.cpp
+               src/engine/camera.cpp)
 target_include_directories(gizmo_preview PRIVATE ${CMAKE_SOURCE_DIR}/src ${CMAKE_SOURCE_DIR}/third_party)
 target_link_libraries(gizmo_preview PRIVATE glm::glm)
 target_compile_options(gizmo_preview PRIVATE ${UKIYO_WARNINGS})
+
+# The launcher icon, in five densities, from the identity's own drawing. Committed PNGs, regenerable: CI reruns the
+# tool and fails when the committed files and what the tool writes have drifted.
+add_executable(android_icon tools/android_icon.cpp)
+target_include_directories(android_icon PRIVATE ${CMAKE_SOURCE_DIR}/third_party)
+target_compile_options(android_icon PRIVATE ${UKIYO_WARNINGS})
 
 add_executable(camera_test tests/camera_test.cpp src/engine/camera.cpp)
 target_include_directories(camera_test PRIVATE ${CMAKE_SOURCE_DIR}/src)

@@ -731,6 +731,9 @@ MainWindow::MainWindow(const QString& projectRoot, QWidget* parent) : QMainWindo
     QTimer::singleShot(0, this, [this] {
         factoryLayout_ = saveState();
         restoreStartupLayout();
+        // Plugins load after the window is up, so a plugin that logs while loading has a console to log into and a
+        // broken one cannot stop the editor from appearing.
+        loadPlugins();
     });
 }
 
@@ -1482,6 +1485,7 @@ QWidget* MainWindow::buildProjectSettings() {
     addPage("inventory_2", QStringLiteral("Assets"), [&](QVBoxLayout* v) { fillAssetsPage(v); });
     addPage("translate", QStringLiteral("Localisation"), [&](QVBoxLayout* v) { fillLocalisationPage(v); });
     addPage("fork_left", QStringLiteral("Version Control"), [&](QVBoxLayout* v) { fillVcsPage(v); });
+    addPage("extension", QStringLiteral("Plugins"), [&](QVBoxLayout* v) { fillPluginsPage(v); });
     addPage("space_dashboard", QStringLiteral("Build"), [&](QVBoxLayout* v) { fillBuildPage(v); });
 
     QLineEdit* search = new QLineEdit;
@@ -2066,6 +2070,11 @@ void MainWindow::buildMenus() {
         logs_.clear();
         rebuildConsole();
     });
+
+    // The Plugins menu is filled by loadPlugins(): until one is loaded it holds the reload and folder actions, so the
+    // menu is never empty and a user who has never written a plugin can still find out where they go.
+    pluginsMenu_ = menuBar()->addMenu("&Plugins");
+    rebuildPluginsMenu();
 
     QMenu* window = menuBar()->addMenu("&Window");
     QMenu* layoutMenu = window->addMenu(uiIcon("dashboard"), "Layout");
@@ -5940,7 +5949,23 @@ assetops::Result MainWindow::removeBrowserItem(const QString& path) {
 
 assetops::Result MainWindow::importBrowserFiles(const QStringList& sources, const QString& destDir) {
     QStringList imported;
-    const assetops::Result r = assetops::importInto(sources, destDir, &imported);
+    // A plugin that claims an extension gets the file first: that is the whole point of claiming one. A file it
+    // imports is not copied as an asset, because the plugin has already put something in the project for it.
+    QStringList remaining;
+    for (const QString& source : sources) {
+        const QFileInfo info(source);
+        if (plugins_ && plugins_->importFile(info.absoluteFilePath().toStdString())) {
+            imported << info.absoluteFilePath();
+            log(QStringLiteral("plugin imported %1").arg(info.fileName()));
+        } else {
+            remaining << source;
+        }
+    }
+    if (remaining.isEmpty()) {
+        refreshBrowser();
+        return assetops::Result{true, {}};
+    }
+    const assetops::Result r = assetops::importInto(remaining, destDir, &imported);
     if (!imported.isEmpty()) {
         refreshBrowser();
         log(QStringLiteral("imported %1 item(s) into %2").arg(imported.size()).arg(destDir));
@@ -9822,9 +9847,14 @@ int MainWindow::runSelfTest() {
                     const InstanceInfo ta = posOf(0), tb = posOf(now - 1);
                     check(near(ta.yawDeg, ra.yawDeg + 30.0f, 1.0f) && near(tb.yawDeg, rb.yawDeg + 30.0f, 1.0f),
                           "a turn turns both selected models");
-                    const bool swung = std::fabs(ta.position[0] - ra.position[0]) > 0.05f &&
-                                       std::fabs(tb.position[2] - rb.position[2]) > 0.05f;
-                    check(swung, "and swings them around the pivot between them");
+                    // A 30 degree turn on a 0.4 m arm: 0.2 m of travel, well clear of a rounding error. The x-only
+                    // comparison this replaced passed by four hundredths of a millimetre at some view angles.
+                    const float swungA =
+                        glm::length(glm::vec2(ta.position[0] - ra.position[0], ta.position[2] - ra.position[2]));
+                    const float swungB =
+                        glm::length(glm::vec2(tb.position[0] - rb.position[0], tb.position[2] - rb.position[2]));
+                    check(swungA > 0.1f && swungB > 0.1f, "and swings them around the pivot between them",
+                          QString::number(swungA) + " / " + QString::number(swungB));
                     check(near(glm::length(glm::vec2(tb.position[0] - ta.position[0], tb.position[2] - ta.position[2])),
                                glm::length(glm::vec2(rb.position[0] - ra.position[0], rb.position[2] - ra.position[2])),
                                0.05f),
@@ -11787,6 +11817,41 @@ int MainWindow::runSelfTest() {
         }
         projSettings_ = savedSettings;
         postToWorker([this, copy = projSettings_] { worker_->setProjectSettings(copy); });
+    }
+
+    // --- 11x. Editor plugins: a broken library is reported, not fatal, and the page says so ---------
+    // The ABI itself is proven by tests/plugin_test.cpp against two real shared libraries. What can be checked here
+    // is the editor's half: a folder with something that is not a plugin must leave the editor running, say why, and
+    // leave the menu usable.
+    {
+        const QString dir = pluginsDir();
+        const QString file = dir + QStringLiteral("/broken") + QString::fromStdString(ukiyo::PluginHost::pluginExtension());
+        const bool hadDir = QDir(dir).exists();
+        QDir().mkpath(dir);
+        {
+            QFile f(file);
+            check(f.open(QIODevice::WriteOnly), QStringLiteral("the plugin fixture is written"));
+            f.write("this is not a shared library");
+        }
+        loadPlugins();
+        settle();
+        bool reported = false;
+        std::vector<ukiyo::PluginReport> tried;
+        if (plugins_) tried = plugins_->reports();
+        for (const ukiyo::PluginReport& r : tried) reported = reported || (!r.ok && !r.error.empty());
+        check(plugins_ && reported, QStringLiteral("a library that is not a plugin is reported with a reason"));
+        check(plugins_ && plugins_->loadedCount() == 0, QStringLiteral("and nothing is loaded from it"));
+        check(pluginsMenu_ != nullptr && !pluginsMenu_->actions().isEmpty(),
+              QStringLiteral("the Plugins menu still offers Reload and the folder"));
+        auto* listed = projectSettings_ ? projectSettings_->findChild<QTableWidget*>(QStringLiteral("pluginsList"))
+                                       : nullptr;
+        check(listed != nullptr, QStringLiteral("the Plugins page lists what was tried"));
+        check(projectSettings_ && projectSettings_->findChild<QLabel*>(QStringLiteral("pluginsDir")) != nullptr,
+              QStringLiteral("the Plugins page names the folder the editor reads"));
+        QFile::remove(file);
+        if (!hadDir) QDir(dir).removeRecursively();
+        loadPlugins();   // back to whatever the real project has, which is usually nothing
+        settle();
     }
 
     // --- 12. Game view presets render at the chosen aspect ------------------------------------
@@ -15383,6 +15448,136 @@ void MainWindow::fillAssetsPage(QVBoxLayout* v) {
 }
 
 // --- Localisation -------------------------------------------------------------------------------
+// ---- Editor extensions -------------------------------------------------------------------------
+
+QString MainWindow::pluginsDir() const { return projectRoot_ + QStringLiteral("/Plugins"); }
+
+void MainWindow::loadPlugins() {
+    // A fresh host each time, so Reload really reloads: the old libraries are unloaded before the new ones are opened,
+    // which is the only way to pick up a rebuilt plugin on Linux without restarting the editor.
+    plugins_.reset();
+    ukiyo::PluginHostCallbacks cb;
+    cb.log = [this](const std::string& line) { log(QString::fromStdString(line)); };
+    cb.status = [this](const std::string& line, int ms) {
+        statusBar()->showMessage(QString::fromStdString(line), ms);
+    };
+    cb.projectRoot = [this] { return projectRoot_.toStdString(); };
+    cb.scenePath = [this] { return scenePath_.toStdString(); };
+    plugins_ = std::make_unique<ukiyo::PluginHost>(cb);
+
+    // A project with no Plugins folder is the normal case, and creating the folder for it would litter every project
+    // with an empty directory. The page offers to make one.
+    if (!QDir(pluginsDir()).exists()) {
+        rebuildPluginsMenu();
+        log(QStringLiteral("no plugins: %1 does not exist").arg(pluginsDir()));
+        return;
+    }
+    const int loaded = plugins_->loadDirectory(pluginsDir().toStdString());
+    for (const ukiyo::PluginReport& r : plugins_->reports()) {
+        if (!r.ok) log(QStringLiteral("plugin failed: %1: %2").arg(QString::fromStdString(r.path),
+                                                                   QString::fromStdString(r.error)));
+    }
+    log(QStringLiteral("%1 plugin(s) loaded from Plugins").arg(loaded));
+    rebuildPluginsMenu();
+}
+
+void MainWindow::rebuildPluginsMenu() {
+    if (!pluginsMenu_) return;
+    pluginsMenu_->clear();
+    if (plugins_) {
+        for (const ukiyo::PluginCommand& c : plugins_->commands()) {
+            const QString id = QString::fromStdString(c.id);
+            pluginsMenu_->addAction(QString::fromStdString(c.label), this, [this, id] {
+                if (!plugins_) return;
+                statusBar()->showMessage(QStringLiteral("Running %1").arg(id), 1500);
+                plugins_->runCommand(id.toStdString());
+            });
+        }
+        if (!plugins_->commands().empty()) pluginsMenu_->addSeparator();
+        if (!plugins_->importers().empty()) {
+            QStringList claimed;
+            for (const ukiyo::PluginImporter& i : plugins_->importers())
+                claimed << QStringLiteral(".%1 (%2)").arg(QString::fromStdString(i.extension),
+                                                          QString::fromStdString(i.label));
+            QAction* info = pluginsMenu_->addAction(QStringLiteral("Importers: %1").arg(claimed.join(", ")));
+            info->setEnabled(false);
+            pluginsMenu_->addSeparator();
+        }
+    }
+    pluginsMenu_->addAction(uiIcon("refresh"), "Reload Plugins", this, &MainWindow::loadPlugins);
+    pluginsMenu_->addAction(uiIcon("folder_open"), "Open Plugins Folder", this, [this] {
+        QDir().mkpath(pluginsDir());
+        QDesktopServices::openUrl(QUrl::fromLocalFile(pluginsDir()));
+    });
+}
+
+void MainWindow::fillPluginsPage(QVBoxLayout* v) {
+    QFormLayout* f = addSection(v, QStringLiteral("Editor Plugins"));
+    QLabel* note = new QLabel(QStringLiteral(
+        "A plugin is a shared library in <b>&lt;project&gt;/Plugins</b> that exports <b>ukiyo_plugin_load</b>. It can add "
+        "commands to the Plugins menu and claim a file extension for import. The ABI is plain C "
+        "(<b>src/engine/plugin_api.h</b>), so a plugin may be written in C, C++ or anything else that exports two "
+        "symbols, and it is built against the same header the editor uses. <b>docs/PLUGINS.md</b> has a worked "
+        "example."));
+    note->setWordWrap(true);
+    f->addRow(note);
+
+    QLabel* directory = new QLabel(pluginsDir());
+    directory->setObjectName(QStringLiteral("pluginsDir"));
+    directory->setTextInteractionFlags(Qt::TextSelectableByMouse);
+    directory->setWordWrap(true);
+    f->addRow(QStringLiteral("Folder"), directory);
+
+    QTableWidget* table = new QTableWidget(0, 4);
+    table->setObjectName(QStringLiteral("pluginsList"));
+    table->setHorizontalHeaderLabels({QStringLiteral("Library"), QStringLiteral("Name"), QStringLiteral("Version"),
+                                      QStringLiteral("Status")});
+    table->horizontalHeader()->setStretchLastSection(true);
+    table->verticalHeader()->setVisible(false);
+    table->setMinimumHeight(140);
+    table->setEditTriggers(QAbstractItemView::NoEditTriggers);
+    std::vector<ukiyo::PluginReport> reports;
+    if (plugins_) reports = plugins_->reports();
+    table->setRowCount(static_cast<int>(reports.size()));
+    for (int row = 0; row < static_cast<int>(reports.size()); ++row) {
+        const ukiyo::PluginReport& r = reports[static_cast<size_t>(row)];
+        table->setItem(row, 0, new QTableWidgetItem(QFileInfo(QString::fromStdString(r.path)).fileName()));
+        table->setItem(row, 1, new QTableWidgetItem(QString::fromStdString(r.name)));
+        table->setItem(row, 2, new QTableWidgetItem(QString::fromStdString(r.version)));
+        table->setItem(row, 3, new QTableWidgetItem(r.ok ? QStringLiteral("loaded")
+                                                         : QString::fromStdString(r.error)));
+    }
+    f->addRow(table);
+
+    QStringList commands;
+    if (plugins_)
+        for (const ukiyo::PluginCommand& c : plugins_->commands())
+            commands << QStringLiteral("%1 — %2").arg(QString::fromStdString(c.label),
+                                                      QString::fromStdString(c.id));
+    if (!commands.isEmpty()) {
+        QLabel* list = new QLabel(commands.join(QStringLiteral("<br>")));
+        list->setObjectName(QStringLiteral("pluginCommands"));
+        list->setWordWrap(true);
+        list->setTextFormat(Qt::RichText);
+        f->addRow(QStringLiteral("Commands"), list);
+    }
+
+    auto* buttons = new QHBoxLayout;
+    auto* reload = new QPushButton(uiIcon("refresh"), QStringLiteral("Reload"));
+    reload->setObjectName(QStringLiteral("pluginsReload"));
+    connect(reload, &QPushButton::clicked, this, [this] { loadPlugins(); });
+    auto* folder = new QPushButton(uiIcon("folder_open"), QStringLiteral("Open Folder"));
+    connect(folder, &QPushButton::clicked, this, [this] {
+        QDir().mkpath(pluginsDir());
+        QDesktopServices::openUrl(QUrl::fromLocalFile(pluginsDir()));
+    });
+    buttons->addWidget(reload);
+    buttons->addWidget(folder);
+    buttons->addStretch(1);
+    v->addLayout(buttons);
+    v->addStretch(1);
+}
+
 void MainWindow::fillLocalisationPage(QVBoxLayout* v) {
     QFormLayout* f = addSection(v, QStringLiteral("Languages"));
     QLabel* note = new QLabel(QStringLiteral(

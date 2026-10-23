@@ -182,6 +182,18 @@ The rules live in `src/engine/gizmo_math.h` (`selectionPivot`, `movedBy`, `rotat
 the gizmo arithmetic, so they are tested without a window. A drag writes every instance in one round trip to the
 render worker and takes **one** undo step, however many objects it moves.
 
+## Plugins
+
+The editor loads shared libraries from `<project>/Plugins` and gives each one a plain C table to call back through. A
+plugin adds commands to the **Plugins** menu and can claim a file extension for import, so a converter for a format the
+importer does not know is a plugin rather than a change to this editor. The ABI is `src/engine/plugin_api.h`, the host
+is `src/engine/plugin_host.cpp`, and `docs/PLUGINS.md` is the worked example and the list of what a plugin still cannot
+do.
+
+A library that is not a plugin, that was built against a newer table, or that fails on load is reported in the console
+and on the Plugins page, and the editor starts anyway — one broken extension cannot be allowed to keep the rest of the
+editor from opening.
+
 ## What is not here yet
 
-* A plugin API for editor extensions.
+* A plugin API beyond commands and importers: panels, the scene document, and viewport drawing.
