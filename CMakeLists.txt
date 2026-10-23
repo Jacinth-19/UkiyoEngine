@@ -657,6 +657,13 @@ target_include_directories(gizmo_math_test PRIVATE ${CMAKE_SOURCE_DIR}/src)
 target_link_libraries(gizmo_math_test PRIVATE glm::glm)
 target_compile_options(gizmo_math_test PRIVATE ${UKIYO_WARNINGS_PEDANTIC})
 
+# The figure in docs/EDITOR.md: the three transform tools and the corner view widget, drawn with the geometry above, so
+# the figure moves when the geometry does and the tool stops building when that API does.
+add_executable(gizmo_preview tools/gizmo_preview.cpp src/engine/gizmo_math.cpp src/engine/camera.cpp)
+target_include_directories(gizmo_preview PRIVATE ${CMAKE_SOURCE_DIR}/src ${CMAKE_SOURCE_DIR}/third_party)
+target_link_libraries(gizmo_preview PRIVATE glm::glm)
+target_compile_options(gizmo_preview PRIVATE ${UKIYO_WARNINGS})
+
 add_executable(camera_test tests/camera_test.cpp src/engine/camera.cpp)
 target_include_directories(camera_test PRIVATE ${CMAKE_SOURCE_DIR}/src)
 target_link_libraries(camera_test PRIVATE glm::glm)

@@ -108,6 +108,13 @@ than a house style: `source/blender/editors/transform/transform_gizmo_3d.cc` for
 `source/blender/editors/space_view3d/view3d_gizmo_navigate_type.cc` for the corner axis widget. What is borrowed
 is the *behaviour*; the geometry, drawing and drag code here are this engine's own.
 
+![The three transform tools and the corner view widget](gizmo.png)
+
+*Move, Rotate and Scale side by side, with the view widget in the corner of the Move panel at the size it has in
+the Scene view. Drawn by `tools/gizmo_preview.cpp` through `src/engine/gizmo_math.cpp` — the handle length, the plane
+squares, the near/far split of a ring and the visibility rule are the same calls the editor makes — so the figure moves
+when the geometry does, and the tool stops building if that API does.*
+
 The transform gizmo has three sets of handles, one per tool:
 
 | Tool | Handles |
