@@ -566,6 +566,11 @@ add_executable(particles_gpu_test tests/particles_gpu_test.cpp)
 add_executable(wireframe_test tests/wireframe_test.cpp)
 target_link_libraries(wireframe_test PRIVATE ukiyo_core)
 target_compile_options(wireframe_test PRIVATE ${UKIYO_WARNINGS})
+# Compute and the indirect path (docs/VGEOM.md): a dispatch writes a draw command into a storage buffer, the draw
+# consumes it from the buffer, and the commands nobody wrote draw nothing — on both backends, from a capture.
+add_executable(compute_test tests/compute_test.cpp)
+target_link_libraries(compute_test PRIVATE ukiyo_core)
+target_compile_options(compute_test PRIVATE ${UKIYO_WARNINGS})
 add_executable(water_render tests/water_render.cpp)
 target_link_libraries(water_render PRIVATE ukiyo_core)
 target_compile_options(water_render PRIVATE ${UKIYO_WARNINGS})

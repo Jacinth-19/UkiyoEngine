@@ -126,6 +126,7 @@ public:
 
 class GLDescriptorSet final : public DescriptorSet {
 public:
+    SetType type = SetType::Frame;   // the Compute set binds its buffers as SSBOs, every other set as uniform blocks
     void setBuffer(uint32_t binding, Buffer* buffer) override {
         GLuint id = static_cast<GLBuffer*>(buffer)->id();
         upsert(buffers_, binding, id);
@@ -248,6 +249,26 @@ public:
         auto p = std::make_unique<GLPipeline>();
         p->desc = desc;
         std::string dir = shaderRoot() + "/gl/";
+        if (!desc.computeShader.empty()) {
+            // A compute program is one stage and has no rasteriser state to pair with it. The same include-expanded
+            // GLSL the Vulkan step compiled to .comp.spv, read here as <name>.comp.glsl.
+            const std::string csrc = readText(dir + desc.computeShader + ".comp.glsl");
+            GLuint cs = compileStage(GL_COMPUTE_SHADER, csrc, desc.computeShader + ".comp");
+            GLuint prog = glCreateProgram();
+            glAttachShader(prog, cs);
+            glLinkProgram(prog);
+            glDeleteShader(cs);
+            GLint ok = 0;
+            glGetProgramiv(prog, GL_LINK_STATUS, &ok);
+            if (!ok) {
+                char log[4096];
+                glGetProgramInfoLog(prog, sizeof(log), nullptr, log);
+                glDeleteProgram(prog);
+                throw std::runtime_error("GL link error (compute " + desc.computeShader + "):\n" + log);
+            }
+            p->program = prog;
+            return p;
+        }
         std::string vsrc = readText(dir + desc.vertexShader + ".vert.glsl");
         std::string fsrc;
         if (!desc.fragmentGlsl.empty()) {
@@ -278,8 +299,10 @@ public:
         return p;
     }
 
-    std::unique_ptr<DescriptorSet> createDescriptorSet(SetType) override {
-        return std::make_unique<GLDescriptorSet>();
+    std::unique_ptr<DescriptorSet> createDescriptorSet(SetType type) override {
+        auto set = std::make_unique<GLDescriptorSet>();
+        set->type = type;
+        return set;
     }
 
     bool beginFrame() override {
@@ -411,6 +434,7 @@ public:
         auto* p = static_cast<GLPipeline*>(pipeline);
         const PipelineDesc& d = p->desc;
         glUseProgram(p->program);
+        if (!d.computeShader.empty()) return;   // no rasteriser state belongs to a dispatch; leave none to leak
         if (d.cull == Cull::None) glDisable(GL_CULL_FACE);
         else { glEnable(GL_CULL_FACE); glCullFace(d.cull == Cull::Back ? GL_BACK : GL_FRONT); }
         if (d.depthTest) glEnable(GL_DEPTH_TEST); else glDisable(GL_DEPTH_TEST);
@@ -434,7 +458,8 @@ public:
 
     void bindDescriptorSet(uint32_t, DescriptorSet* set) override {
         auto* s = static_cast<GLDescriptorSet*>(set);
-        for (auto& [binding, id] : s->buffers_) glBindBufferBase(GL_UNIFORM_BUFFER, binding, id);
+        const GLenum target = s->type == SetType::Compute ? GL_SHADER_STORAGE_BUFFER : GL_UNIFORM_BUFFER;
+        for (auto& [binding, id] : s->buffers_) glBindBufferBase(target, binding, id);
         for (auto& [binding, id] : s->textures_) glBindTextureUnit(binding, id);
     }
 
@@ -460,6 +485,27 @@ public:
         glBindVertexArray(vao_);
         glDrawElementsInstanced(GL_TRIANGLES, static_cast<GLsizei>(indexCount), GL_UNSIGNED_INT, nullptr,
                                 static_cast<GLsizei>(instanceCount));
+    }
+
+    void dispatch(uint32_t x, uint32_t y, uint32_t z) override {
+        // The same two barriers Vulkan gets inside dispatch(): prior writes visible to the compute stage, its writes
+        // visible to the command and attribute reads the indirect draws take afterwards.
+        glMemoryBarrier(GL_SHADER_STORAGE_BARRIER_BIT);
+        glDispatchCompute(x, y, z);
+        glMemoryBarrier(GL_SHADER_STORAGE_BARRIER_BIT | GL_COMMAND_BARRIER_BIT | GL_VERTEX_ATTRIB_ARRAY_BARRIER_BIT);
+    }
+
+    void drawIndexedIndirect(Buffer* buffer, size_t offset, uint32_t drawCount) override {
+        glBindVertexArray(vao_);
+        // One glDrawElementsIndirect per command rather than glMultiDrawElementsIndirect: the stride form is core
+        // 4.6, this engine's GL floor is 4.5, and sixteen zero commands are sixteen no-ops. The command layout is
+        // the same five uint32s Vulkan uses, at a 20-byte stride.
+        glBindBuffer(GL_DRAW_INDIRECT_BUFFER, static_cast<GLBuffer*>(buffer)->id());
+        for (uint32_t i = 0; i < drawCount; ++i) {
+            glDrawElementsIndirect(GL_TRIANGLES, GL_UNSIGNED_INT,
+                                   reinterpret_cast<const void*>(offset + size_t(i) * 20));
+        }
+        glBindBuffer(GL_DRAW_INDIRECT_BUFFER, 0);
     }
 
     void drawFullscreen() override {

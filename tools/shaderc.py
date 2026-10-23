@@ -4,7 +4,8 @@
 Every shader in shaders/ is written once in GLSL 450. This script:
   * expands `#include "file"` directives (no GL_GOOGLE_include_directive needed),
   * prepends `#version 450 core` plus a backend define,
-  * writes OpenGL sources to  <out>/gl/<name>.glsl       (loaded at runtime)
+  * writes OpenGL sources to  <out>/gl/<name>.glsl       (loaded at runtime),
+    where <name> carries its stage: <shader>.vert.glsl, <shader>.frag.glsl, <shader>.comp.glsl
   * compiles Vulkan SPIR-V    to <out>/spv/<name>.spv    (via glslangValidator)
 
 Usage: shaderc.py <shader_dir> <out_dir> [glslangValidator]
@@ -50,7 +51,7 @@ def main():
     failures = 0
     for name in sorted(os.listdir(shader_dir)):
         stem, ext = os.path.splitext(name)
-        if ext not in (".vert", ".frag"):
+        if ext not in (".vert", ".frag", ".comp"):
             continue
         src = os.path.join(shader_dir, name)
         body = expand(src)
@@ -62,7 +63,7 @@ def main():
 
         # Vulkan: compile to SPIR-V at build time.
         vk_text = "#version 450 core\n#define BACKEND_VK 1\n" + body
-        stage = "vert" if ext == ".vert" else "frag"
+        stage = ext[1:]   # vert / frag / comp — glslang's -S names
         with tempfile.NamedTemporaryFile("w", suffix=f"{ext}", delete=False) as tmp:
             tmp.write(vk_text)
             tmp_path = tmp.name

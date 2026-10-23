@@ -37,13 +37,17 @@ enum class Format : uint8_t {
     Backbuffer,   // whatever the presentation target uses
 };
 
-enum class BufferUsage : uint8_t { Vertex, Index, Uniform };
+// Storage: a shader-storage buffer (compute's read/write data). Indirect: a draw-command buffer — written by a
+// compute dispatch and read by drawIndexedIndirect, so the Vulkan backend gives it STORAGE|INDIRECT usage.
+enum class BufferUsage : uint8_t { Vertex, Index, Uniform, Storage, Indirect };
 // ShaderMaterial: parameters of a generated (node graph) material. UBO at binding 15,
 // textures at bindings 0-7. Vulkan only.
 // Particles: instance UBO at binding 11 (vertex stage), used by the particle quads.
 // Hud: one texture at binding 0, the glyph atlas. Its own set keeps the HUD out of the post chain and out of the
 // Frame set's texture units, which the GL backend flattens by binding number.
-enum class SetType : uint8_t { Frame, Material, Skin, Post, ShaderMaterial, Motion, Particles, Hud };
+// Compute: storage buffers at 0 and 1, a small UBO at 2, all visible to the compute stage only — the set a compute
+// pipeline binds. GL binds 0/1 as SSBOs and 2 as a uniform block for this set, and as uniform blocks for every other.
+enum class SetType : uint8_t { Frame, Material, Skin, Post, ShaderMaterial, Motion, Particles, Hud, Compute };
 enum class Cull : uint8_t { None, Back, Front };
 enum class Blend : uint8_t { None, Alpha, Additive };
 enum class Filter : uint8_t { Nearest, Linear };
@@ -130,6 +134,10 @@ struct PipelineDesc {
     // Optional GLSL 450 text for the fragment stage (generated materials). GL compiles this text,
     // after removing the Vulkan `set = N,` qualifiers. Used when fragmentSpirv is empty.
     std::string fragmentGlsl;
+    // Non-empty builds a compute pipeline instead of a graphics one: the shader is <computeShader>.comp
+    // (.comp.spv for Vulkan, .comp.glsl for GL), and vertexShader/fragmentShader/vertexInput/blend/raster state
+    // do not apply. The pipeline binds desc.sets like any other; a Compute set is what it expects.
+    std::string computeShader;
     // Descriptor sets in order: index i in bindDescriptorSet(i, ...) matches sets[i].
     std::vector<SetType> sets;
     bool vertexInput = false;     // true -> Vertex layout, false -> fullscreen/procedural
@@ -211,6 +219,16 @@ public:
     virtual void drawIndexed(uint32_t indexCount, uint32_t firstIndex = 0) = 0;
     // Instanced draw of the bound indexed mesh (step 3 foliage). Instance index comes from the draw, not a vertex buffer.
     virtual void drawIndexedInstanced(uint32_t indexCount, uint32_t instanceCount) = 0;
+    // Compute: dispatch `count` workgroups with the compute pipeline and its sets already bound. Recorded between
+    // beginFrame/endFrame and OUTSIDE a render pass. The backend puts the barrier this dispatch needs — before it
+    // (uploads and earlier writes visible to the compute stage) and after it (its writes visible to the draws and
+    // indirect commands that follow) — inside the call, so no caller has to know either backend's barrier model.
+    virtual void dispatch(uint32_t x, uint32_t y = 1, uint32_t z = 1) = 0;
+    // Draw `drawCount` indexed commands from `offset` bytes into an Indirect buffer (20-byte stride: indexCount,
+    // instanceCount, firstIndex, vertexOffset, firstInstance). Commands a producer did not write stay all-zero and
+    // draw nothing, which is how a GPU producer with an atomic count publishes without a readback: fill the buffer
+    // with zeros, dispatch, then draw the whole capacity.
+    virtual void drawIndexedIndirect(Buffer* buffer, size_t offset, uint32_t drawCount) = 0;
     virtual void drawFullscreen() = 0;
     // Non-indexed draw of `vertexCount` vertices, `instanceCount` times. Procedural vertex
     // shaders read gl_VertexID / gl_InstanceID (INSTANCE_ID in common.glsl).

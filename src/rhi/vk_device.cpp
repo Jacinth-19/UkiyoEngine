@@ -116,6 +116,9 @@ public:
         bi.usage = VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_TRANSFER_SRC_BIT;
         bi.usage |= usage == BufferUsage::Vertex ? VK_BUFFER_USAGE_VERTEX_BUFFER_BIT
                   : usage == BufferUsage::Index  ? VK_BUFFER_USAGE_INDEX_BUFFER_BIT
+                  : usage == BufferUsage::Storage ? VK_BUFFER_USAGE_STORAGE_BUFFER_BIT
+                  : usage == BufferUsage::Indirect
+                        ? VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT
                                                  : VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT;
         VmaAllocationCreateInfo ai{};
         ai.usage = VMA_MEMORY_USAGE_AUTO;
@@ -372,6 +375,7 @@ public:
     VKCore* core = nullptr;
     VkPipeline pipeline = VK_NULL_HANDLE;
     VkPipelineLayout layout = VK_NULL_HANDLE;
+    VkPipelineBindPoint bindPoint = VK_PIPELINE_BIND_POINT_GRAPHICS;
     ~VKPipeline() override {
         if (pipeline) vkDestroyPipeline(core->device, pipeline, nullptr);
         if (layout) vkDestroyPipelineLayout(core->device, layout, nullptr);
@@ -398,7 +402,10 @@ public:
         w.dstSet = set_;
         w.dstBinding = binding;
         w.descriptorCount = 1;
-        w.descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+        // The Compute set's bindings are storage buffers (layout 8); every other set's are uniform blocks. The
+        // layout and the write have to agree or vkUpdateDescriptorSets validates the mismatch.
+        w.descriptorType = type_ == SetType::Compute ? VK_DESCRIPTOR_TYPE_STORAGE_BUFFER
+                                                      : VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
         w.pBufferInfo = &bi;
         vkUpdateDescriptorSets(core_->device, 1, &w, 0, nullptr);
     }
@@ -458,11 +465,12 @@ public:
         VkDescriptorPoolSize sizes[] = {
             {VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 1024},
             {VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 4096},
+            {VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 4096},
         };
         VkDescriptorPoolCreateInfo dp{VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO};
         dp.flags = VK_DESCRIPTOR_POOL_CREATE_FREE_DESCRIPTOR_SET_BIT;
         dp.maxSets = 1024;
-        dp.poolSizeCount = 2;
+        dp.poolSizeCount = 3;
         dp.pPoolSizes = sizes;
         VK_CHECK(vkCreateDescriptorPool(core_.device, &dp, nullptr, &descPool_), "vkCreateDescriptorPool");
         createSetLayouts();
@@ -558,6 +566,19 @@ public:
         pl.pushConstantRangeCount = 1;
         pl.pPushConstantRanges = &pcr;
         VK_CHECK(vkCreatePipelineLayout(core_.device, &pl, nullptr, &p->layout), "vkCreatePipelineLayout");
+
+        if (!desc.computeShader.empty()) {
+            VkShaderModule cs = loadModule(shaderRoot() + "/spv/" + desc.computeShader + ".comp.spv");
+            VkComputePipelineCreateInfo ci{VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO};
+            ci.layout = p->layout;
+            ci.stage = {VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO, nullptr, 0, VK_SHADER_STAGE_COMPUTE_BIT,
+                        cs, "main", nullptr};
+            VK_CHECK(vkCreateComputePipelines(core_.device, VK_NULL_HANDLE, 1, &ci, nullptr, &p->pipeline),
+                     "vkCreateComputePipelines");
+            vkDestroyShaderModule(core_.device, cs, nullptr);
+            p->bindPoint = VK_PIPELINE_BIND_POINT_COMPUTE;
+            return p;
+        }
 
         VkShaderModule vs = loadModule(shaderRoot() + "/spv/" + desc.vertexShader + ".vert.spv");
         VkShaderModule fs = VK_NULL_HANDLE;
@@ -899,12 +920,13 @@ public:
     void bindPipeline(Pipeline* pipeline) override {
         auto* p = static_cast<VKPipeline*>(pipeline);
         curLayout_ = p->layout;
-        vkCmdBindPipeline(cb_, VK_PIPELINE_BIND_POINT_GRAPHICS, p->pipeline);
+        curBindPoint_ = p->bindPoint;
+        vkCmdBindPipeline(cb_, curBindPoint_, p->pipeline);
     }
 
     void bindDescriptorSet(uint32_t index, DescriptorSet* set) override {
         VkDescriptorSet s = static_cast<VKDescriptorSet*>(set)->handle();
-        vkCmdBindDescriptorSets(cb_, VK_PIPELINE_BIND_POINT_GRAPHICS, curLayout_, index, 1, &s, 0, nullptr);
+        vkCmdBindDescriptorSets(cb_, curBindPoint_, curLayout_, index, 1, &s, 0, nullptr);
     }
 
     void bindVertexBuffer(Buffer* buffer) override {
@@ -928,6 +950,30 @@ public:
 
     void drawIndexedInstanced(uint32_t indexCount, uint32_t instanceCount) override {
         vkCmdDrawIndexed(cb_, indexCount, instanceCount, 0, 0, 0);
+    }
+
+    void dispatch(uint32_t x, uint32_t y, uint32_t z) override {
+        // Coarse barriers either side: everything before is visible to the compute stage, and everything the
+        // dispatch wrote is visible to indirect commands, index/vertex reads and both shader stages after it.
+        VkMemoryBarrier pre{VK_STRUCTURE_TYPE_MEMORY_BARRIER};
+        pre.srcAccessMask = VK_ACCESS_MEMORY_WRITE_BIT;
+        pre.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
+        vkCmdPipelineBarrier(cb_, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, 0, 1,
+                             &pre, 0, nullptr, 0, nullptr);
+        vkCmdDispatch(cb_, x, y, z);
+        VkMemoryBarrier post{VK_STRUCTURE_TYPE_MEMORY_BARRIER};
+        post.srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
+        post.dstAccessMask = VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_INDIRECT_COMMAND_READ_BIT |
+                            VK_ACCESS_INDEX_READ_BIT | VK_ACCESS_VERTEX_ATTRIBUTE_READ_BIT;
+        vkCmdPipelineBarrier(cb_, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+                             VK_PIPELINE_STAGE_DRAW_INDIRECT_BIT | VK_PIPELINE_STAGE_VERTEX_INPUT_BIT |
+                                 VK_PIPELINE_STAGE_VERTEX_SHADER_BIT | VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
+                             0, 1, &post, 0, nullptr, 0, nullptr);
+    }
+
+    void drawIndexedIndirect(Buffer* buffer, size_t offset, uint32_t drawCount) override {
+        vkCmdDrawIndexedIndirect(cb_, static_cast<VKBuffer*>(buffer)->handle(), offset, drawCount,
+                                 sizeof(VkDrawIndexedIndirectCommand));
     }
 
     void drawFullscreen() override {
@@ -1091,7 +1137,8 @@ private:
         auto B = [](uint32_t binding, VkDescriptorType t, VkShaderStageFlags s) {
             return VkDescriptorSetLayoutBinding{binding, t, 1, s, nullptr};
         };
-        // Index order must match SetType: Frame, Material, Skin, Post, ShaderMaterial, Motion, Particles, Hud.
+        const VkShaderStageFlags C = VK_SHADER_STAGE_COMPUTE_BIT;
+        // Index order must match SetType: Frame, Material, Skin, Post, ShaderMaterial, Motion, Particles, Hud, Compute.
         setLayouts_[0] = make({B(0, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, VF), B(1, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, VF)});
         setLayouts_[1] = make({B(4, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, F), B(5, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, F),
                                B(6, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, F), B(8, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, VF),
@@ -1117,6 +1164,11 @@ private:
         // Index 7 is SetType::Hud: the glyph atlas, at binding 0. Its own set so the HUD pass binds one texture and
         // nothing else, and does not disturb the Frame set's units.
         setLayouts_[7] = make({B(0, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, F)});
+        // Index 8 is SetType::Compute: two storage buffers and a small UBO, visible to the compute stage only —
+        // the whole descriptor surface a dispatch gets (docs/VGEOM.md's GPU path uses 0 for cluster data and 1
+        // for the commands it writes).
+        setLayouts_[8] = make({B(0, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, C), B(1, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, C),
+                               B(2, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, C)});
     }
 
     void createSwapchain() {
@@ -1218,7 +1270,7 @@ public:
     VkCommandPool framePool_ = VK_NULL_HANDLE;
     VkCommandBuffer cb_ = VK_NULL_HANDLE;
     VkDescriptorPool descPool_ = VK_NULL_HANDLE;
-    VkDescriptorSetLayout setLayouts_[8]{};
+    VkDescriptorSetLayout setLayouts_[9]{};
     VkSemaphore imageAvailable_ = VK_NULL_HANDLE;
     VkFence inFlight_ = VK_NULL_HANDLE;
     VkSwapchainKHR swapchain_ = VK_NULL_HANDLE;
@@ -1231,6 +1283,7 @@ public:
     bool inFrame_ = false;
     std::unique_ptr<VKTexture> offscreen_;
     VkPipelineLayout curLayout_ = VK_NULL_HANDLE;
+    VkPipelineBindPoint curBindPoint_ = VK_PIPELINE_BIND_POINT_GRAPHICS;
     std::vector<VKTexture*> activeTargets_;
     std::unique_ptr<VKBuffer> readback_;
     uint32_t readbackW_ = 0, readbackH_ = 0;

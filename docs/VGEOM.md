@@ -28,7 +28,7 @@ tool's. A pixel-exact comparison against the source leaves 5 of 367 742 pixels u
 | Build the hierarchy | Parent groups, `children`, `neighbours`, `_parental_siblings`, per-cluster `error`, `parental_area`, `parental_triangle_density` | Groups of four in Morton order, per-parent `meshopt_simplify`, error = max(children, measured residual). Area and density metrics are not kept: the cut uses projected error directly |
 | Simplify | `StaticDecimator`/`Decimator` on an OpenMesh copy, per cluster | `meshopt_simplify` on a compacted `rhi::Vertex` array, border locked, absolute error budget. OpenMesh is not used; `meshoptimizer` is already part of the engine for item 15 |
 | Choose the cut | `LodTree::FillFaceVertRecursive`, `ShouldShow(metric)`: leaves always, else `error * childsib_triangle_density < metric² / 25` (the reference's own comment calls this "prone to error") | Screen-space error: `error · scale · pixelScale / distance`, refine while it exceeds a pixel budget. A non-positive budget forces the leaves |
-| Draw | SSBO cluster/face/vertex buffers, compute passes, a traversal that concatenates selected clusters into a fresh vertex and face list | The cut is a list of index ranges into **one** index buffer that indexes the primitive's **existing** vertex buffer. No vertex duplication, no storage buffers, no compute, no indirect draw |
+| Draw | SSBO cluster/face/vertex buffers, compute passes, a traversal that concatenates selected clusters into a fresh vertex and face list | The cut is a list of index ranges into **one** index buffer that indexes the primitive's **existing** vertex buffer. No vertex duplication. The RHI now has storage buffers, compute dispatch and `drawIndexedIndirect` (`compute_test`); the renderer's cut is still assembled on the CPU and drawn with plain `drawIndexed` |
 
 ## 2. The tree
 
@@ -176,11 +176,13 @@ tile's own border).
 
 ## 7. What is different from Nanite
 
-* **Selection is CPU, once per draw.** No compute shader, no GPU culling, no Hi-Z. The RHI has no compute or storage
-  buffers, and adding them is a renderer project of its own. The CPU cost is small (12 µs a draw) but it scales with
-  draws, not with pixels.
-* **No indirect or multi-draw.** A cut is a few `drawIndexed` calls after run merging — one per contiguous range, not
-  one per cluster, but still more calls than one `glMultiDrawElementsIndirect`.
+* **Selection is CPU, once per draw.** No GPU culling, no Hi-Z: `selectVGeom` still runs on the CPU. The CPU cost is
+  small (12 µs a draw) but it scales with draws, not with pixels. The RHI that would move it — compute dispatches,
+  storage buffers, `drawIndexedIndirect` — exists now (`compute_test` proves the round trip on both backends); what
+  has not moved yet is the cut itself.
+* **The renderer still calls `drawIndexed`, not the indirect path.** A cut is a few calls after run merging — one per
+  contiguous range, not one per cluster. The RHI's `drawIndexedIndirect` and the all-zero-command safety contract it
+  depends on are in place, waiting for a compute producer.
 * **No streaming.** Nanite pages cluster data in and out of a virtual texture; here the whole tree lives in RAM and in
   one index buffer. A 1 M-triangle mesh costs ~12 MB of indices.
 * **Border vertices are locked rather than stitched.** Neighbouring clusters at different levels share the same border
@@ -190,8 +192,9 @@ tile's own border).
   measured on the rest pose.
 * **No two-pass occlusion, no cluster compression, no mesh shaders.**
 
-Those are the honest gaps, and they are the order in which the system would grow if the RHI grew compute and indirect
-draw: GPU selection first, then page streaming.
+Those are the honest gaps, and they are the order in which the system grows. The RHI has taken its step: compute
+dispatch, storage buffers and indirect draws ship and are tested (`compute_test`); GPU selection is the next thing to
+sit on top of them, then page streaming.
 
 ## 8. Turning it off
 

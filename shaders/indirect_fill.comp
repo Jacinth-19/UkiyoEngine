@@ -1,0 +1,23 @@
+// Writes one indirect draw command, and nothing else: indexCount = 6, instanceCount = 1, firstIndex = 0. That is
+// two triangles — the same inset quad compute_test's HUD pipeline draws through the direct path — so the test can
+// tell three states apart by pixels alone: this shader ran (the quad is lit), it did not (black), or the indirect
+// draw read a buffer that was never zeroed (something else appears).
+//
+// DrawElementsIndirectCommand and Vulkan's VkDrawIndexedIndirectCommand are the same five uint32s at a 20-byte
+// stride: indexCount, instanceCount, firstIndex, vertexOffset, firstInstance. std430 lays a uint array out with a
+// 4-byte stride, so the command's fields are simply w[0..4] — no struct padding to fight.
+
+layout(local_size_x = 1, local_size_y = 1, local_size_z = 1) in;
+
+layout(std430, binding = 0) buffer Commands {
+    uint w[];
+} cmd;
+
+void main() {
+    if (gl_GlobalInvocationID.x != 0u) return;
+    cmd.w[0] = 6u;   // indexCount
+    cmd.w[1] = 1u;   // instanceCount
+    cmd.w[2] = 0u;   // firstIndex
+    cmd.w[3] = 0u;   // vertexOffset
+    cmd.w[4] = 0u;   // firstInstance
+}
