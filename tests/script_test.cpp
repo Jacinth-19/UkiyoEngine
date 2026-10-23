@@ -175,14 +175,22 @@ long long reported = 0;
 void* recentlyFreed[64] = {};
 int recentlyFreedNext = 0;
 
+// Defined below; insert() needs it to report a lost block.
+void note(const char* what, size_t size, const void* where, bool fatal);
+
 unsigned slotOf(void* ptr) { return static_cast<unsigned>((reinterpret_cast<uintptr_t>(ptr) >> 4) & (kSlots - 1)); }
 
 Entry* findEntry(void* ptr) {
     const unsigned start = slotOf(ptr);
+    // Every slot of the window, holes included. Stopping at the first empty slot was wrong: insert() placed an
+    // entry past neighbours that were *occupied then*, and once one of them is erased the hole sits between the
+    // start of the window and the entry. The probe used to stop there, conclude the block was never handed out,
+    // and hand a live block's user pointer to free() as though it were a raw one — an interior free that shows up
+    // as a heap-corruption exit three sections later, or on Windows as a crash in an unrelated check, because
+    // which allocations collide is pure layout luck.
     for (unsigned i = 0; i < 64; ++i) {
         Entry& e = table[(start + i) & (kSlots - 1)];
         if (e.ptr == ptr) return &e;
-        if (!e.ptr) return nullptr;
     }
     return nullptr;
 }
@@ -203,6 +211,9 @@ void insert(void* ptr, size_t size) {
             return;
         }
     }
+    // Sixty-four live neighbours in one window is a broken hash, not a workload — say so instead of losing the
+    // block and letting its next free take the heap with it.
+    note("insert dropped: collision window full", size, ptr, true);
 }
 
 void erase(void* ptr) {
