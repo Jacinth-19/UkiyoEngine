@@ -9468,7 +9468,11 @@ int MainWindow::runSelfTest() {
                 t.start();
                 while ((frameInFlight_ || renderWanted_) && t.elapsed() < 5000)
                     QCoreApplication::processEvents(QEventLoop::AllEvents, 10);
+                // Two copies: one beside the fixture, one in the repository's renders/, which CI uploads so the gizmo can
+                // be looked at after a run without a local Qt.
                 viewport_->grab().save(projectRoot_ + QStringLiteral("/renders/gizmo_scene_view.png"));
+                QDir().mkpath(QStringLiteral("renders"));
+                viewport_->grab().save(QStringLiteral("renders/gizmo_scene_view.png"));
             }
             const int w = viewport_->width(), h = viewport_->height();
             const float len = gizmo::handleLength(gameCam_, o);

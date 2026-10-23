@@ -586,6 +586,7 @@ jobs:
           name: gpu-logs
           path: |
             renders/player-frame.png
+            renders/gizmo_scene_view.png
             /tmp/ukiyo-gpu-*.log
             /tmp/ukiyo-editor-selftest.log
 
