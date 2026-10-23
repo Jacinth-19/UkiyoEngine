@@ -39,16 +39,65 @@ cmake -B build-android-arm64 -DCMAKE_BUILD_TYPE=Release \
 cmake --build build-android-arm64 --parallel
 
 python3 tools/shaderc.py shaders apk/assets/shaders $(command -v glslangValidator)
-# assets/ as above, lib/ with the two .so files, then the SDK's own tools:
+# assets/ as above, lib/ with the two .so files, the manifest, the icon resources and a version number, then the
+# SDK's own tools:
 aapt2 link -o apk/unaligned.apk -I $SDK/platforms/android-34/android.jar \
-  --manifest android/AndroidManifest.xml -A apk/assets --min-sdk-version 33 --target-sdk-version 34
+  --manifest android/AndroidManifest.xml -A apk/assets \
+  --version-code "$(date +%s)" --min-sdk-version 33 --target-sdk-version 34 --dir android/res
 (cd apk && zip -q -r unaligned.apk lib)
 zipalign -f 4 apk/unaligned.apk apk/aligned.apk
-apksigner sign --ks apk/debug.keystore --out LanternRun.apk apk/aligned.apk
+apksigner sign --ks android/lantern-run-ci.p12 --ks-type pkcs12 --ks-pass pass:lantern-run-ci \
+  --key-pass pass:lantern-run-ci --out LanternRun.apk apk/aligned.apk
+apksigner verify LanternRun.apk
 adb install -r LanternRun.apk
 ```
 
 The APK from a CI run is attached to it as `lantern-run-android`.
+
+## Signing, versionCode, and installing over the last build
+
+Android orders installed packages by `versionCode` and refuses `adb install -r` (and every upgrade) when the incoming
+number is not greater than the installed one. Two things follow, and both were wrong in the first version of this
+pipeline:
+
+* **A version per build.** CI passes `--version-code ${{ github.run_number }}`, so every APK the pipeline produces is
+  newer than the last one. The manifest's `versionCode="1"` remains as the value a hand-built APK gets.
+* **A key that outlives the run.** The pipeline used to run `keytool -genkeypair` for each build, which signed every
+  APK with a different throwaway key: a second build could never replace the first on a phone. It now signs with
+  `android/lantern-run-ci.p12`, committed in the repository — deliberately a CI convenience key with its password
+  (`lantern-run-ci`) in the workflow, not a secret: it proves *that* the pipeline signed the APK, and it must never be
+  used for a store release. A project with real keys sets the repository secrets `ANDROID_KEYSTORE_B64`,
+  `ANDROID_KEYSTORE_PASS`, `ANDROID_KEYSTORE_ALIAS` and `ANDROID_KEYSTORE_KEY_PASS`, and those win when they are set.
+
+```sh
+apksigner verify --print-certs LanternRun.apk   # who signed it, either way
+```
+
+## The launcher icon
+
+`android/res/mipmap-{m,h,x,xx,xxx}hdpi/ic_launcher.png` — one drawing at five densities, referenced by the manifest as
+`@mipmap/ic_launcher` and linked by aapt2's `--dir android/res`. The drawing is `tools/android_icon.cpp`: the identity's
+ensō, one brush stroke that runs dry into a gap, and the vermilion 浮 seal sitting in the gap, on the 藍 ground, drawn
+from the same colours and the same Shippori Mincho the brand uses. It writes all five files plus `docs/icon.png`, and CI
+reruns it and diffs, so a hand edit of a PNG fails the build rather than being silently overwritten later.
+
+```sh
+g++ -std=c++17 -O2 -I third_party tools/android_icon.cpp -o android_icon
+./android_icon --out android/res --doc docs/icon.png
+```
+
+## Background and resume
+
+Android gives an activity a window, takes it away when the app is backgrounded, and on resume hands back a *different*
+one — and a Vulkan swapchain cannot follow it. `android_main` used to build the device, the renderer and every model
+once, before the main loop, against whatever window existed then; the first resume therefore drew into a destroyed
+surface, which on most phones is the first time the user switches away and back.
+
+The player now has a *session* over the GPU: it is built when `state->window` exists (`APP_CMD_INIT_WINDOW`) and torn
+down when the window goes (`APP_CMD_TERM_WINDOW` — `waitIdle` first, so nothing is destroyed under a frame in flight).
+Everything that is not GPU-bound — the game, the physics, the scripts, the camera, the font — survives the whole run, so
+a resume costs one device creation and a model reload, not a restart, and the clock is re-based so the gap is never
+simulated as a frame. Without a window the loop sleeps instead of busy-spinning.
 
 ## Why Android 13 (API 33)
 

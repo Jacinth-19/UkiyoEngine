@@ -2,6 +2,11 @@
 <!--
   Lantern Run, packaged the way a game is: the native activity starts libukiyo_player.so, and there is no Java code at
   all (hasCode=false) — the whole game is C++ and the NDK's native-activity glue.
+
+  versionCode below is the fallback: CI overrides it with the run number, so every build the pipeline produces has a
+  version the package manager can order (a rebuild of the same code must not try to replace an installed app with an
+  "older" one). The icon is android/res/mipmap-*/ic_launcher.png, drawn by tools/android_icon.cpp from the identity's
+  own ensō and seal.
 -->
 <manifest xmlns:android="http://schemas.android.com/apk/res/android"
     package="dev.ukiyo.lanternrun"
@@ -15,6 +20,7 @@
 
     <application
         android:label="Lantern Run"
+        android:icon="@mipmap/ic_launcher"
         android:hasCode="false"
         android:allowBackup="false"
         android:extractNativeLibs="true"

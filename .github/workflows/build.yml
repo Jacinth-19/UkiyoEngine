@@ -233,12 +233,29 @@ jobs:
         run: |-
           set -o pipefail
           ./build/camera_test 2>&1 | tee /tmp/ukiyo-test-camera_test.log
-      # The gizmos' geometry: the view's ray, axis and plane drags, the visibility rule, snapping, and the view gizmo's
-      # six handles. No window and no GPU, so a wrong angle fails here rather than in a screenshot.
+      # The gizmos' geometry: the view's ray, axis and plane drags, the visibility rule, snapping, a whole selection at
+      # once, and the view gizmo's six handles. No window and no GPU, so a wrong angle fails here rather than in a
+      # screenshot.
       - name: Run Gizmo Math Test
         run: |-
           set -o pipefail
           ./build/gizmo_math_test 2>&1 | tee /tmp/ukiyo-test-gizmo_math_test.log
+      # The plugin ABI against real shared libraries: the exported symbols, the table the plugin calls back through,
+      # and a plugin that fails being reported and taken back. CMake bakes the two libraries' paths into the test.
+      - name: Run Plugin Test
+        run: |-
+          set -o pipefail
+          ./build/plugin_test 2>&1 | tee /tmp/ukiyo-test-plugin_test.log
+      # The launcher icon: the committed PNGs have to be exactly what tools/android_icon.cpp writes, five densities and
+      # the 512 px image, or someone edited a file the tool will next overwrite.
+      - name: Check the launcher icon
+        run: |-
+          set -o pipefail
+          rm -rf /tmp/icons-check
+          ./build/android_icon --out /tmp/icons-check --doc /tmp/icon-check.png
+          diff -r --no-dereference android/res /tmp/icons-check
+          cmp docs/icon.png /tmp/icon-check.png
+          echo "the committed icons are what the tool draws"
       # Budgeted loading (Flax 1.11's async scene loading): the scheduler that decides how much of a scene one frame pays
       # for, driven by a fake clock so a budget is a number the test can hold it to.
       - name: Run Async Load Test
@@ -739,7 +756,7 @@ jobs:
                     "contact_shadow_test", "pcss_test", "msdf_test", "alpha_mips_test", "transform_test", "lights_test", "save_test",
                     "property_search_test", "async_load_test", "game_data_test", "game_test", "pack_test",
                     "manifest_test", "scene_runtime_test", "hud_test", "character_test", "player_test",
-                    "json_patch_test", "asset_db_test", "editor_tools_test", "camera_test", "gizmo_math_test")) {
+                    "json_patch_test", "asset_db_test", "editor_tools_test", "camera_test", "gizmo_math_test", "plugin_test")) {
             Write-Host "::group::$t"
             # script_test keeps a trace in a file as well as on stdout: a process that dies on Windows has been seen to
             # lose the last lines of a redirected stdout, and a file is flushed on every line.
@@ -1015,18 +1032,41 @@ jobs:
           cp build-android-arm64/libukiyo_player.so apk/lib/arm64-v8a/
           cp build-android-x86_64/libukiyo_player.so apk/lib/x86_64/
           cp android/AndroidManifest.xml apk/
+
+          # versionCode is the run number, not the manifest's 1: the package manager orders installed apps by it, and
+          # a pipeline that ships "1" for every build cannot upgrade a phone without an uninstall first. The manifest's
+          # own value stays as the fallback for anyone linking the APK by hand.
+          version_code="${{ github.run_number }}"
+
+          # The launcher icon, five densities of the same drawing (tools/android_icon.cpp), linked as @mipmap/ic_launcher.
           "$build_tools/aapt2" link -o apk/unaligned.apk -I "$platform/android.jar" \
-            --manifest apk/AndroidManifest.xml -A apk/assets --min-sdk-version 33 --target-sdk-version 34
+            --manifest apk/AndroidManifest.xml -A apk/assets \
+            --version-code "$version_code" --min-sdk-version 33 --target-sdk-version 34 \
+            --dir android/res
           ( cd apk && zip -q -r unaligned.apk lib )
           "$build_tools/zipalign" -f 4 apk/unaligned.apk apk/aligned.apk
-          keytool -genkeypair -keystore apk/debug.keystore -storepass android -keypass android \
-            -alias androiddebugkey -keyalg RSA -keysize 2048 -validity 10000 \
-            -dname "CN=Android Debug,O=Android,C=US" > /dev/null 2>&1
-          "$build_tools/apksigner" sign --ks apk/debug.keystore --ks-pass pass:android --key-pass pass:android \
-            --out LanternRun.apk apk/aligned.apk
+
+          # Signing: a key that outlives the run, so a second build installs over the first instead of refusing to. The
+          # repository carries a CI key (android/lantern-run-ci.p12, password in this file) so any run signs the same
+          # way; a project with real release keys sets the secrets and they win. Generating a fresh throwaway key per
+          # run - what this used to do - produced an APK nobody could update.
+          if [ -n "${{ secrets.ANDROID_KEYSTORE_B64 }}" ]; then
+            printf '%s' "${{ secrets.ANDROID_KEYSTORE_B64 }}" | base64 -d > apk/release.ks
+            ks="apk/release.ks"
+            ks_pass="${{ secrets.ANDROID_KEYSTORE_PASS }}"
+            ks_alias="${{ secrets.ANDROID_KEYSTORE_ALIAS }}"
+            key_pass="${{ secrets.ANDROID_KEYSTORE_KEY_PASS }}"
+            "$build_tools/apksigner" sign --ks "$ks" --ks-pass "pass:$ks_pass" --ks-key-alias "$ks_alias" \
+              --key-pass "pass:${key_pass:-$ks_pass}" --out LanternRun.apk apk/aligned.apk
+          else
+            ks="android/lantern-run-ci.p12"
+            "$build_tools/apksigner" sign --ks "$ks" --ks-type pkcs12 --ks-pass pass:lantern-run-ci \
+              --key-pass pass:lantern-run-ci --out LanternRun.apk apk/aligned.apk
+          fi
           "$build_tools/apksigner" verify LanternRun.apk
-          "$build_tools/aapt2" dump badging LanternRun.apk | head -5
-          unzip -l LanternRun.apk | tail -6
+          # The version the phone will see, printed so a run's number is readable from its log.
+          "$build_tools/aapt2" dump badging LanternRun.apk | grep -E "^package:|^application:" | head -4
+          unzip -l LanternRun.apk | grep -E "lib/|mipmap|lantern-run-ci" | tail -6
 
       # The APK is the deliverable, so it is attached to the run: an Android build nobody can install is a build log.
       - uses: actions/upload-artifact@v4

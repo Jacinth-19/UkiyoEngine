@@ -227,28 +227,14 @@ void android_main(android_app* state) {
 
     rhi::setShaderRoot("shaders/spv");
 
-    std::unique_ptr<rhi::Device> device;
-    try {
-        rhi::DeviceConfig cfg;
-        cfg.width = static_cast<uint32_t>(ANativeWindow_getWidth(state->window));
-        cfg.height = static_cast<uint32_t>(ANativeWindow_getHeight(state->window));
-        rhi::NativeWindow native;
-        native.android = state->window;
-        device = rhi::createDevice(rhi::Backend::Vulkan, cfg, native);
-    } catch (const std::exception& e) {
-        LOGE("no Vulkan device: %s", e.what());
-        return;
-    }
-    LOGI("device: %s", device->deviceName().c_str());
-
-    ukiyo::Renderer renderer(*device);
+    // Camera and text are CPU-side and outlive every surface: the view the user left is the view they come back to,
+    // and the atlas is not rebuilt just because the swapchain was.
     ukiyo::OrbitCamera cam;
     cam.target = app.scene().cameraTarget;
     cam.distance = app.scene().cameraDistance;
     cam.yaw = app.scene().cameraYaw;
     cam.pitch = app.scene().cameraPitch;
     cam.fovY = app.scene().cameraFovY;
-    renderer.setSceneLights(app.scene().lights);
 
     // Text: the manifest names the font, and the package carries it at its repo-relative path.
     ukiyo::FontAtlas font;
@@ -260,43 +246,108 @@ void android_main(android_app* state) {
         else LOGE("could not load the font %s", fontPath.c_str());
     }
     ukiyo::HudCanvas hud;
-    if (font.loaded()) {
-        hud.setFont(&font);
-        renderer.setHudAtlas(&font);
-    }
+    if (font.loaded()) hud.setFont(&font);
 
-    // One model per instance that has one, loaded before the first frame: the court is small and a phone installs once.
-    std::vector<std::unique_ptr<ukiyo::Model>> models;
-    std::vector<size_t> modelForInstance(app.instances().size(), SIZE_MAX);
-    for (size_t i = 0; i < app.instances().size(); ++i) {
-        const ukiyo::PlayerInstance& in = app.instances()[i];
-        if (in.modelPath.empty()) continue;
-        ukiyo::ModelLoadOptions mo;
-        mo.preserveAlphaTestCoverage = true;
+    // ---- The surface is not permanent -----------------------------------------------------------------
+    //
+    // Android hands the activity a window, takes it away when the app is backgrounded, and hands back a *different*
+    // one on resume. A swapchain built from the old window cannot be reused, so the device, the renderer and every
+    // model that lives on the GPU have to be built from the window that exists now and dropped when it goes. This
+    // used to be done once, before the loop, with the window the activity happened to start with; the app then
+    // rendered into a destroyed surface after the first resume, which on most phones is the first time the user
+    // switches away and back.
+    //
+    // Everything that does not depend on the GPU - the game, the camera, the font, the HUD vertices - stays alive
+    // across the whole run, so a resume costs a device creation and a model load, not a restart of the game.
+    struct Session {
+        std::unique_ptr<rhi::Device> device;
+        std::unique_ptr<ukiyo::Renderer> renderer;
+        std::vector<std::unique_ptr<ukiyo::Model>> models;
+        std::vector<size_t> modelForInstance;
+    };
+    std::unique_ptr<Session> session;
+    double playTime = app.playTime();
+    uint32_t frameIndex = 0;
+    std::chrono::steady_clock::time_point last = std::chrono::steady_clock::now();
+
+    // Builds everything that needs the GPU over the window the activity holds right now. False when there is no
+    // window, or when no Vulkan device could be created: the loop then waits, because a phone that has just resumed
+    // is a phone whose surface may not exist for another frame or two.
+    auto openSession = [&]() -> bool {
+        if (!state->window || session) return session != nullptr;
+        auto built = std::make_unique<Session>();
         try {
-            models.push_back(ukiyo::loadModel(*device, in.modelPath, mo));
-            modelForInstance[i] = models.size() - 1;
+            rhi::DeviceConfig cfg;
+            cfg.width = static_cast<uint32_t>(ANativeWindow_getWidth(state->window));
+            cfg.height = static_cast<uint32_t>(ANativeWindow_getHeight(state->window));
+            rhi::NativeWindow native;
+            native.android = state->window;
+            built->device = rhi::createDevice(rhi::Backend::Vulkan, cfg, native);
         } catch (const std::exception& e) {
-            LOGE("could not load %s: %s", in.modelPath.c_str(), e.what());
+            LOGE("no Vulkan device: %s", e.what());
+            return false;
         }
-    }
+        LOGI("device: %s (%ux%u)", built->device->deviceName().c_str(),
+             ANativeWindow_getWidth(state->window), ANativeWindow_getHeight(state->window));
+
+        built->renderer = std::make_unique<ukiyo::Renderer>(*built->device);
+        built->renderer->setSceneLights(app.scene().lights);
+        if (font.loaded()) built->renderer->setHudAtlas(&font);
+
+        // One model per instance that has one. A resumed app reloads them, which is the price of the phone having
+        // taken the old device away; the scene, the script state and the physics world are untouched.
+        built->modelForInstance.assign(app.instances().size(), SIZE_MAX);
+        for (size_t i = 0; i < app.instances().size(); ++i) {
+            const ukiyo::PlayerInstance& in = app.instances()[i];
+            if (in.modelPath.empty()) continue;
+            ukiyo::ModelLoadOptions mo;
+            mo.preserveAlphaTestCoverage = true;
+            try {
+                built->models.push_back(ukiyo::loadModel(*built->device, in.modelPath, mo));
+                built->modelForInstance[i] = built->models.size() - 1;
+            } catch (const std::exception& e) {
+                LOGE("could not load %s: %s", in.modelPath.c_str(), e.what());
+            }
+        }
+        session = std::move(built);
+        // The clock is meaningless across a pause: the gap between the last frame before backgrounding and the first
+        // one after resume is not a frame the game should simulate.
+        last = std::chrono::steady_clock::now();
+        return true;
+    };
+
+    auto closeSession = [&]() {
+        if (!session) return;
+        // Wait for the device to be idle before anything it owns is destroyed: a frame may still be in flight, and
+        // destroying a swapchain under it is a use-after-free inside the driver.
+        if (session->device) session->device->waitIdle();
+        session.reset();
+        LOGI("surface lost: GPU resources released");
+    };
 
     const ukiyo::RenderSettings settings = app.scene().settings;
     const ukiyo::PlayerInstance* hero = characterOf(app);
-    auto last = std::chrono::steady_clock::now();
-    double playTime = app.playTime();
-    uint32_t frameIndex = 0;
 
     while (!state->destroyRequested) {
         int events = 0;
         android_poll_source* source = nullptr;
-        while (ALooper_pollOnce(0, nullptr, &events, reinterpret_cast<void**>(&source)) >= 0) {
+        while (ALooper_pollOnce(session ? 0 : 16, nullptr, &events, reinterpret_cast<void**>(&source)) >= 0) {
             if (source) source->process(state, source);
             if (state->destroyRequested) break;
         }
         if (state->destroyRequested) break;
+
+        // The native-activity glue clears state->window on APP_CMD_TERM_WINDOW and sets it again on APP_CMD_INIT_WINDOW,
+        // so the surface this app draws into is exactly "the window the activity currently holds".
         if (!state->window) {
+            closeSession();
             std::this_thread::sleep_for(std::chrono::milliseconds(16));
+            continue;
+        }
+        if (!openSession()) {
+            // The window exists but no device could be built over it. Waiting is the only thing that helps: the
+            // driver may still be releasing the old one.
+            std::this_thread::sleep_for(std::chrono::milliseconds(50));
             continue;
         }
 
@@ -321,27 +372,29 @@ void android_main(android_app* state) {
             cam.target = glm::mix(cam.target, want, k);
         }
 
-        if (!device->beginFrame()) continue;
+        rhi::Device& device = *session->device;
+        if (!device.beginFrame()) continue;
         std::vector<ukiyo::Model*> drawList;
         for (size_t i = 0; i < app.instances().size(); ++i) {
-            if (i >= modelForInstance.size() || modelForInstance[i] == SIZE_MAX) continue;
-            ukiyo::Model& m = *models[modelForInstance[i]];
+            if (i >= session->modelForInstance.size() || session->modelForInstance[i] == SIZE_MAX) continue;
+            ukiyo::Model& m = *session->models[session->modelForInstance[i]];
             m.placement = app.instances()[i].world;
             ukiyo::applyPlacement(m);
             ukiyo::updateModel(m, float(playTime), cam.eye());
             drawList.push_back(&m);
         }
-        renderer.render(cam, drawList, float(playTime), frameIndex++, settings);
+        session->renderer->render(cam, drawList, float(playTime), frameIndex++, settings);
         if (font.loaded()) {
-            hud.setScreen(float(device->backbufferWidth()), float(device->backbufferHeight()));
+            hud.setScreen(float(device.backbufferWidth()), float(device.backbufferHeight()));
             // Pixels, not points: the layout is authored for 720p, so a 1080p phone gets the same proportions.
-            const float scale = std::max(1.0f, float(device->backbufferHeight()) / 720.0f);
-            ukiyo::drawPlayerHud(hud, app.hudText(renderer.lastDrawCalls(), renderer.lastTriangles()), scale);
-            renderer.drawHud(hud.vertices(), device->backbufferWidth(), device->backbufferHeight());
+            const float scale = std::max(1.0f, float(device.backbufferHeight()) / 720.0f);
+            ukiyo::drawPlayerHud(hud, app.hudText(session->renderer->lastDrawCalls(), session->renderer->lastTriangles()),
+                                 scale);
+            session->renderer->drawHud(hud.vertices(), device.backbufferWidth(), device.backbufferHeight());
         }
-        device->endFrame(false);
+        device.endFrame(false);
     }
 
-    device->waitIdle();
+    closeSession();
     app.stop();
 }
