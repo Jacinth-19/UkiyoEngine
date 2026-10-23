@@ -1,3 +1,4 @@
+#include "engine/localisation.h"
 #include "engine_session.h"
 
 #include "engine/script_project.h"
@@ -116,8 +117,15 @@ std::unique_ptr<Model> readModelFile(rhi::Device& dev, const QString& path, bool
 } // namespace
 
 glm::mat4 EngineSession::placementOf(const glm::vec3& position, float yawDeg) {
+    return placementOf(position, yawDeg, 1.0f);
+}
+
+glm::mat4 EngineSession::placementOf(const glm::vec3& position, float yawDeg, float scale) {
+    // Scale first, then turn, then place: a scaled instance turns about its own origin and stands where it is put.
+    const float k = scale > 0.0001f ? scale : 0.0001f;
     return glm::translate(glm::mat4(1.0f), position) *
-           glm::rotate(glm::mat4(1.0f), glm::radians(yawDeg), glm::vec3(0.0f, 1.0f, 0.0f));
+           glm::rotate(glm::mat4(1.0f), glm::radians(yawDeg), glm::vec3(0.0f, 1.0f, 0.0f)) *
+           glm::scale(glm::mat4(1.0f), glm::vec3(k));
 }
 
 Model* EngineSession::activeModel() const {
@@ -167,7 +175,7 @@ bool EngineSession::loadModel(const QString& path, QString* error) {
     in.terrainGpu.reset();
     in.model = std::move(m);
     in.path = path.toStdString();
-    in.model->placement = placementOf(in.position, in.yawDeg);
+    in.model->placement = placementOf(in.position, in.yawDeg, in.scale);
     applyPlacement(*in.model);
     applyGraphMaterials();
     bindActive();
@@ -189,7 +197,7 @@ void EngineSession::attachModel(std::unique_ptr<Model> m, const QString& path, c
     in.path = path.toStdString();
     in.position = glm::vec3(position[0], position[1], position[2]);
     in.yawDeg = yawDeg;
-    in.model->placement = placementOf(in.position, in.yawDeg);
+    in.model->placement = placementOf(in.position, in.yawDeg, in.scale);
     applyPlacement(*in.model);
     instances_.push_back(std::move(in));
     active_ = static_cast<int>(instances_.size()) - 1;
@@ -259,12 +267,13 @@ bool EngineSession::setActiveInstance(int index) {
     return true;
 }
 
-bool EngineSession::setInstancePlacement(int index, const float position[3], float yawDeg) {
+bool EngineSession::setInstancePlacement(int index, const float position[3], float yawDeg, float scale) {
     if (index < 0 || index >= static_cast<int>(instances_.size())) return false;
     Instance& in = instances_[index];
     in.position = glm::vec3(position[0], position[1], position[2]);
     in.yawDeg = yawDeg;
-    in.model->placement = placementOf(in.position, in.yawDeg);
+    in.scale = scale;
+    in.model->placement = placementOf(in.position, in.yawDeg, in.scale);
     applyPlacement(*in.model);
     return true;
 }
@@ -751,6 +760,7 @@ EngineSession::PlacedModel EngineSession::instanceInfo(int index) const {
     p.position[1] = in.position.y;
     p.position[2] = in.position.z;
     p.yawDeg = in.yawDeg;
+    p.scale = in.scale;
     p.prefab = in.prefab;
     p.prefabId = in.prefabId;
     p.overrides = in.overrides;
@@ -1283,6 +1293,18 @@ bool EngineSession::startPlay(QString* error) {
 
     auto world = std::make_unique<World>(false);   // silent when the machine has no audio device
     world->audio.setMasterVolume(audioMuted_ ? 0.0f : masterVolume_);
+    world->setProfiling(profiling_);
+    // The project's language, so ukiyo.tr in a script returns the same text the player would show.
+    if (!projectRoot_.isEmpty()) {
+        LocaleCatalog catalog;
+        std::string locErr;
+        const std::string base = ukiyo::baseLocale(projectRoot_.toStdString());
+        if (ukiyo::loadLocale(projectRoot_.toStdString(), base, &catalog, &locErr)) {
+            world->setLocale(std::move(catalog));
+        } else if (!locErr.empty()) {
+            playWarnings_.push_back(locErr);
+        }
+    }
     if (anyAgent) world->nav.build(navVerts_, navTris_);
     playWarnings_.clear();
 
@@ -1315,12 +1337,15 @@ bool EngineSession::startPlay(QString* error) {
     playStart_.clear();
     playLast_.clear();
     playSpeed_.clear();
+    playScale_.clear();
+    playTiming_ = ukiyo::FrameTiming();
     const int active = active_;
     for (size_t i = 0; i < instances_.size(); ++i) {
         Instance& in = instances_[i];
         playStart_.push_back({in.position, in.yawDeg});
         playLast_.push_back(in.position);
         playSpeed_.push_back(0.0f);
+        playScale_.push_back(in.scale);
         const SystemsComponents& c = in.components;
         if (!c.any()) continue;
 
@@ -1439,12 +1464,14 @@ void EngineSession::stopPlay() {
     const bool restored = restoreEditorScene();
     for (size_t i = 0; i < playStart_.size() && i < instances_.size(); ++i) {
         const Placement& p = playStart_[i];
+        const float sc = i < playScale_.size() ? playScale_[i] : 1.0f;
         const float pos[3] = {p.position.x, p.position.y, p.position.z};
-        setInstancePlacement(static_cast<int>(i), pos, p.yawDeg);
+        setInstancePlacement(static_cast<int>(i), pos, p.yawDeg, sc);
     }
     playStart_.clear();
     playLast_.clear();
     playSpeed_.clear();
+    playScale_.clear();
     playClip(clipBeforePlay_);
     clipBeforePlay_.clear();
     if (restored) noteScene("Back in the editor scene", true);
@@ -1502,6 +1529,7 @@ bool EngineSession::switchScene(const QString& path, QString* error) {
     playStart_.clear();
     playLast_.clear();
     playSpeed_.clear();
+    playScale_.clear();
     playWarnings_.clear();
     navVerts_.clear();
     navTris_.clear();
@@ -1582,6 +1610,15 @@ void EngineSession::drivePlayCharacters(float dt) {
     (void)dt;
 }
 
+ukiyo::FrameTiming EngineSession::playTiming() {
+    return world_ ? playTiming_ : ukiyo::FrameTiming();
+}
+
+void EngineSession::setProfiling(bool on) {
+    profiling_ = on;
+    if (world_) world_->setProfiling(on);
+}
+
 void EngineSession::tickPlay(float dt) {
     if (!world_ || dt <= 0.0f) return;
     // Adding or removing instances during play would desynchronise the per-instance state.
@@ -1596,6 +1633,7 @@ void EngineSession::tickPlay(float dt) {
     }
     drivePlayCharacters(dt);
     world_->tick(dt);
+    if (profiling_) playTiming_ = world_->lastTiming();
     // Preloads that scripts asked for. A failed one is reported and the scene keeps running.
     for (const std::string& path : world_->takePreloads()) {
         QString err;

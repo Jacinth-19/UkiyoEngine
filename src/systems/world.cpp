@@ -1,6 +1,7 @@
 #include "systems/world.h"
 
 #include <algorithm>
+#include <chrono>
 #include <cmath>
 #include <cstdio>
 #include <new>
@@ -74,6 +75,26 @@ int l_hud(lua_State* L) {
     const char* text = luaL_checkstring(L, 1);
     worldOf(L)->setHudText(text ? text : "");
     return 0;
+}
+
+// ukiyo.tr(key[, fallback]) -> the text for a key in the game's language. Locales are project files
+// (assets/locales/<code>.json, src/engine/localisation.h) loaded by the player; a world with none returns the fallback,
+// so a script written before a project has translations still reads correctly.
+int l_tr(lua_State* L) {
+    const char* key = luaL_checkstring(L, 1);
+    World* w = worldOf(L);
+    std::string text = w->translate(key ? key : "");
+    if (text.empty() && lua_gettop(L) >= 2) text = luaL_checkstring(L, 2);
+    if (text.empty()) text = key ? key : "";
+    lua_pushlstring(L, text.c_str(), text.size());
+    return 1;
+}
+
+// ukiyo.locale() -> the language code the game loaded ("en" when it has none)
+int l_locale(lua_State* L) {
+    const std::string code = worldOf(L)->localeCode();
+    lua_pushlstring(L, code.c_str(), code.size());
+    return 1;
 }
 
 // ukiyo.joinPlayer([scheme]) -> index, or nil when no free device matches
@@ -520,6 +541,8 @@ const std::vector<ScriptApiBinding>& World::apiBindings() {
         {"time", l_time},
         {"actionDown", l_actionDown},
         {"hud", l_hud},
+        {"tr", l_tr},
+        {"locale", l_locale},
         {"joinPlayer", l_joinPlayer},
         {"playerCount", l_playerCount},
         {"leavePlayer", l_leavePlayer},
@@ -837,23 +860,71 @@ void World::dispatchContacts() {
     physics.setDeferChanges(false);
 }
 
+float FrameTiming::share(const char* stage) const {
+    if (total <= 0.0f || !stage) return 0.0f;
+    const std::string s(stage);
+    const float v = s == "input" ? input
+                  : s == "scripts" ? scripts
+                  : s == "physics" ? physics
+                  : s == "characters" ? characters
+                  : s == "navigation" ? navigation
+                  : s == "animation" ? animation
+                  : s == "particles" ? particles
+                  : s == "entities" ? entities
+                  : 0.0f;
+    return v / total;
+}
+
 void World::tick(float dt) {
+    // The profiler costs four clock reads per stage and nothing when it is off, which is why it is a switch rather than
+    // always-on bookkeeping.
+    using Clock = std::chrono::steady_clock;
+    const auto mark = [this] {
+        return profiling_ ? Clock::now() : Clock::time_point{};
+    };
+    auto since = [this](const Clock::time_point& a, const Clock::time_point& b) {
+        return (profiling_ && a != Clock::time_point{} && b != Clock::time_point{})
+                   ? std::chrono::duration<float, std::milli>(b - a).count()
+                   : 0.0f;
+    };
+
+    auto t0 = mark();
     // Input runs on unscaled time: pausing the game (timeScale 0) must still let a script read a menu key. The
     // master is updated here, so the players only mirror and evaluate.
     input_.update(dt);
     if (players_) players_->update(dt);
+    auto t1 = mark();
     dt *= timeScale_;
     scripts.callUpdate(dt);
+    auto t2 = mark();
     physics.step(dt);
+    auto t3 = mark();
     updateCharacters(dt);
     dispatchContacts();
+    auto t4 = mark();
     nav.update(dt);
+    auto t5 = mark();
     syncEntities();
     updateActions(dt);
+    auto t6 = mark();
     updateAnimation(dt);
+    auto t7 = mark();
     vfx.update(dt);
     updateListener();
+    auto t8 = mark();
     time_ += dt;
+
+    if (profiling_) {
+        timing_.input = since(t0, t1);
+        timing_.scripts = since(t1, t2);
+        timing_.physics = since(t2, t3);
+        timing_.characters = since(t3, t4);
+        timing_.navigation = since(t4, t5);
+        timing_.entities = since(t5, t6);
+        timing_.animation = since(t6, t7);
+        timing_.particles = since(t7, t8);
+        timing_.total = since(t0, t8);
+    }
 }
 
 } // namespace ukiyo

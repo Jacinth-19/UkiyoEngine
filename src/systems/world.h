@@ -12,6 +12,7 @@
 #include <glm/glm.hpp>
 #include <glm/gtc/quaternion.hpp>
 
+#include "engine/localisation.h"
 #include "engine/project_settings.h"
 #include "input/input.h"
 #include "input/input_users.h"
@@ -23,6 +24,26 @@
 #include "systems/vfx.h"
 
 namespace ukiyo {
+
+// Where a frame's time went. One frame's worth, in milliseconds, measured by the world itself — the editor's profiler
+// reads it, and a script can ask for it (`ukiyo.frameTiming`).
+//
+// This is CPU time. It says what the game's own update costs — physics, navigation, scripts, animation, particles — and
+// deliberately not what the GPU took, which the RHI does not expose (docs/PROFILER.md).
+struct FrameTiming {
+    float input = 0.0f;
+    float scripts = 0.0f;
+    float physics = 0.0f;
+    float characters = 0.0f;
+    float navigation = 0.0f;
+    float animation = 0.0f;
+    float particles = 0.0f;
+    float entities = 0.0f;
+    float total = 0.0f;
+    // The share of `total` each stage took, 0..1. An editor's bar chart reads these; a test reads them to prove a
+    // breakdown is a breakdown and not five copies of the total.
+    float share(const char* stage) const;
+};
 
 // Runtime spin or ping-pong, set from ActionComponent when play starts. See ActionComponent.
 struct EntityAction {
@@ -106,6 +127,13 @@ public:
 
     // One frame: script, physics, navigation, entity sync, animation, particles, listener.
     void tick(float dt);
+
+    // The last tick's breakdown. Zero until the first tick.
+    const FrameTiming& lastTiming() const { return timing_; }
+    // Turns the clock on. Off by default: a shipped game should not pay for std::chrono four times a frame, and a
+    // profiler that is always on is a profiler nobody trusts.
+    void setProfiling(bool on) { profiling_ = on; }
+    bool profiling() const { return profiling_; }
     double time() const { return time_; }
 
     // Project time scale. tick() multiplies dt by it, so 0 freezes scripts, physics, and animation.
@@ -123,6 +151,14 @@ public:
     // shows it under the title, which is how a game says "3 of 5 lanterns" without owning the HUD renderer. Empty
     // means "nothing to say": the player then keeps its own message (a save result, a warning) on screen.
     void setHudText(const std::string& text) { hudText_ = text; }
+    // The game's language (src/engine/localisation.h). A world with no catalogue returns empty for every key, which is
+    // what makes ukiyo.tr fall back to its second argument or the key.
+    void setLocale(LocaleCatalog catalog) { locale_ = std::move(catalog); }
+    std::string translate(const std::string& key) const {
+        auto it = locale_.strings.find(key);
+        return it == locale_.strings.end() ? std::string() : it->second;
+    }
+    const std::string& localeCode() const { return locale_.code; }
     const std::string& hudText() const { return hudText_; }
     // The live input state, for a game that wants more than actionDown(): values, vectors, phases and rebinding.
     ukiyo::input::State& input() { return input_; }
@@ -190,6 +226,9 @@ private:
     std::map<std::string, Entity> entities_;   // std::map keeps the update order deterministic
     std::map<std::string, AudioEngine::SoundId> sounds_;
     std::string hudText_;
+    LocaleCatalog locale_;
+    FrameTiming timing_;
+    bool profiling_ = false;
     double time_ = 0.0;
 };
 

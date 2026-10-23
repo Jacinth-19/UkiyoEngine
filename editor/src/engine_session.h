@@ -127,13 +127,14 @@ public:
     // Makes instance `index` the active one (the target of the node and graph queries).
     bool setActiveInstance(int index);
     // Moves and turns an instance. Takes effect on the next frame.
-    bool setInstancePlacement(int index, const float position[3], float yawDeg);
+    bool setInstancePlacement(int index, const float position[3], float yawDeg, float scale = 1.0f);
 
     // Snapshot of one instance, for saving the scene.
     struct PlacedModel {
         std::string path;
         float position[3] = {0.0f, 0.0f, 0.0f};
         float yawDeg = 0.0f;
+        float scale = 1.0f;                 // uniform scale
         std::string prefab;                 // .ukprefab this instance is linked to, or empty
         std::string prefabId;
         std::set<std::string> overrides;    // keys that the instance sets itself: "translation", "yawDeg"
@@ -279,6 +280,11 @@ public:
     // this with the frame step, so it does nothing while paused.
     void tickPlay(float dt);
     int playingEntities() const;
+    // What the last play tick cost, stage by stage (src/systems/world.h). Zero outside play, or when the profiler is off.
+    ukiyo::FrameTiming playTiming();
+    // The profiler switch. Play turns it on; a shipped game does not pay for it.
+    void setProfiling(bool on);
+    bool profiling() const { return profiling_; }
     // Snapshot of the particles in play (count only, for the Inspector).
     int liveParticles() const;
 
@@ -302,6 +308,9 @@ private:
         std::string path;
         glm::vec3 position{0.0f};
         float yawDeg = 0.0f;
+        // Uniform scale. One number rather than three axes: an instance is a placed copy of a model, and non-uniform
+        // scale would have to reach the collider and the animation rig to stay honest. Artists scale the mesh.
+        float scale = 1.0f;
         // Graph material assignments by this model's node index.
         std::map<int, std::string> nodeGraph;
         // Nodes drawn with the MMD-style toon look.
@@ -361,6 +370,9 @@ private:
     std::vector<Placement> playStart_;   // placements before play, restored by stopPlay
     std::vector<glm::vec3> playLast_;    // entity positions after the previous tick
     std::vector<float> playSpeed_;       // horizontal speed per instance, fed to the animation machines
+    std::vector<float> playScale_;       // instance scales before play, put back by stopPlay
+    ukiyo::FrameTiming playTiming_;      // the last play tick's breakdown
+    bool profiling_ = false;
     // Instances with a capsule character (item 4), and the walk speed each was authored with. Driven from the game
     // view's WASD in play mode.
     struct PlayCharacter {
@@ -410,6 +422,7 @@ private:
     void noteScene(const std::string& text, bool structural);
     void bindActive();
     static glm::mat4 placementOf(const glm::vec3& position, float yawDeg);
+    static glm::mat4 placementOf(const glm::vec3& position, float yawDeg, float scale);
     std::unique_ptr<AnimLibrary> lib_;
     ukiyo::ClipEdits clipEdits_;
     AnimPlayer player_;

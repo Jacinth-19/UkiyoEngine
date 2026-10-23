@@ -21,6 +21,9 @@
 #include <QHash>
 #include <QPointer>
 #include <functional>
+#include <nlohmann/json.hpp>
+
+#include "engine/json_patch.h"
 #include "inspector_filter.h"
 #include "scene_gizmo.h"
 #include "engine_session.h"
@@ -201,6 +204,12 @@ private slots:
     void fillTimePage(QVBoxLayout* v);
     void fillPhysicsPage(QVBoxLayout* v);
     void fillBuildPage(QVBoxLayout* v);
+    // Assets: the .meta sidecars, their importer settings, and the check for references that no longer resolve.
+    void fillAssetsPage(QVBoxLayout* v);
+    // Localisation: the languages in assets/locales and the strings in the selected one.
+    void fillLocalisationPage(QVBoxLayout* v);
+    // Version control: git status, a commit, and the recent history.
+    void fillVcsPage(QVBoxLayout* v);
     void loadProjectSettingsFile();
     void saveProjectSettingsFile();
     // Forwards key presses from the Game view to the running world, so scripts can read actions.
@@ -363,8 +372,20 @@ private:
     // Undo history. beginEdit() records the scene before an edit; returns false when nothing was
     // recorded. Edits with the same non-empty key within 0.8 s share one step (a dragged spin box).
     bool beginEdit(const QString& key = QString());
+    // Records the edit that is in progress, if it changed the document. Called when an edit ends and before undo,
+    // redo, save and play.
+    void flushEdit();
+    // Drops the step a failed operation began. Nothing was applied, so there is nothing to undo; this only ends the
+    // debounce window so the next edit starts a new step.
+    void cancelEdit();
+    void dropTopEdit();   // removes the top step, keeping the stack's document in step
     void undoEdit();
     void redoEdit();
+    // The scene document as a patch target, and back. Numbers go through JSON text, so a value reads back exactly as it
+    // was written.
+    static nlohmann::json docToJson(const QJsonObject& doc);
+    static QJsonObject jsonToDoc(const nlohmann::json& j);
+    PrefabEdit capturePrefabStage() const;
     void updateEditActions();
     // Edit menu on model instances (rows listed under the scene in the Hierarchy).
     int selectedInstance() const;        // instance index of the selected row, or -1
@@ -414,7 +435,7 @@ private:
     int replaceInNames(const QString& find, const QString& replacement, bool matchCase);
     void openFindReplace();
     void updateMemoryStatus();
-    void applyInstanceTransform(int index, const float position[3], float yawDeg);
+    void applyInstanceTransform(int index, const float position[3], float yawDeg, float scale = 1.0f);
     void copyInstance(int index);
     void duplicateInstance(int index);
     void deleteInstance(int index);
@@ -447,7 +468,12 @@ private:
     QSize renderSize_{960, 540};   // frame size requested from the engine for the active view
 
     // Camera and render state. Only the GUI thread touches these; the worker gets copies.
-    ukiyo::OrbitCamera gameCam_;
+    // Two cameras, not one. The Scene view is where a level is built: it can be orthographic and flown. The Game view
+    // is the player's: it stands where the game camera stood when Play was pressed and nothing in edit mode touches it.
+    // Until then it follows the Scene view, so the first press of Play shows the view the user was working in.
+    ukiyo::OrbitCamera gameCam_;    // Scene view
+    ukiyo::OrbitCamera playCam_;    // Game view
+    bool playCamFollows_ = true;    // false once the user has moved or played; the Game view then stays put
     ukiyo::RenderSettings settings_;
     std::vector<std::function<void()>> settingSyncers_;   // re-read controls from settings_
 
@@ -491,10 +517,28 @@ private:
     QString scenePath_;
     bool sceneDirty_ = false;
     QAction* undoAction_ = nullptr;
+    QAction* orthoAction_ = nullptr;   // Scene view: orthographic
     QAction* redoAction_ = nullptr;
     QAction* pasteAction_ = nullptr;
-    std::vector<QJsonObject> undoStack_;   // scene documents before each recorded edit
-    std::vector<QJsonObject> redoStack_;   // documents that undo removed
+    // Undo keeps deltas, not documents. A step is an RFC 6902 patch from the document as it was to the document as the
+    // edit left it (src/engine/json_patch.h), so a step costs what the edit changed and not what the scene weighs.
+    struct SceneEdit {
+        ukiyo::JsonPatch patch;    // forward: the document before the edit -> after it
+        ukiyo::JsonPatch inverse;  // back: built with the same before document, so undo never needs a stored copy
+        QJsonArray terrain;        // terrain undo records this step applied, in order
+        QString label;             // the edit's key, for the status line
+    };
+    struct PrefabEdit {          // prefab mode has no scene document, so it keeps its objects
+        std::vector<InstanceInfo> list;
+        QStringList keys;
+        QStringList removedKeys;
+    };
+    std::vector<SceneEdit> undoStack_;
+    std::vector<SceneEdit> redoStack_;
+    nlohmann::json undoTopDoc_;    // the scene document as of the top of the undo stack
+    bool undoTopValid_ = false;
+    std::vector<PrefabEdit> prefabUndo_;
+    std::vector<PrefabEdit> prefabRedo_;
     QString lastEditKey_;
     // Terrain editing state. The brush is tool state: it is not saved and is not an undo step.
     TerrainBrushSettings terrainBrush_;
@@ -502,6 +546,7 @@ private:
     int terrainFoliageSel_ = 0;                  // foliage type shown in the Inspector
     bool terrainStroke_ = false;                 // a drag with a terrain brush is under way
     std::vector<int> terrainStrokeIds_;          // records of the stroke in progress, in order
+    QJsonArray pendingTerrain_;                  // terrain records of the edit in progress, until it is recorded
     std::map<int, TerrainEdit> terrainRecords_;  // undo records, kept while an undo or redo step refers to them
     int nextTerrainRecord_ = 1;
     QElapsedTimer terrainFlushTimer_;            // throttles GPU re-upload during a drag
@@ -559,7 +604,10 @@ private:
     gizmo::Part gizmoPart_ = gizmo::Part::None;   // the handle being dragged
     bool gizmoDragging_ = false;
     bool gizmoPushed_ = false;    // this drag pushed an undo step
-    bool gizmoChanged_ = false;   // the drag has moved or turned the instance
+    bool gizmoChanged_ = false;
+    float gizmoScale0_ = 1.0f;   // the instance's scale when the drag began
+    QPointF gizmoCenter0_;       // the gizmo's screen centre, and where the pointer was, for a scale drag
+    QPointF gizmoMouse0_;   // the drag has moved or turned the instance
     int gizmoIndex_ = -1;
     glm::vec3 gizmoOrigin0_{0.0f};   // position when the drag began
     float gizmoYaw0_ = 0.0f;

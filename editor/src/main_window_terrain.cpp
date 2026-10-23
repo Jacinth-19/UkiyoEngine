@@ -51,7 +51,7 @@ bool MainWindow::terrainPress(QPointF s) {
     terrainFlushTimer_.restart();
     if (!terrainStrokeDab(s)) {         // the dab failed: leave no empty undo step
         terrainStroke_ = false;
-        undoStack_.pop_back();
+        cancelEdit();
         updateEditActions();
         return false;
     }
@@ -94,7 +94,7 @@ bool MainWindow::terrainStrokeDab(QPointF s) {
         terrainStrokeIds_.push_back(id);
         QJsonArray tags;
         for (int t : terrainStrokeIds_) tags.append(t);
-        if (!undoStack_.empty()) undoStack_.back()[kTerrainUndoKey] = tags;
+        pendingTerrain_ = tags;
     }
     TerrainEdit& rec = terrainRecords_[id];
     rec.createdMask = rec.createdMask || e.createdMask;
@@ -133,9 +133,10 @@ bool MainWindow::applyTerrainRecord(int id, bool useAfter) {
 // Drops records that no undo or redo step, and no stroke in progress, refers to.
 void MainWindow::pruneTerrainRecords() {
     std::set<int> keep(terrainStrokeIds_.begin(), terrainStrokeIds_.end());
-    auto collect = [&keep](const std::vector<QJsonObject>& stack) {
-        for (const QJsonObject& doc : stack) {
-            for (const QJsonValue& v : doc.value(kTerrainUndoKey).toArray()) keep.insert(v.toInt());
+    for (const QJsonValue& v : pendingTerrain_) keep.insert(v.toInt());
+    auto collect = [&keep](const std::vector<SceneEdit>& stack) {
+        for (const SceneEdit& step : stack) {
+            for (const QJsonValue& v : step.terrain) keep.insert(v.toInt());
         }
     };
     collect(undoStack_);
@@ -159,7 +160,7 @@ void MainWindow::runErosion(int index) {
     bool ok = false;
     runOnWorker([&] { ok = worker_->terrainErode(index, terrainErosion_, &e, &err); });
     if (!ok) {
-        undoStack_.pop_back();
+        cancelEdit();
         updateEditActions();
         log("error: " + err);
         return;
@@ -168,7 +169,7 @@ void MainWindow::runErosion(int index) {
     terrainRecords_[id] = e;
     QJsonArray tags;
     tags.append(id);
-    undoStack_.back()[kTerrainUndoKey] = tags;
+    pendingTerrain_ = tags;
     markDirty();
     pruneTerrainRecords();
     updateEditActions();
@@ -182,7 +183,7 @@ void MainWindow::applyTerrainSettings(int index, const ukiyo::TerrainSettings& t
     bool ok = false;
     runOnWorker([&] { ok = worker_->setInstanceTerrain(index, ts, &err); });
     if (!ok) {
-        if (pushed) undoStack_.pop_back();
+        if (pushed) cancelEdit();
         updateEditActions();
         log("error: " + err);
         return;
@@ -691,7 +692,7 @@ void MainWindow::selfTestTerrainEdits(const std::function<void(bool, const QStri
         const std::vector<float> h1 = heightsOf(tileIndex());
         const long changed1 = countDiff(h0, h1);
         check(pressed && changed1 > 50, "terrain edit: a noise stroke changes the heights", QString("%1 samples").arg(changed1));
-        const QJsonArray strokeTags = undoStack_.empty() ? QJsonArray() : undoStack_.back().value(kTerrainUndoKey).toArray();
+        const QJsonArray strokeTags = undoStack_.empty() ? pendingTerrain_ : undoStack_.back().terrain;
         check(strokeTags.size() == 1 && !terrainStroke_, "terrain edit: a stroke is one undo step with one record",
               QString("%1 records").arg(strokeTags.size()));
 

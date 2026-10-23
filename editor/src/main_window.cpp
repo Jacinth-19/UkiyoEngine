@@ -4,6 +4,11 @@
 
 #include "scripting_tools.h"
 
+#include "engine/json_patch.h"
+#include "engine/localisation.h"
+#include "engine/vcs.h"
+#include "pack/pack_cli.h"
+#include "engine/asset_db.h"
 #include "engine/property_search.h"
 #include "engine/script_project.h"
 
@@ -24,6 +29,7 @@
 #include <QKeySequence>
 #include <QLineEdit>
 #include <QPlainTextEdit>
+#include <QProcess>
 #include <QSpinBox>
 #include <QTableWidget>
 #include <QTextEdit>
@@ -805,6 +811,22 @@ void MainWindow::buildCentral() {
     });
     connect(viewport_, &RenderView::sized, this, &MainWindow::updateRenderSize);
     connect(preview_, &RenderView::sized, this, &MainWindow::updateRenderSize);
+    // The Game view's camera. Dragging it is looking around while the game is paused; it never writes the Scene view.
+    connect(preview_, &RenderView::orbitDragged, this, [this](float dx, float dy) {
+        playCam_.orbit(dx, dy);
+        playCamFollows_ = false;
+        preview_->update();
+    });
+    connect(preview_, &RenderView::panDragged, this, [this](float dx, float dy, float h) {
+        playCam_.pan(dx, dy, h);
+        playCamFollows_ = false;
+        preview_->update();
+    });
+    connect(preview_, &RenderView::zoomed, this, [this](float steps) {
+        playCam_.zoom(steps);
+        playCamFollows_ = false;
+        preview_->update();
+    });
 
     viewport_->onPress = [this](QPointF p) { return gizmoPress(p); };
     viewport_->onDrag = [this](QPointF p) { gizmoDrag(p); };
@@ -1451,6 +1473,9 @@ QWidget* MainWindow::buildProjectSettings() {
     addPage("layers", QStringLiteral("Tags and Layers"), [&](QVBoxLayout* v) { fillTagsPage(v); });
     addPage("timeline", QStringLiteral("Time"), [&](QVBoxLayout* v) { fillTimePage(v); });
     addPage("open_with", QStringLiteral("Physics"), [&](QVBoxLayout* v) { fillPhysicsPage(v); });
+    addPage("inventory_2", QStringLiteral("Assets"), [&](QVBoxLayout* v) { fillAssetsPage(v); });
+    addPage("translate", QStringLiteral("Localisation"), [&](QVBoxLayout* v) { fillLocalisationPage(v); });
+    addPage("fork_left", QStringLiteral("Version Control"), [&](QVBoxLayout* v) { fillVcsPage(v); });
     addPage("space_dashboard", QStringLiteral("Build"), [&](QVBoxLayout* v) { fillBuildPage(v); });
 
     QLineEdit* search = new QLineEdit;
@@ -2006,6 +2031,18 @@ void MainWindow::buildMenus() {
     wireframeAction_->setShortcut(QKeySequence(QStringLiteral("Ctrl+Shift+W")));
     shortcuts_.push_back(ShortcutEntry{QStringLiteral("view.wireframe"), QStringLiteral("Wireframe"), wireframeAction_,
                                        QKeySequence(QStringLiteral("Ctrl+Shift+W"))});
+    // The Scene view's own camera: orthographic for blocking out a level, and arrow keys to fly, so building does not
+    // mean dragging an orbit target across a map.
+    orthoAction_ = view->addAction(uiIcon("crop_square"), "Orthographic Scene View", this, [this](bool on) {
+        gameCam_.orthographic = on;
+        statusBar()->showMessage(on ? QStringLiteral("Scene view: orthographic") : QStringLiteral("Scene view: perspective"),
+                                 3000);
+        refresh();
+    });
+    orthoAction_->setCheckable(true);
+    orthoAction_->setShortcut(QKeySequence(QStringLiteral("Ctrl+Shift+O")));
+    add(view, "Fly Camera: Arrows", QKeySequence(), uiIcon("flight"),
+        [this] { statusBar()->showMessage(QStringLiteral("Arrow keys fly the Scene view; Page Up and Page Down rise and drop."), 5000); });
     view->addSeparator();
     QMenu* browserMenu = view->addMenu(uiIcon("folder"), "Content Browser");
     add(browserMenu, "Icon View", QKeySequence(), uiIcon("grid_view"), [this] { setBrowserView(0); });
@@ -2315,7 +2352,7 @@ void MainWindow::setInstanceTransform(int index, const float position[3], float 
 }
 
 // Writes a transform without an undo step. Gizmo drags call this, with one step taken at the start.
-void MainWindow::applyInstanceTransform(int index, const float position[3], float yawDeg) {
+void MainWindow::applyInstanceTransform(int index, const float position[3], float yawDeg, float scale) {
     std::vector<InstanceInfo> list;
     runOnWorker([&] { list = worker_->instances(); });
     if (index < 0 || index >= static_cast<int>(list.size())) return;
@@ -2326,6 +2363,7 @@ void MainWindow::applyInstanceTransform(int index, const float position[3], floa
     QStringList overrides = cur.overrides;
     overrides.removeAll(QStringLiteral("translation"));
     overrides.removeAll(QStringLiteral("yawDeg"));
+    overrides.removeAll(QStringLiteral("scale"));
     if (!cur.prefab.isEmpty()) {
         prefab::Pose world;
         QString err;
@@ -2338,9 +2376,11 @@ void MainWindow::applyInstanceTransform(int index, const float position[3], floa
                            std::fabs(position[2] - world.pos[2]) > 1e-5f;
         if (moved) overrides << QStringLiteral("translation");
         if (std::fabs(yawDeg - world.yaw) > 1e-4f) overrides << QStringLiteral("yawDeg");
+        // A prefab node has no scale of its own yet, so any scale is the instance's and is written as an override.
+        if (std::fabs(scale - 1.0f) > 1e-4f) overrides << QStringLiteral("scale");
     }
     runOnWorker([&] {
-        worker_->setInstancePlacement(index, position, yawDeg);
+        worker_->setInstancePlacement(index, position, yawDeg, scale);
         if (!cur.prefab.isEmpty()) worker_->setInstanceLink(index, cur.prefab, cur.prefabId, overrides);
     });
     markDirty();
@@ -5072,11 +5112,32 @@ void MainWindow::togglePlay(bool playing) {
     playBtn_->setChecked(playing);
     pauseBtn_->setChecked(!playing);
     if (playing) {
+        // One Play button. It starts the clock *and* the world, from whichever tab is open: the button is the game
+        // starting, not a preview of a systems page. A scene that cannot play still plays back its animation, and the
+        // reason is logged, so the editor does not refuse to start over a missing navmesh.
+        flushEdit();   // play starts from a recorded state, so Stop cannot lose an edit to undo
+        if (playCamFollows_) playCam_ = gameCam_;
+        bool already = false;
+        runOnWorker([&] { already = worker_->playing(); });
+        if (!already) {
+            QString err;
+            bool ok = false;
+            std::vector<std::string> warnings;
+            runOnWorker([&] {
+                ok = worker_->startPlay(&err);
+                if (ok) warnings = worker_->playWarnings();
+            });
+            if (!ok) log(QStringLiteral("play: ") + err);
+            for (const std::string& w : warnings) log(QStringLiteral("play: ") + QString::fromStdString(w));
+        }
+        runOnWorker([&] { worker_->setProfiling(true); });
         enterMaximizedGame();
         clock_.restart();
         timer_.start();
     } else {
         timer_.stop();
+        runOnWorker([&] { worker_->stopPlay(); });   // puts every instance back where Play found it
+        playCamFollows_ = true;
         leaveMaximizedGame();
     }
     updateRenderSize();
@@ -5286,17 +5347,35 @@ void MainWindow::paintGameOverlay(QPainter& p) {
         InstanceInfo info;
         if (selectionTarget(&index, &info)) {
             const glm::vec3 origin(info.position[0], info.position[1], info.position[2]);
-            gizmo::paint(p, gameCam_, frame.width(), frame.height(), gizmoTool_, origin,
+            gizmo::paint(p, playCam_, frame.width(), frame.height(), gizmoTool_, origin,
                          gizmo::Part::None, gizmo::Part::None);
         }
     }
     if (stats) {
-        const QStringList lines{
+        QStringList lines{
             QStringLiteral("FPS: %1").arg(fps_, 0, 'f', 0),
             QStringLiteral("Frame: %1 ms").arg(lastRenderMs_, 0, 'f', 1),
             QStringLiteral("Draw calls: %1").arg(lastDrawCalls_),
             QStringLiteral("Render: %1 x %2").arg(renderSize_.width()).arg(renderSize_.height()),
         };
+        // What the game's own update cost this frame, measured inside World::tick on the render thread. The render
+        // time above is the whole frame; this is the part the game's systems own.
+        ukiyo::FrameTiming timing;
+        runOnWorker([&] { timing = worker_->playTiming(); });
+        if (timing.total > 0.0f) {
+            lines << QStringLiteral("Update: %1 ms").arg(double(timing.total), 0, 'f', 2);
+            const struct { const char* name; float ms; } stages[] = {
+                {"physics", timing.physics},     {"scripts", timing.scripts},
+                {"animation", timing.animation}, {"navigation", timing.navigation},
+                {"particles", timing.particles}, {"entities", timing.entities},
+            };
+            QStringList ranked;
+            for (const auto& st : stages) {
+                if (st.ms <= 0.0f) continue;
+                ranked << QStringLiteral("%1 %2").arg(QString::fromLatin1(st.name)).arg(double(st.ms), 0, 'f', 2);
+            }
+            if (!ranked.isEmpty()) lines << QStringLiteral("  ") + ranked.join(QStringLiteral(" · "));
+        }
         const QFontMetrics fm(p.font());
         int textW = 0;
         for (const QString& line : lines) textW = std::max(textW, fm.horizontalAdvance(line));
@@ -5360,7 +5439,9 @@ void MainWindow::pumpRender() {
 
     RenderRequest req;
     req.game = gameViewActive();
-    req.cam = req.game ? gameCam_ : gameCam_;
+    // The Scene view and the Game view look through different cameras: an orthographic blocking view is not what the
+    // player sees, and orbiting in one must not move the other.
+    req.cam = req.game ? playCam_ : gameCam_;
     req.settings = settings_;
     req.time = pinTime_ ? pinnedTime_ : time_;
     req.dt = pinTime_ ? 0.0f : pendingDt_;   // a pinned clock also stops the animation step
@@ -6415,6 +6496,8 @@ QJsonObject MainWindow::sceneDocument() {
             else o["path"] = QDir(projectRoot_).relativeFilePath(in.path);
             o["position"] = floatsJson({in.position[0], in.position[1], in.position[2]});
             o["yawDeg"] = double(in.yawDeg);
+            // Only a scaled instance writes it, so a scene that never scaled anything keeps its exact bytes.
+            if (std::fabs(in.scale - 1.0f) > 1e-6f) o["scale"] = double(in.scale);
         }
         if (!in.name.isEmpty()) o["name"] = in.name;
         // Game system settings. Only written when something is enabled.
@@ -6460,6 +6543,7 @@ bool MainWindow::writeScene(const QString& path) {
         log("error: could not save the terrain: " + terrErr);
         return false;
     }
+    flushEdit();   // a save ends the edit in progress
     const QJsonObject root = sceneDocument();
     QFile file(path);
     if (!file.open(QIODevice::WriteOnly | QIODevice::Truncate)) {
@@ -6532,45 +6616,150 @@ void shiftEntry(QJsonObject& e, float dx) {
 }
 } // namespace
 
+nlohmann::json MainWindow::docToJson(const QJsonObject& doc) {
+    // Through the JSON text, so an integer stays an integer and a float stays a float: a patch that compares numbers
+    // must see the document exactly as the file will hold it.
+    return nlohmann::json::parse(QJsonDocument(doc).toJson(QJsonDocument::Compact).toStdString());
+}
+
+QJsonObject MainWindow::jsonToDoc(const nlohmann::json& j) {
+    return QJsonDocument::fromJson(QByteArray::fromStdString(j.dump())).object();
+}
+
+MainWindow::PrefabEdit MainWindow::capturePrefabStage() const {
+    PrefabEdit e;
+    if (!prefabStage_) return e;
+    MainWindow* self = const_cast<MainWindow*>(this);
+    self->runOnWorker([&] { e.list = self->worker_->instances(); });
+    e.keys = prefabStage_->keys;
+    e.removedKeys = prefabStage_->removedKeys;
+    return e;
+}
+
 bool MainWindow::beginEdit(const QString& key) {
-    if (loadingScene_ || prefabStage_) return false;
+    if (loadingScene_) return false;
     if (!key.isEmpty() && key == lastEditKey_ && lastEditTimer_.isValid() && lastEditTimer_.elapsed() < 800) {
         lastEditTimer_.restart();
-        return false;   // part of the same edit as the snapshot already taken
+        return false;   // part of the same edit as the step already taken
     }
-    undoStack_.push_back(sceneDocument());
-    if (static_cast<int>(undoStack_.size()) > kUndoLimit) undoStack_.erase(undoStack_.begin());
+    // The document as the previous edit left it is what this step diffs from.
+    flushEdit();
     redoStack_.clear();
+    if (prefabStage_) {
+        prefabRedo_.clear();
+        prefabUndo_.push_back(capturePrefabStage());
+        if (static_cast<int>(prefabUndo_.size()) > kUndoLimit) prefabUndo_.erase(prefabUndo_.begin());
+    }
     lastEditKey_ = key;
     lastEditTimer_.restart();
     updateEditActions();
     return true;
 }
 
-void MainWindow::undoEdit() {
-    if (prefabStage_) {
-        statusBar()->showMessage(QStringLiteral("Undo is not available in prefab mode."), 3000);
+void MainWindow::flushEdit() {
+    if (loadingScene_ || prefabStage_) return;
+    const QJsonObject now = sceneDocument();
+    const nlohmann::json doc = docToJson(now);
+    if (!undoTopValid_) {
+        undoTopDoc_ = doc;
+        undoTopValid_ = true;
         return;
     }
+    ukiyo::JsonPatch patch = ukiyo::diffJson(undoTopDoc_, doc);
+    if (!patch.empty()) {
+        SceneEdit e;
+        e.inverse = ukiyo::invertJsonPatch(patch, undoTopDoc_);
+        e.patch = std::move(patch);
+        e.terrain = pendingTerrain_;
+        e.label = lastEditKey_;
+        pendingTerrain_ = QJsonArray();
+        undoStack_.push_back(std::move(e));
+        if (static_cast<int>(undoStack_.size()) > kUndoLimit) undoStack_.erase(undoStack_.begin());
+        updateEditActions();
+    }
+    undoTopDoc_ = doc;
+}
+
+void MainWindow::dropTopEdit() {
+    if (prefabStage_) {
+        if (!prefabUndo_.empty()) prefabUndo_.pop_back();
+        updateEditActions();
+        return;
+    }
+    if (!undoStack_.empty()) {
+        // Put the stack's document back to what it was before that step, so the next flush diffs from the truth.
+        const SceneEdit& top = undoStack_.back();
+        std::string err;
+        if (undoTopValid_) ukiyo::applyJsonPatch(&undoTopDoc_, top.inverse, &err);
+        undoStack_.pop_back();
+    }
+    updateEditActions();
+}
+
+void MainWindow::cancelEdit() {
+    // A failed operation applied nothing, so the next flush sees no change and records no step. Ending the debounce
+    // window keeps the next real edit from being merged into this one.
+    lastEditKey_.clear();
+    lastEditTimer_.invalidate();
+    updateEditActions();
+}
+
+void MainWindow::undoEdit() {
+    if (prefabStage_) {
+        if (prefabUndo_.empty()) {
+            statusBar()->showMessage(QStringLiteral("Nothing to undo."), 2000);
+            return;
+        }
+        PrefabEdit e = prefabUndo_.back();
+        prefabUndo_.pop_back();
+        prefabRedo_.push_back(capturePrefabStage());
+        const bool ok = reloadPrefabStage(e.list, e.keys, -1);
+        if (!ok) {
+            log(QStringLiteral("error: undo could not rebuild the prefab objects"));
+            updateEditActions();
+            return;
+        }
+        prefabStage_->removedKeys = e.removedKeys;
+        prefabStage_->dirty = true;
+        lastEditKey_.clear();
+        updateEditActions();
+        updatePrefabCrumb();
+        statusBar()->showMessage(QStringLiteral("Undone."), 2000);
+        return;
+    }
+    flushEdit();   // the edit in progress becomes the step this undo takes back
     if (undoStack_.empty()) {
         statusBar()->showMessage(QStringLiteral("Nothing to undo."), 2000);
         return;
     }
-    const QJsonObject doc = undoStack_.back();
+    const SceneEdit e = undoStack_.back();
     undoStack_.pop_back();
-    QJsonObject redoDoc = sceneDocument();
-    const QJsonArray tags = doc.value(kTerrainUndoKey).toArray();
-    if (!tags.isEmpty()) redoDoc[kTerrainUndoKey] = tags;
-    redoStack_.push_back(redoDoc);
+    redoStack_.push_back({e.patch, e.inverse, e.terrain, e.label});
     lastEditKey_.clear();
-    // Last record first, so overlapping dabs unwind in order. The scene document below rebuilds the tiles.
-    for (int i = tags.size() - 1; i >= 0; --i) applyTerrainRecord(tags[i].toInt(), false);
-    pruneTerrainRecords();
-    const int sel = selectedInstance();
-    if (!applySceneDocument(doc, QStringLiteral("undo"))) {
-        log(QStringLiteral("error: undo could not restore the scene"));
+    nlohmann::json reverted = docToJson(sceneDocument());
+    std::string patchErr;
+    if (!ukiyo::applyJsonPatch(&reverted, e.inverse, &patchErr)) {
+        log(QStringLiteral("error: undo patch does not fit the scene: ") + QString::fromStdString(patchErr));
+        undoStack_.push_back(e);
+        redoStack_.pop_back();
+        updateEditActions();
         return;
     }
+    undoTopDoc_ = reverted;
+    undoTopValid_ = true;
+    // Last record first, so overlapping dabs unwind in order. The document below rebuilds the tiles.
+    for (int i = e.terrain.size() - 1; i >= 0; --i) applyTerrainRecord(e.terrain[i].toInt(), false);
+    pruneTerrainRecords();
+    const int sel = selectedInstance();
+    // The applied patch already carries the old document; if the scene refuses it, the step goes back on the stack.
+    if (!applySceneDocument(jsonToDoc(reverted), QStringLiteral("undo"))) {
+        log(QStringLiteral("error: undo could not restore the scene"));
+        undoStack_.push_back(e);
+        redoStack_.pop_back();
+        updateEditActions();
+        return;
+    }
+    undoTopDoc_ = docToJson(sceneDocument());   // the reloaded document is the truth, down to key order
     if (sel >= 0) selectInstanceRow(sel);   // does nothing if that model no longer exists
     sceneDirty_ = true;
     updateWindowTitle();
@@ -6580,27 +6769,57 @@ void MainWindow::undoEdit() {
 
 void MainWindow::redoEdit() {
     if (prefabStage_) {
-        statusBar()->showMessage(QStringLiteral("Redo is not available in prefab mode."), 3000);
+        if (prefabRedo_.empty()) {
+            statusBar()->showMessage(QStringLiteral("Nothing to redo."), 2000);
+            return;
+        }
+        PrefabEdit e = prefabRedo_.back();
+        prefabRedo_.pop_back();
+        prefabUndo_.push_back(capturePrefabStage());
+        if (!reloadPrefabStage(e.list, e.keys, -1)) {
+            log(QStringLiteral("error: redo could not rebuild the prefab objects"));
+            updateEditActions();
+            return;
+        }
+        prefabStage_->removedKeys = e.removedKeys;
+        prefabStage_->dirty = true;
+        lastEditKey_.clear();
+        updateEditActions();
+        updatePrefabCrumb();
+        statusBar()->showMessage(QStringLiteral("Redone."), 2000);
         return;
     }
+    flushEdit();
     if (redoStack_.empty()) {
         statusBar()->showMessage(QStringLiteral("Nothing to redo."), 2000);
         return;
     }
-    const QJsonObject doc = redoStack_.back();
+    const SceneEdit e = redoStack_.back();
     redoStack_.pop_back();
-    QJsonObject undoDoc = sceneDocument();
-    const QJsonArray tags = doc.value(kTerrainUndoKey).toArray();
-    if (!tags.isEmpty()) undoDoc[kTerrainUndoKey] = tags;
-    undoStack_.push_back(undoDoc);
+    undoStack_.push_back({e.patch, e.inverse, e.terrain, e.label});
     lastEditKey_.clear();
-    for (int i = 0; i < tags.size(); ++i) applyTerrainRecord(tags[i].toInt(), true);
-    pruneTerrainRecords();
-    const int sel = selectedInstance();
-    if (!applySceneDocument(doc, QStringLiteral("redo"))) {
-        log(QStringLiteral("error: redo could not restore the scene"));
+    nlohmann::json redone = docToJson(sceneDocument());
+    std::string patchErr;
+    if (!ukiyo::applyJsonPatch(&redone, e.patch, &patchErr)) {
+        log(QStringLiteral("error: redo patch does not fit the scene: ") + QString::fromStdString(patchErr));
+        redoStack_.push_back(e);
+        undoStack_.pop_back();
+        updateEditActions();
         return;
     }
+    undoTopDoc_ = redone;
+    undoTopValid_ = true;
+    for (int i = 0; i < e.terrain.size(); ++i) applyTerrainRecord(e.terrain[i].toInt(), true);
+    pruneTerrainRecords();
+    const int sel = selectedInstance();
+    if (!applySceneDocument(jsonToDoc(redone), QStringLiteral("redo"))) {
+        log(QStringLiteral("error: redo could not restore the scene"));
+        redoStack_.push_back(e);
+        undoStack_.pop_back();
+        updateEditActions();
+        return;
+    }
+    undoTopDoc_ = docToJson(sceneDocument());
     if (sel >= 0) selectInstanceRow(sel);
     sceneDirty_ = true;
     updateWindowTitle();
@@ -6609,8 +6828,10 @@ void MainWindow::redoEdit() {
 }
 
 void MainWindow::updateEditActions() {
-    if (undoAction_) undoAction_->setEnabled(!undoStack_.empty());
-    if (redoAction_) redoAction_->setEnabled(!redoStack_.empty());
+    const bool canUndo = prefabStage_ ? !prefabUndo_.empty() : !undoStack_.empty();
+    const bool canRedo = prefabStage_ ? !prefabRedo_.empty() : !redoStack_.empty();
+    if (undoAction_) undoAction_->setEnabled(canUndo);
+    if (redoAction_) redoAction_->setEnabled(canRedo);
     if (pasteAction_) pasteAction_->setEnabled(hasInstanceClipboard_);
 }
 
@@ -6657,7 +6878,7 @@ void MainWindow::addInstanceEntry(const QJsonObject& entry, bool keepNodes) {
     if (!keepNodes) doc["nodes"] = QJsonArray();
     const bool pushed = beginEdit();
     if (!applySceneDocument(doc, QStringLiteral("paste"))) {
-        if (pushed) undoStack_.pop_back();
+        if (pushed) cancelEdit();
         updateEditActions();
         return;
     }
@@ -6693,7 +6914,7 @@ void MainWindow::deleteInstance(int index) {
     doc["active"] = next;
     const bool pushed = beginEdit();
     if (!applySceneDocument(doc, QStringLiteral("delete"))) {
-        if (pushed) undoStack_.pop_back();
+        if (pushed) cancelEdit();
         return;
     }
     sceneDirty_ = true;
@@ -6768,9 +6989,11 @@ void MainWindow::buildGizmoToolbar() {
     group->setExclusive(true);
     group->addAction(gizmoMoveAction_);
     group->addAction(gizmoRotateAction_);
+    group->addAction(gizmoScaleAction_);
     gizmoScaleAction_ = tb->addAction(uiIcon("aspect_ratio"), QStringLiteral("Scale"));
-    gizmoScaleAction_->setEnabled(false);
-    gizmoScaleAction_->setToolTip(QStringLiteral("Scale is not available: model instances have no scale yet"));
+    gizmoScaleAction_->setCheckable(true);
+    gizmoScaleAction_->setShortcut(QKeySequence(QStringLiteral("R")));
+    gizmoScaleAction_->setToolTip(QStringLiteral("Scale the selected model (R)"));
 
     tb->addSeparator();
     snapAction_ = tb->addAction(QStringLiteral("Snap"));
@@ -6791,6 +7014,7 @@ void MainWindow::buildGizmoToolbar() {
 
     connect(gizmoMoveAction_, &QAction::triggered, this, [this] { setGizmoTool(gizmo::Tool::Move); });
     connect(gizmoRotateAction_, &QAction::triggered, this, [this] { setGizmoTool(gizmo::Tool::Rotate); });
+    connect(gizmoScaleAction_, &QAction::triggered, this, [this] { setGizmoTool(gizmo::Tool::Scale); });
     connect(snapAction_, &QAction::toggled, this, [this](bool on) {
         snapOn_ = on;
         viewport_->update();
@@ -6803,6 +7027,22 @@ void MainWindow::buildGizmoToolbar() {
     });
     // Escape cancels a drag in progress and puts the model back where it was.
     new QShortcut(QKeySequence(Qt::Key_Escape), this, [this] { cancelGizmoDrag(); });
+    // Flying: the arrow keys travel, Page Up/Down rise and drop. Nobody presses them by accident, and they do not fight
+    // the game while playing (a flying editor camera in play mode would be a bug, not a feature).
+    const struct { int key; float forward; float right; float up; } fly[] = {
+        {Qt::Key_Up, 1.0f, 0.0f, 0.0f},     {Qt::Key_Down, -1.0f, 0.0f, 0.0f},
+        {Qt::Key_Left, 0.0f, -1.0f, 0.0f},  {Qt::Key_Right, 0.0f, 1.0f, 0.0f},
+        {Qt::Key_PageUp, 0.0f, 0.0f, 1.0f}, {Qt::Key_PageDown, 0.0f, 0.0f, -1.0f},
+    };
+    for (const auto& f : fly) {
+        new QShortcut(QKeySequence(f.key), this, [this, f] {
+            if (playing_ || prefabStage_) return;
+            // A fixed step in the view's own scale, so a flown camera moves the same on a zoomed-in view as on a wide one.
+            const float step = gameCam_.orthographic ? gameCam_.orthoHeight * 0.08f : std::max(gameCam_.distance * 0.1f, 0.2f);
+            gameCam_.fly(f.forward * step, f.right * step, f.up * step);
+            onEditorCameraMoved();
+        });
+    }
     setGizmoTool(gizmo::Tool::Move);
 }
 
@@ -6810,6 +7050,7 @@ void MainWindow::setGizmoTool(gizmo::Tool tool) {
     gizmoTool_ = tool;
     gizmoMoveAction_->setChecked(tool == gizmo::Tool::Move);
     gizmoRotateAction_->setChecked(tool == gizmo::Tool::Rotate);
+    gizmoScaleAction_->setChecked(tool == gizmo::Tool::Scale);
     viewport_->update();
 }
 
@@ -6845,6 +7086,11 @@ bool MainWindow::gizmoPress(QPointF s) {
         float theta = 0.0f;
         if (!gizmo::yawAngle(r, origin, &theta)) return false;
         gizmoTheta0_ = theta;
+    } else if (part == gizmo::Part::Scale) {
+        QPointF c;
+        if (!gizmo::project(gameCam_, w, h, origin, &c)) return false;
+        gizmoCenter0_ = c;
+        gizmoMouse0_ = s;
     } else {
         gizmoT0_ = gizmo::axisParam(r, origin, part);
     }
@@ -6852,6 +7098,7 @@ bool MainWindow::gizmoPress(QPointF s) {
     gizmoPart_ = part;
     gizmoOrigin0_ = origin;
     gizmoYaw0_ = info.yawDeg;
+    gizmoScale0_ = info.scale;
     gizmoDragging_ = true;
     gizmoChanged_ = false;
     gizmoPushed_ = beginEdit();   // one undo step for the whole drag
@@ -6869,7 +7116,10 @@ void MainWindow::gizmoDrag(QPointF s) {
     const gizmo::Ray r = gizmo::screenRay(gameCam_, w, h, s);
     float pos[3] = {gizmoOrigin0_.x, gizmoOrigin0_.y, gizmoOrigin0_.z};
     float yaw = gizmoYaw0_;
-    if (gizmoPart_ == gizmo::Part::RotateYaw) {
+    float scale = gizmoScale0_;
+    if (gizmoPart_ == gizmo::Part::Scale) {
+        scale = gizmo::scaledBy(gizmoScale0_, gizmoCenter0_, gizmoMouse0_, s, snapOn_ ? 0.1f : 0.0f);
+    } else if (gizmoPart_ == gizmo::Part::RotateYaw) {
         float theta = 0.0f;
         if (!gizmo::yawAngle(r, gizmoOrigin0_, &theta)) return;
         yaw = gizmo::rotatedYaw(gizmoYaw0_, gizmoTheta0_, theta, snapOn_ ? rotateSnapDeg_ : 0.0f);
@@ -6881,10 +7131,10 @@ void MainWindow::gizmoDrag(QPointF s) {
         pos[2] = p.z;
     }
     const bool differs = pos[0] != gizmoOrigin0_.x || pos[1] != gizmoOrigin0_.y || pos[2] != gizmoOrigin0_.z ||
-                         yaw != gizmoYaw0_;
+                         yaw != gizmoYaw0_ || scale != gizmoScale0_;
     if (!differs && !gizmoChanged_) return;   // nothing to write yet
     gizmoChanged_ = gizmoChanged_ || differs;
-    applyInstanceTransform(gizmoIndex_, pos, yaw);
+    applyInstanceTransform(gizmoIndex_, pos, yaw, scale);
     viewport_->update();
 }
 
@@ -6896,7 +7146,7 @@ void MainWindow::gizmoRelease() {
     if (!gizmoDragging_) return;
     gizmoDragging_ = false;
     // A press with no movement leaves no undo step behind.
-    if (gizmoPushed_ && !gizmoChanged_ && !undoStack_.empty()) undoStack_.pop_back();
+    if (gizmoPushed_ && gizmoChanged_) flushEdit();   // the drag is one step, recorded when it ends
     gizmoPushed_ = false;
     updateEditActions();
     if (hierarchy_->currentItem()) showPropertiesFor(hierarchy_->currentItem());   // Inspector shows the new values
@@ -6907,7 +7157,7 @@ void MainWindow::gizmoRelease() {
 void MainWindow::cancelGizmoDrag() {
     if (!gizmoDragging_) return;
     const float pos[3] = {gizmoOrigin0_.x, gizmoOrigin0_.y, gizmoOrigin0_.z};
-    applyInstanceTransform(gizmoIndex_, pos, gizmoYaw0_);
+    applyInstanceTransform(gizmoIndex_, pos, gizmoYaw0_, gizmoScale0_);
     gizmoChanged_ = false;   // back where it started, so the release drops the undo step
     gizmoRelease();
 }
@@ -7043,7 +7293,7 @@ int MainWindow::replaceInNames(const QString& find, const QString& replacement, 
         }
     }
     if (done == 0) {
-        if (pushed) undoStack_.pop_back();
+        if (pushed) cancelEdit();
         updateEditActions();
         return 0;
     }
@@ -7196,7 +7446,7 @@ void MainWindow::createTerrainObject() {
         if (ok) worker_->setInstanceName(index, QStringLiteral("Terrain"));
     });
     if (!ok) {
-        if (pushed) undoStack_.pop_back();
+        if (pushed) cancelEdit();
         updateEditActions();
         log("error: " + err);
         return;
@@ -7206,7 +7456,7 @@ void MainWindow::createTerrainObject() {
     runOnWorker([&] { terrOk = worker_->setInstanceTerrain(index, t, &terrErr); });
     if (!terrOk) {
         // The file was readable, so this is rare. Remove the empty object again and drop this step's undo entry.
-        if (pushed) undoStack_.pop_back();
+        if (pushed) cancelEdit();
         updateEditActions();
         deleteInstance(index);
         log("error: " + terrErr);
@@ -7241,7 +7491,7 @@ void MainWindow::createEmptyObject() {
         if (ok) worker_->setInstanceName(index, QStringLiteral("Empty Object"));
     });
     if (!ok) {
-        if (pushed) undoStack_.pop_back();
+        if (pushed) cancelEdit();
         updateEditActions();
         log("error: " + err);
         return;
@@ -7269,7 +7519,7 @@ void MainWindow::renameInstance(int index, const QString& name) {
     bool ok = false;
     runOnWorker([&] { ok = worker_->setInstanceName(index, clean); });
     if (!ok) {
-        if (pushed) undoStack_.pop_back();
+        if (pushed) cancelEdit();
         updateEditActions();
         return;
     }
@@ -7381,7 +7631,7 @@ bool MainWindow::applySceneDocument(const QJsonObject& root, const QString& sour
     {
         const scene_file::SceneEntry first = entries[0];
         runOnWorker([&] {
-            worker_->setInstancePlacement(0, first.position, first.yawDeg);
+            worker_->setInstancePlacement(0, first.position, first.yawDeg, first.scale);
             worker_->setInstanceName(0, first.name);
             if (!first.prefab.isEmpty())
                 worker_->setInstanceLink(0, first.prefab, first.prefabId, first.overrides);
@@ -7398,6 +7648,7 @@ bool MainWindow::applySceneDocument(const QJsonObject& root, const QString& sour
         int index = -1;
         runOnWorker([&] {
             ok = worker_->addModel(e.path, e.position, e.yawDeg, &err, &unused, &index);
+            if (ok) worker_->setInstancePlacement(index, e.position, e.yawDeg, e.scale);
             if (ok && !e.prefab.isEmpty()) worker_->setInstanceLink(index, e.prefab, e.prefabId, e.overrides);
             if (ok) worker_->setInstanceComponents(index, e.components);
             if (ok) worker_->setInstanceLod(index, e.lodSwitches);
@@ -13479,12 +13730,14 @@ QString portableKeyForQt(int key, Qt::KeyboardModifiers mods) {
 } // namespace
 
 bool MainWindow::eventFilter(QObject* watched, QEvent* e) {
-    if (playing_ && (e->type() == QEvent::KeyPress || e->type() == QEvent::KeyRelease) && gameViewActive()) {
+    if (playing_ && (e->type() == QEvent::KeyPress || e->type() == QEvent::KeyRelease)) {
         auto* ke = static_cast<QKeyEvent*>(e);
         const QWidget* focus = QApplication::focusWidget();
         // Typing in a field must not press a game action.
         const bool typing = qobject_cast<const QLineEdit*>(focus) || qobject_cast<const QAbstractSpinBox*>(focus) ||
                             qobject_cast<const QTextEdit*>(focus) || qobject_cast<const QPlainTextEdit*>(focus);
+        // The Scene view keeps its own shortcuts (W and E pick the gizmo) out of the game while editing. While
+        // playing, the game owns the keyboard: that is what the Play button means.
         if (!ke->isAutoRepeat() && !typing) {
             const QString key = portableKeyForQt(ke->key(), Qt::NoModifier);
             if (!key.isEmpty()) {
@@ -14243,6 +14496,118 @@ void MainWindow::fillBuildPage(QVBoxLayout* v) {
                                  .arg(m.window.height));
     });
 
+    // --- Package: the editor runs ukiyo_pack, so shipping is not a command the author has to remember ---
+    QFormLayout* pk = addSection(v, QStringLiteral("Package"));
+    QComboBox* target = new QComboBox;
+    target->setObjectName(QStringLiteral("buildTarget"));
+    target->addItem(QStringLiteral("Linux (x86-64)"), QStringLiteral("linux"));
+    target->addItem(QStringLiteral("Windows (x86-64)"), QStringLiteral("windows"));
+    target->addItem(QStringLiteral("Android (arm64-v8a APK)"), QStringLiteral("android"));
+    target->setCurrentIndex(std::max(0, target->findData(editor::prefs::text(QStringLiteral("build/target"), QStringLiteral("linux")))));
+
+    QLineEdit* version = new QLineEdit(editor::prefs::text(QStringLiteral("build/version"), QStringLiteral("0.1.0")));
+    version->setObjectName(QStringLiteral("buildVersion"));
+    version->setToolTip(QStringLiteral("Written into Build/build.json as \"version\" before packaging"));
+    QLineEdit* icon = new QLineEdit(editor::prefs::text(QStringLiteral("build/icon"), QString()));
+    icon->setObjectName(QStringLiteral("buildIcon"));
+    icon->setPlaceholderText(QStringLiteral("assets/icon.png (optional)"));
+    icon->setToolTip(QStringLiteral("Window icon, and the launcher icon of an Android package"));
+
+    QPushButton* package = new QPushButton(QStringLiteral("Package and Run"));
+    package->setObjectName(QStringLiteral("buildPackage"));
+    package->setToolTip(QStringLiteral("Writes the manifest, runs ukiyo_pack for the chosen target, and starts the package"));
+    QLabel* packageStatus = new QLabel;
+    packageStatus->setObjectName(QStringLiteral("buildPackageStatus"));
+    packageStatus->setWordWrap(true);
+    packageStatus->setTextInteractionFlags(Qt::TextSelectableByMouse);
+
+    connect(target, QOverload<int>::of(&QComboBox::currentIndexChanged), this, [target](int i) {
+        editor::prefs::set(QStringLiteral("build/target"), target->itemData(i).toString());
+    });
+    connect(version, &QLineEdit::editingFinished, this, [version] {
+        editor::prefs::set(QStringLiteral("build/version"), version->text().trimmed());
+    });
+    connect(icon, &QLineEdit::editingFinished, this, [icon] {
+        editor::prefs::set(QStringLiteral("build/icon"), icon->text().trimmed());
+    });
+    connect(package, &QPushButton::clicked, this, [this, target, version, icon, packageStatus] {
+        // The manifest is the package's input, so a package without one is refused rather than guessed at.
+        const QString manifest = projectRoot_ + QStringLiteral("/Build/build.json");
+        if (!QFileInfo::exists(manifest)) {
+            packageStatus->setText(QStringLiteral("Write the build manifest first; the package ships what it lists."));
+            return;
+        }
+        const QString versionText = version->text().trimmed();
+        if (!versionText.isEmpty()) {
+            std::string err;
+            if (!ukiyo::pack::setManifestVersion(manifest.toStdString(), versionText.toStdString(), &err)) {
+                packageStatus->setText(QStringLiteral("Could not set the version: ") + QString::fromStdString(err));
+                return;
+            }
+        }
+        // The tool and the player both live in the build folder of the checkout this editor belongs to.
+        const QString buildDir = QDir(QStringLiteral(UKIYO_ROOT) + QStringLiteral("/build")).absolutePath();
+        QString tool = QDir(buildDir).absoluteFilePath(QStringLiteral("ukiyo_pack"));
+        if (!QFileInfo::exists(tool)) tool = QStringLiteral("ukiyo_pack");
+        ukiyo::pack::Target t = ukiyo::pack::Target::Linux;
+        const QString platform = target->currentData().toString();
+        if (platform == QLatin1String("windows")) t = ukiyo::pack::Target::Windows;
+        else if (platform == QLatin1String("android")) t = ukiyo::pack::Target::Android;
+        QString player = QDir(buildDir).absoluteFilePath(t == ukiyo::pack::Target::Windows
+                                                            ? QStringLiteral("ukiyo_player.exe")
+                                                            : QStringLiteral("ukiyo_player"));
+        if (!QFileInfo::exists(player)) {
+            packageStatus->setText(QStringLiteral("No player at %1. Build the player (cmake --build build --target ukiyo_player) first.")
+                                       .arg(player));
+            return;
+        }
+        ukiyo::pack::PackRequest request;
+        request.project = ".";   // the tool runs with the project as its working directory
+        request.player = player.toStdString();
+        request.shaders = QDir(buildDir).absoluteFilePath(QStringLiteral("shaders")).toStdString();
+        request.outDir = ukiyo::pack::defaultOutDir(projectRoot_.toStdString(), t);
+        request.zip = request.outDir + ".zip";
+        request.target = t;
+        request.root = QStringLiteral(UKIYO_ROOT).toStdString();
+        QStringList args;
+        for (const std::string& a : ukiyo::pack::packArgs(request)) args << QString::fromStdString(a);
+        packageStatus->setText(QStringLiteral("Packaging %1...").arg(platform));
+        log(QStringLiteral("package: %1 %2").arg(tool, args.join(QLatin1Char(' '))));
+        QProcess proc;
+        proc.setWorkingDirectory(projectRoot_);
+        proc.start(tool, args);
+        if (!proc.waitForStarted(5000)) {
+            packageStatus->setText(QStringLiteral("Could not start %1").arg(tool));
+            return;
+        }
+        proc.waitForFinished(600000);
+        const QString out = QString::fromLocal8Bit(proc.readAllStandardOutput()).trimmed();
+        const QString err = QString::fromLocal8Bit(proc.readAllStandardError()).trimmed();
+        if (!out.isEmpty()) log(out);
+        if (!err.isEmpty()) log(err);
+        if (proc.exitStatus() != QProcess::NormalExit || proc.exitCode() != 0) {
+            packageStatus->setText(QStringLiteral("ukiyo_pack failed (%1). See the Console.").arg(proc.exitCode()));
+            return;
+        }
+        packageStatus->setText(QStringLiteral("Packaged into %1").arg(QString::fromStdString(request.outDir)));
+        // Run it: the package is a folder with the player inside, so starting the game is starting that file.
+        QString exe = QDir(QString::fromStdString(request.outDir)).absoluteFilePath(t == ukiyo::pack::Target::Windows
+                                                                                     ? QStringLiteral("ukiyo_player.exe")
+                                                                                     : QStringLiteral("ukiyo_player"));
+        if (QFileInfo::exists(exe)) {
+            if (!QProcess::startDetached(exe, {QStringLiteral("--project"), QString::fromStdString(request.outDir)},
+                                         QString::fromStdString(request.outDir))) {
+                packageStatus->setText(packageStatus->text() + QStringLiteral(" (the package would not start)"));
+            }
+        }
+    });
+
+    pk->addRow(QStringLiteral("Target"), target);
+    pk->addRow(QStringLiteral("Version"), version);
+    pk->addRow(QStringLiteral("Icon"), icon);
+    pk->addRow(package);
+    pk->addRow(packageStatus);
+
     QWidget* sceneButtons = new QWidget;
     QHBoxLayout* h = new QHBoxLayout(sceneButtons);
     h->setContentsMargins(0, 0, 0, 0);
@@ -14271,6 +14636,421 @@ void MainWindow::fillBuildPage(QVBoxLayout* v) {
         winH->setValue(projSettings_.buildHeight);
         fullscreen->setChecked(projSettings_.buildFullscreen);
     });
+}
+
+// --- Assets -------------------------------------------------------------------------------------
+//
+// The page that makes an asset a thing with an identity. Every file under the project gets a `.meta` sidecar the first
+// time this page runs (or the project is opened), holding the GUID that survives a rename and the importer settings that
+// decide how the asset enters a scene. The two things an author actually needs are here: which references are broken,
+// and one button that puts the selected asset into the open scene with its import settings applied.
+void MainWindow::fillAssetsPage(QVBoxLayout* v) {
+    QFormLayout* f = addSection(v, QStringLiteral("Assets"));
+    QLabel* note = new QLabel(QStringLiteral(
+        "Every asset has a <b>.meta</b> sidecar next to it: a GUID that belongs to the file rather than to its path, and "
+        "the import settings used when it enters a scene. Moving or renaming an asset inside the project keeps every "
+        "reference to it working; moving it outside this editor and pressing Repair does the same by GUID."));
+    note->setWordWrap(true);
+    f->addRow(note);
+
+    QTableWidget* table = new QTableWidget(0, 3);
+    table->setObjectName(QStringLiteral("assetTable"));
+    table->setHorizontalHeaderLabels({QStringLiteral("Asset"), QStringLiteral("Kind"), QStringLiteral("GUID")});
+    table->verticalHeader()->setVisible(false);
+    table->horizontalHeader()->setStretchLastSection(true);
+    table->setSelectionBehavior(QAbstractItemView::SelectRows);
+    table->setEditTriggers(QAbstractItemView::NoEditTriggers);
+    table->setMinimumHeight(180);
+
+    QDoubleSpinBox* importScale = new QDoubleSpinBox;
+    importScale->setObjectName(QStringLiteral("assetImportScale"));
+    importScale->setRange(0.001, 1000.0);
+    importScale->setDecimals(3);
+    importScale->setSingleStep(0.1);
+    importScale->setValue(1.0);
+    QDoubleSpinBox* importYaw = new QDoubleSpinBox;
+    importYaw->setObjectName(QStringLiteral("assetImportYaw"));
+    importYaw->setRange(-360.0, 360.0);
+    importYaw->setSingleStep(15.0);
+    QLineEdit* importMaterial = new QLineEdit;
+    importMaterial->setObjectName(QStringLiteral("assetImportMaterial"));
+    importMaterial->setPlaceholderText(QStringLiteral("assets/materials/name.ukmat (optional)"));
+
+    QLabel* status = new QLabel;
+    status->setObjectName(QStringLiteral("assetStatus"));
+    status->setWordWrap(true);
+    status->setTextInteractionFlags(Qt::TextSelectableByMouse);
+
+    // The scan result outlives the page: the buttons below work on it.
+    auto db = std::make_shared<ukiyo::AssetDatabase>();
+    auto selected = std::make_shared<int>(-1);
+
+    auto refill = [this, table, db] {
+        QSignalBlocker block(table);
+        table->setRowCount(static_cast<int>(db->assets.size()));
+        for (int i = 0; i < static_cast<int>(db->assets.size()); ++i) {
+            const ukiyo::AssetEntry& a = db->assets[i];
+            table->setItem(i, 0, new QTableWidgetItem(QString::fromStdString(a.path)));
+            table->setItem(i, 1, new QTableWidgetItem(QString::fromLatin1(ukiyo::assetKindName(a.meta.kind))));
+            table->setItem(i, 2, new QTableWidgetItem(QString::fromStdString(a.meta.guid)));
+        }
+        table->resizeColumnsToContents();
+        table->horizontalHeader()->setStretchLastSection(true);
+    };
+
+    QPushButton* scan = new QPushButton(QStringLiteral("Scan Project"));
+    scan->setObjectName(QStringLiteral("assetScan"));
+    scan->setToolTip(QStringLiteral("Lists every asset and writes a sidecar for anything that has none"));
+    connect(scan, &QPushButton::clicked, this, [this, db, refill, status] {
+        *db = ukiyo::scanProject(projectRoot_.toStdString(), true);
+        refill();
+        status->setText(QStringLiteral("%1 assets. %2 warnings.").arg(db->assets.size()).arg(db->warnings.size()));
+        for (const std::string& w : db->warnings) log(QStringLiteral("assets: ") + QString::fromStdString(w));
+    });
+
+    QPushButton* check = new QPushButton(QStringLiteral("Check References"));
+    check->setObjectName(QStringLiteral("assetCheck"));
+    check->setToolTip(QStringLiteral("Scenes, prefabs, materials and the build manifest: anything pointing at a file that is not there"));
+    connect(check, &QPushButton::clicked, this, [this, db, status, scan] {
+        if (db->assets.empty()) scan->click();
+        const std::vector<ukiyo::BrokenRef> broken = ukiyo::brokenReferences(*db);
+        if (broken.empty()) {
+            status->setText(QStringLiteral("No broken references."));
+            return;
+        }
+        QStringList lines;
+        for (const ukiyo::BrokenRef& b : broken) {
+            lines << QStringLiteral("%1 %2 -> %3").arg(QString::fromStdString(b.file), QString::fromStdString(b.field),
+                                                       QString::fromStdString(b.target));
+        }
+        status->setText(QStringLiteral("%1 broken reference(s):\n%2").arg(broken.size()).arg(lines.join(QStringLiteral("\n"))));
+        for (const QString& l : lines) log(QStringLiteral("broken: ") + l);
+    });
+
+    QPushButton* repair = new QPushButton(QStringLiteral("Repair Moved Assets"));
+    repair->setObjectName(QStringLiteral("assetRepair"));
+    repair->setToolTip(QStringLiteral("Rewrites references by GUID after files were moved or renamed outside the editor"));
+    connect(repair, &QPushButton::clicked, this, [this, db, status, scan, refill] {
+        if (db->assets.empty()) scan->click();
+        std::vector<std::string> files, warnings;
+        const int fixed = ukiyo::repairMovedAssets(*db, &files, &warnings);
+        for (const std::string& w : warnings) log(QStringLiteral("repair: ") + QString::fromStdString(w));
+        status->setText(QStringLiteral("%1 reference(s) rewritten in %2 file(s).").arg(fixed).arg(files.size()));
+        for (const std::string& file : files) log(QStringLiteral("repair: wrote ") + QString::fromStdString(file));
+        *db = ukiyo::scanProject(projectRoot_.toStdString(), false);
+        refill();
+    });
+
+    QPushButton* addToScene = new QPushButton(QStringLiteral("Add to Scene"));
+    addToScene->setObjectName(QStringLiteral("assetAddToScene"));
+    addToScene->setToolTip(QStringLiteral("Inserts the selected asset with its import settings applied"));
+    connect(addToScene, &QPushButton::clicked, this, [this, db, selected, status] {
+        if (*selected < 0 || *selected >= static_cast<int>(db->assets.size())) {
+            status->setText(QStringLiteral("Select an asset first."));
+            return;
+        }
+        const ukiyo::AssetEntry& a = db->assets[*selected];
+        if (a.meta.kind != ukiyo::AssetKind::Model) {
+            status->setText(QStringLiteral("Only a model can be added to a scene."));
+            return;
+        }
+        const QString name = QFileInfo(QString::fromStdString(a.path)).completeBaseName();
+        const QJsonObject entry = jsonToDoc(ukiyo::sceneEntryForAsset(a, name.toStdString()));
+        addInstanceEntry(entry, false);
+        status->setText(QStringLiteral("Added %1").arg(QString::fromStdString(a.path)));
+    });
+
+    connect(table, &QTableWidget::itemSelectionChanged, this, [db, selected, table, importScale, importYaw, importMaterial] {
+        *selected = table->currentRow();
+        if (*selected < 0 || *selected >= static_cast<int>(db->assets.size())) return;
+        const ukiyo::AssetMeta& m = db->assets[*selected].meta;
+        QSignalBlocker b1(importScale), b2(importYaw), b3(importMaterial);
+        importScale->setValue(m.importScale);
+        importYaw->setValue(m.importYawDeg);
+        importMaterial->setText(QString::fromStdString(m.materialRemap));
+    });
+
+    // Writing an import setting writes the sidecar, which is what makes it an import setting rather than a UI value.
+    auto writeImporter = [this, db, selected, importScale, importYaw, importMaterial, status] {
+        if (*selected < 0 || *selected >= static_cast<int>(db->assets.size())) return;
+        ukiyo::AssetEntry& a = db->assets[*selected];
+        a.meta.importScale = float(importScale->value());
+        a.meta.importYawDeg = float(importYaw->value());
+        a.meta.materialRemap = importMaterial->text().trimmed().toStdString();
+        const QString sidecar = QDir(projectRoot_).absoluteFilePath(QString::fromStdString(a.path)) + QStringLiteral(".meta");
+        std::string err;
+        if (!ukiyo::writeAssetMeta(sidecar.toStdString(), a.meta, &err)) {
+            status->setText(QStringLiteral("Could not write the sidecar: ") + QString::fromStdString(err));
+            return;
+        }
+        status->setText(QStringLiteral("Saved the import settings of %1").arg(QString::fromStdString(a.path)));
+    };
+    connect(importScale, QOverload<double>::of(&QDoubleSpinBox::valueChanged), this, [writeImporter](double) { writeImporter(); });
+    connect(importYaw, QOverload<double>::of(&QDoubleSpinBox::valueChanged), this, [writeImporter](double) { writeImporter(); });
+    connect(importMaterial, &QLineEdit::editingFinished, this, writeImporter);
+
+    QWidget* buttons = new QWidget;
+    QHBoxLayout* bh = new QHBoxLayout(buttons);
+    bh->setContentsMargins(0, 0, 0, 0);
+    bh->addWidget(scan);
+    bh->addWidget(check);
+    bh->addWidget(repair);
+    bh->addWidget(addToScene);
+    bh->addStretch(1);
+
+    f->addRow(table);
+    f->addRow(buttons);
+    QFormLayout* imp = addSection(v, QStringLiteral("Import Settings"));
+    imp->addRow(QStringLiteral("Scale"), importScale);
+    imp->addRow(QStringLiteral("Facing correction (deg)"), importYaw);
+    imp->addRow(QStringLiteral("Material remap"), importMaterial);
+    imp->addRow(status);
+
+    // A project that has never been scanned gets its sidecars on the first visit, so the page is not empty on day one.
+    *db = ukiyo::scanProject(projectRoot_.toStdString(), true);
+    refill();
+    status->setText(QStringLiteral("%1 assets.").arg(db->assets.size()));
+}
+
+// --- Localisation -------------------------------------------------------------------------------
+void MainWindow::fillLocalisationPage(QVBoxLayout* v) {
+    QFormLayout* f = addSection(v, QStringLiteral("Languages"));
+    QLabel* note = new QLabel(QStringLiteral(
+        "One file per language: <b>assets/locales/&lt;code&gt;.json</b>. A script reads a string with "
+        "<b>ukiyo.tr(\"key\")</b>, which returns the key itself when the language has no text for it, so a missing "
+        "translation is visible rather than blank. A new language starts as a copy of the base language's keys."));
+    note->setWordWrap(true);
+    f->addRow(note);
+
+    QLabel* base = new QLabel(QString::fromStdString(ukiyo::baseLocale(projectRoot_.toStdString())));
+    base->setObjectName(QStringLiteral("localeBase"));
+    QComboBox* languages = new QComboBox;
+    languages->setObjectName(QStringLiteral("localeList"));
+    QTableWidget* strings = new QTableWidget(0, 2);
+    strings->setObjectName(QStringLiteral("localeStrings"));
+    strings->setHorizontalHeaderLabels({QStringLiteral("Key"), QStringLiteral("Text")});
+    strings->horizontalHeader()->setStretchLastSection(true);
+    strings->verticalHeader()->setVisible(false);
+    strings->setMinimumHeight(200);
+    QLabel* status = new QLabel;
+    status->setObjectName(QStringLiteral("localeStatus"));
+    status->setWordWrap(true);
+
+    auto catalog = std::make_shared<ukiyo::LocaleCatalog>();
+    auto refillLanguages = [this, languages, catalog, strings, status] {
+        QSignalBlocker block(languages);
+        languages->clear();
+        for (const std::string& code : ukiyo::availableLocales(projectRoot_.toStdString()))
+            languages->addItem(QString::fromStdString(code));
+        *catalog = ukiyo::LocaleCatalog();
+        if (languages->count() > 0) {
+            std::string err;
+            if (!ukiyo::loadLocale(projectRoot_.toStdString(), languages->currentText().toStdString(), catalog.get(), &err))
+                status->setText(QString::fromStdString(err));
+        }
+        QSignalBlocker blockTable(strings);
+        strings->setRowCount(static_cast<int>(catalog->strings.size()));
+        int row = 0;
+        for (const auto& [key, text] : catalog->strings) {
+            strings->setItem(row, 0, new QTableWidgetItem(QString::fromStdString(key)));
+            strings->setItem(row, 1, new QTableWidgetItem(QString::fromStdString(text)));
+            ++row;
+        }
+        strings->resizeColumnsToContents();
+        strings->horizontalHeader()->setStretchLastSection(true);
+    };
+    refillLanguages();
+
+    connect(languages, QOverload<int>::of(&QComboBox::currentIndexChanged), this, [refillLanguages](int) { refillLanguages(); });
+
+    QPushButton* save = new QPushButton(QStringLiteral("Save Language"));
+    save->setObjectName(QStringLiteral("localeSave"));
+    connect(save, &QPushButton::clicked, this, [this, languages, strings, status] {
+        const QString code = languages->currentText();
+        if (code.isEmpty()) {
+            status->setText(QStringLiteral("Pick a language first."));
+            return;
+        }
+        ukiyo::LocaleCatalog out;
+        out.code = code.toStdString();
+        for (int row = 0; row < strings->rowCount(); ++row) {
+            const QTableWidgetItem* k = strings->item(row, 0);
+            const QTableWidgetItem* t = strings->item(row, 1);
+            if (!k || k->text().isEmpty()) continue;
+            out.strings[k->text().toStdString()] = t ? t->text().toStdString() : std::string();
+        }
+        QDir().mkpath(projectRoot_ + QStringLiteral("/assets/locales"));
+        QFile file(projectRoot_ + QStringLiteral("/assets/locales/") + code + QStringLiteral(".json"));
+        if (!file.open(QIODevice::WriteOnly | QIODevice::Truncate)) {
+            status->setText(QStringLiteral("Could not write the language file."));
+            return;
+        }
+        file.write(QByteArray::fromStdString(ukiyo::localeJson(out)));
+        file.close();
+        status->setText(QStringLiteral("Wrote assets/locales/%1.json (%2 strings)").arg(code).arg(out.strings.size()));
+    });
+
+    QPushButton* addLanguage = new QPushButton(QStringLiteral("New Language..."));
+    addLanguage->setObjectName(QStringLiteral("localeNew"));
+    connect(addLanguage, &QPushButton::clicked, this, [this, base, refillLanguages, status] {
+        bool ok = false;
+        const QString code = QInputDialog::getText(this, QStringLiteral("New language"), QStringLiteral("Language code (en, ja, pt-BR)"),
+                                                   QLineEdit::Normal, QString(), &ok);
+        if (!ok || code.trimmed().isEmpty()) return;
+        ukiyo::LocaleCatalog from;
+        std::string err;
+        ukiyo::loadLocale(projectRoot_.toStdString(), base->text().toStdString(), &from, &err);
+        const ukiyo::LocaleCatalog fresh = ukiyo::newLocale(from, code.trimmed().toStdString());
+        QDir().mkpath(projectRoot_ + QStringLiteral("/assets/locales"));
+        QFile file(projectRoot_ + QStringLiteral("/assets/locales/") + code.trimmed() + QStringLiteral(".json"));
+        if (!file.open(QIODevice::WriteOnly | QIODevice::Truncate)) {
+            status->setText(QStringLiteral("Could not write the language file."));
+            return;
+        }
+        file.write(QByteArray::fromStdString(ukiyo::localeJson(fresh)));
+        file.close();
+        refillLanguages();
+        status->setText(QStringLiteral("Created %1 with %2 untranslated keys.").arg(code.trimmed()).arg(fresh.strings.size()));
+    });
+
+    QWidget* row = new QWidget;
+    QHBoxLayout* rh = new QHBoxLayout(row);
+    rh->setContentsMargins(0, 0, 0, 0);
+    rh->addWidget(languages);
+    rh->addWidget(addLanguage);
+    rh->addWidget(save);
+    rh->addStretch(1);
+
+    f->addRow(QStringLiteral("Base language"), base);
+    f->addRow(QStringLiteral("Language"), row);
+    f->addRow(strings);
+    f->addRow(status);
+}
+
+// --- Version control ----------------------------------------------------------------------------
+void MainWindow::fillVcsPage(QVBoxLayout* v) {
+    QFormLayout* f = addSection(v, QStringLiteral("Version Control"));
+    QLabel* branch = new QLabel;
+    branch->setObjectName(QStringLiteral("vcsBranch"));
+    branch->setTextInteractionFlags(Qt::TextSelectableByMouse);
+    QListWidget* changes = new QListWidget;
+    changes->setObjectName(QStringLiteral("vcsChanges"));
+    changes->setMinimumHeight(140);
+    QPlainTextEdit* message = new QPlainTextEdit;
+    message->setObjectName(QStringLiteral("vcsMessage"));
+    message->setMaximumHeight(70);
+    message->setPlaceholderText(QStringLiteral("Commit message (empty writes one from the file list)"));
+    QListWidget* history = new QListWidget;
+    history->setObjectName(QStringLiteral("vcsHistory"));
+    history->setMinimumHeight(110);
+    QLabel* status = new QLabel;
+    status->setObjectName(QStringLiteral("vcsStatus"));
+    status->setWordWrap(true);
+    status->setTextInteractionFlags(Qt::TextSelectableByMouse);
+    auto changesSeen = std::make_shared<std::vector<ukiyo::vcs::Change>>();
+
+    // git, run as argv with the project as its working directory. The editor reads the porcelain output the parser
+    // expects, so what the page lists is exactly what `git status` says.
+    auto git = [this](const QStringList& args, int* exitCode) {
+        QProcess proc;
+        proc.setWorkingDirectory(projectRoot_);
+        proc.start(QStringLiteral("git"), args);
+        if (!proc.waitForStarted(4000)) {
+            if (exitCode) *exitCode = -1;
+            return QString();
+        }
+        proc.waitForFinished(30000);
+        if (exitCode) *exitCode = proc.exitStatus() == QProcess::NormalExit ? proc.exitCode() : -1;
+        return QString::fromLocal8Bit(proc.readAllStandardOutput());
+    };
+    auto toList = [](const std::vector<std::string>& args) {
+        QStringList out;
+        for (const std::string& a : args) out << QString::fromStdString(a);
+        return out;
+    };
+
+    auto refresh = [this, git, toList, changes, history, branch, status, changesSeen] {
+        int code = 0;
+        const QString porcelain = git(toList(ukiyo::vcs::statusArgs()), &code);
+        const QString err = code == 0 ? QString() : QStringLiteral("git exited with %1").arg(code);
+        const ukiyo::vcs::Status st = ukiyo::vcs::parseStatus(porcelain.toStdString(), err.toStdString());
+        changes->clear();
+        changesSeen->clear();
+        if (!st.ok) {
+            status->setText(QString::fromStdString(st.error.empty() ? std::string("Not a git repository.") : st.error));
+            branch->setText(QStringLiteral("(no repository)"));
+            history->clear();
+            return;
+        }
+        branch->setText(QStringLiteral("%1%2%3")
+                            .arg(QString::fromStdString(st.branch))
+                            .arg(st.ahead ? QStringLiteral("  ↑") : QString())
+                            .arg(st.behind ? QStringLiteral("  ↓") : QString()));
+        for (const ukiyo::vcs::Change& c : st.changes) {
+            const char* kind = c.kind == ukiyo::vcs::Change::Kind::Modified ? "modified"
+                             : c.kind == ukiyo::vcs::Change::Kind::Added ? "added"
+                             : c.kind == ukiyo::vcs::Change::Kind::Deleted ? "deleted"
+                             : c.kind == ukiyo::vcs::Change::Kind::Renamed ? "renamed"
+                             : c.kind == ukiyo::vcs::Change::Kind::Untracked ? "untracked"
+                             : c.kind == ukiyo::vcs::Change::Kind::Conflict ? "conflict"
+                             : "changed";
+            changes->addItem(QStringLiteral("%1  %2%3")
+                                 .arg(QString::fromLatin1(kind), QString::fromStdString(c.path),
+                                      c.staged ? QStringLiteral("  (staged)") : QString()));
+        }
+        *changesSeen = st.changes;
+        status->setText(QStringLiteral("%1 change(s)").arg(st.changes.size()));
+        history->clear();
+        for (const ukiyo::vcs::Commit& c : ukiyo::vcs::parseLog(git(toList(ukiyo::vcs::logArgs(20)), nullptr).toStdString())) {
+            history->addItem(QStringLiteral("%1  %2  (%3, %4)")
+                                 .arg(QString::fromStdString(c.hash), QString::fromStdString(c.subject),
+                                      QString::fromStdString(c.author), QString::fromStdString(c.when)));
+        }
+    };
+
+    QPushButton* refreshButton = new QPushButton(QStringLiteral("Refresh"));
+    refreshButton->setObjectName(QStringLiteral("vcsRefresh"));
+    connect(refreshButton, &QPushButton::clicked, this, refresh);
+
+    QPushButton* commit = new QPushButton(QStringLiteral("Commit All"));
+    commit->setObjectName(QStringLiteral("vcsCommit"));
+    connect(commit, &QPushButton::clicked, this, [this, git, toList, message, status, changesSeen, refresh] {
+        if (changesSeen->empty()) {
+            status->setText(QStringLiteral("Nothing to commit."));
+            return;
+        }
+        int code = 0;
+        git(toList(ukiyo::vcs::addAllArgs()), &code);
+        if (code != 0) {
+            status->setText(QStringLiteral("git add failed (%1).").arg(code));
+            return;
+        }
+        std::string text = message->toPlainText().trimmed().toStdString();
+        if (text.empty()) text = ukiyo::vcs::defaultCommitMessage(*changesSeen);
+        git(toList(ukiyo::vcs::commitArgs(text)), &code);
+        if (code != 0) {
+            status->setText(QStringLiteral("git commit failed (%1). Nothing is lost: the changes are staged.").arg(code));
+            return;
+        }
+        message->clear();
+        status->setText(QString::fromStdString(text));
+        refresh();
+    });
+
+    QWidget* buttons = new QWidget;
+    QHBoxLayout* bh = new QHBoxLayout(buttons);
+    bh->setContentsMargins(0, 0, 0, 0);
+    bh->addWidget(refreshButton);
+    bh->addWidget(commit);
+    bh->addStretch(1);
+
+    f->addRow(QStringLiteral("Branch"), branch);
+    f->addRow(changes);
+    f->addRow(message);
+    f->addRow(buttons);
+    f->addRow(status);
+    f->addRow(QStringLiteral("Recent commits"), history);
+    refresh();
 }
 
 } // namespace editor

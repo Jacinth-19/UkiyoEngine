@@ -487,6 +487,10 @@ void parseSceneEntries(const QJsonObject& root, const QString& projectRoot, Scen
                 e.yawDeg = float(ov.value("yawDeg").toDouble());
                 e.overrides << QStringLiteral("yawDeg");
             }
+            if (ov.contains(QStringLiteral("scale"))) {
+                e.scale = float(ov.value(QStringLiteral("scale")).toDouble(1.0));
+                e.overrides << QStringLiteral("scale");
+            }
         } else if (o.value("empty").toBool()) {
             QString emptyErr;
             if (!ensureEmptyModelFile(&emptyErr)) {
@@ -496,10 +500,12 @@ void parseSceneEntries(const QJsonObject& root, const QString& projectRoot, Scen
             e.path = emptyModelPath();
             readFloats(o.value("position"), e.position, 3);
             e.yawDeg = float(o.value("yawDeg").toDouble());
+            e.scale = float(o.value(QStringLiteral("scale")).toDouble(1.0));
         } else {
             e.path = QDir(projectRoot).absoluteFilePath(o.value("path").toString());
             readFloats(o.value("position"), e.position, 3);
             e.yawDeg = float(o.value("yawDeg").toDouble());
+            e.scale = float(o.value(QStringLiteral("scale")).toDouble(1.0));
         }
         e.name = o.value("name").toString();
         entries.push_back(e);

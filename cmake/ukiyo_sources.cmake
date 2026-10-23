@@ -21,6 +21,10 @@ set(UKIYO_CORE_SOURCES
   src/engine/scene_runtime.cpp
   src/engine/async_load.cpp
   src/engine/property_search.cpp
+  src/engine/json_patch.cpp
+  src/engine/asset_db.cpp
+  src/engine/vcs.cpp
+  src/engine/localisation.cpp
   src/engine/search.cpp
   src/player/hud_layout.cpp
   src/engine/face.cpp

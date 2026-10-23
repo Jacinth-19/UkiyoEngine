@@ -212,6 +212,27 @@ jobs:
         run: |-
           set -o pipefail
           ./build/property_search_test 2>&1 | tee /tmp/ukiyo-test-property_search_test.log
+      # Undo as deltas: the patch that turns one document into another, applied and inverted. The editor's undo stack
+      # stores these instead of whole-scene copies.
+      - name: Run JSON Patch Test
+        run: |-
+          set -o pipefail
+          ./build/json_patch_test 2>&1 | tee /tmp/ukiyo-test-json_patch_test.log
+      # The asset pipeline: sidecars, GUIDs, the index, broken references and a move repaired by GUID.
+      - name: Run Asset Database Test
+        run: |-
+          set -o pipefail
+          ./build/asset_db_test 2>&1 | tee /tmp/ukiyo-test-asset_db_test.log
+      # Git status parsing, locale files and the packer's argument list: the editor's other tools.
+      - name: Run Editor Tools Test
+        run: |-
+          set -o pipefail
+          ./build/editor_tools_test 2>&1 | tee /tmp/ukiyo-test-editor_tools_test.log
+      # The Scene view's camera: perspective, orthographic, zoom, pan and flying.
+      - name: Run Camera Test
+        run: |-
+          set -o pipefail
+          ./build/camera_test 2>&1 | tee /tmp/ukiyo-test-camera_test.log
       # Budgeted loading (Flax 1.11's async scene loading): the scheduler that decides how much of a scene one frame pays
       # for, driven by a fake clock so a budget is a number the test can hold it to.
       - name: Run Async Load Test
@@ -702,7 +723,8 @@ jobs:
           foreach ($t in @("systems_test", "script_test", "network_test", "project_test", "vgeom_test", "motion_test", "gi_test", "input_test", "trail_test", "search_test", "browser_zoom_test", "ao_test",
                     "contact_shadow_test", "pcss_test", "msdf_test", "alpha_mips_test", "transform_test", "lights_test", "save_test",
                     "property_search_test", "async_load_test", "game_data_test", "game_test", "pack_test",
-                    "manifest_test", "scene_runtime_test", "hud_test", "character_test", "player_test")) {
+                    "manifest_test", "scene_runtime_test", "hud_test", "character_test", "player_test",
+                    "json_patch_test", "asset_db_test", "editor_tools_test", "camera_test")) {
             Write-Host "::group::$t"
             # script_test keeps a trace in a file as well as on stdout: a process that dies on Windows has been seen to
             # lose the last lines of a redirected stdout, and a file is flushed on every line.

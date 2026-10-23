@@ -1,4 +1,4 @@
-// Transform gizmos for the Scene view: a move handle (three axis arrows) and a yaw ring.
+// Transform gizmos for the Scene view: a move handle (three axis arrows), a yaw ring, and a scale handle.
 // The math is kept free of widgets so it can be tested directly. Screen points are widget pixels,
 // with y pointing down, the same as the Scene view.
 #pragma once
@@ -13,9 +13,10 @@ class QPainter;
 
 namespace editor::gizmo {
 
-enum class Tool { Move, Rotate };
-// The handle under the pointer or being dragged.
-enum class Part { None, MoveX, MoveY, MoveZ, RotateYaw };
+enum class Tool { Move, Rotate, Scale };
+// The handle under the pointer or being dragged. Scale is one handle on the gizmo's centre: instances scale evenly, so
+// there is no per-axis stretching to drag.
+enum class Part { None, MoveX, MoveY, MoveZ, RotateYaw, Scale };
 
 struct Ray {
     glm::vec3 origin{0.0f};
@@ -41,6 +42,10 @@ bool yawAngle(const Ray& r, glm::vec3 origin, float* thetaDeg);
 glm::vec3 movedPosition(glm::vec3 origin0, Part axis, float t0, float t, float step);
 // New yaw in degrees. `stepDeg` > 0 snaps the result.
 float rotatedYaw(float yaw0, float theta0, float theta, float stepDeg);
+// The scale a drag of the scale handle asks for: how much further from the gizmo the pointer is now than where the
+// drag started, times the scale it started at. `from` and `to` are widget pixels. A drag that would shrink an object
+// below 1% stops there. `step` > 0 snaps the result (0.1 is a useful step).
+float scaledBy(float scale0, QPointF center, QPointF from, QPointF to, float step);
 
 // Draws the gizmo for the selected instance. `hover` is outlined in a highlight colour, and so is
 // `active` while it is being dragged.

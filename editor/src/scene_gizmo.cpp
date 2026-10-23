@@ -88,6 +88,12 @@ float handleLength(const ukiyo::OrbitCamera& cam, glm::vec3 origin) {
 
 Part hitTest(const ukiyo::OrbitCamera& cam, int w, int h, Tool tool, glm::vec3 origin, QPointF mouse) {
     const float len = handleLength(cam, origin);
+    if (tool == Tool::Scale) {
+        QPointF c;
+        if (!project(cam, w, h, origin, &c)) return Part::None;
+        const double dx = mouse.x() - c.x(), dy = mouse.y() - c.y();
+        return (dx * dx + dy * dy) <= (kHitPixels + 6.0) * (kHitPixels + 6.0) ? Part::Scale : Part::None;
+    }
     if (tool == Tool::Move) {
         Part best = Part::None;
         double bestDist = kHitPixels;
@@ -142,6 +148,14 @@ float rotatedYaw(float yaw0, float theta0, float theta, float stepDeg) {
     return yaw;
 }
 
+float scaledBy(float scale0, QPointF center, QPointF from, QPointF to, float step) {
+    const double d0 = std::max(1.0, std::hypot(from.x() - center.x(), from.y() - center.y()));
+    const double d1 = std::hypot(to.x() - center.x(), to.y() - center.y());
+    float s = float(double(scale0) * (d1 / d0));
+    if (step > 0.0f) s = std::round(s / step) * step;
+    return std::clamp(s, 0.01f, 100.0f);
+}
+
 void paint(QPainter& p, const ukiyo::OrbitCamera& cam, int w, int h, Tool tool, glm::vec3 origin,
            Part hover, Part active) {
     const float len = handleLength(cam, origin);
@@ -150,6 +164,21 @@ void paint(QPainter& p, const ukiyo::OrbitCamera& cam, int w, int h, Tool tool, 
     auto colourFor = [&](Part part, const QColor& base) {
         return (part == active || (active == Part::None && part == hover)) ? QColor(255, 224, 102) : base;
     };
+    if (tool == Tool::Scale) {
+        QPointF c;
+        if (project(cam, w, h, origin, &c)) {
+            const QColor base = colourFor(Part::Scale, QColor(62, 99, 221));
+            p.setPen(QPen(base, (active == Part::Scale || (active == Part::None && hover == Part::Scale)) ? 3.5 : 2.0));
+            p.setBrush(QColor(base.red(), base.green(), base.blue(), 70));
+            // A square on the pivot with a cube at its corner, the way a scale handle reads at a glance.
+            const double half = kHitPixels + 6.0;
+            p.drawRect(QRectF(c.x() - half, c.y() - half, half * 2.0, half * 2.0));
+            p.setBrush(base);
+            p.drawRect(QRectF(c.x() + half - 4.0, c.y() + half - 4.0, 8.0, 8.0));
+        }
+        p.restore();
+        return;
+    }
     if (tool == Tool::Move) {
         const struct { Part part; QColor base; } axes[] = {
             {Part::MoveX, QColor(229, 72, 77)},

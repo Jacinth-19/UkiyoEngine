@@ -23,6 +23,7 @@ struct SceneEntry {
     QString path;
     float position[3] = {0.0f, 0.0f, 0.0f};
     float yawDeg = 0.0f;
+    float scale = 1.0f;             // uniform scale; a scene that never scaled anything omits it
     QString prefab;                 // absolute .ukprefab path, or empty for a plain model
     QString prefabId;
     QStringList overrides;

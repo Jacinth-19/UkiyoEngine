@@ -342,7 +342,7 @@ target_link_libraries(ukiyo_pak PRIVATE ukiyo_core)
 
 # The packer (docs/PACKAGING.md): a project plus a player binary into a folder someone can run, and a zip of it. The
 # library is separate so tests/pack_test.cpp drives it without a command line in the way.
-add_library(ukiyo_pack_core STATIC src/pack/pack.cpp)
+add_library(ukiyo_pack_core STATIC src/pack/pack.cpp src/pack/pack_cli.cpp)
 target_link_libraries(ukiyo_pack_core PUBLIC ukiyo_core)
 target_compile_options(ukiyo_pack_core PRIVATE ${UKIYO_WARNINGS})
 add_executable(ukiyo_pack tools/ukiyo_pack.cpp)
@@ -628,6 +628,33 @@ add_executable(property_search_test tests/property_search_test.cpp src/engine/pr
 target_include_directories(property_search_test PRIVATE ${CMAKE_SOURCE_DIR}/src)
 target_compile_options(property_search_test PRIVATE ${UKIYO_WARNINGS_PEDANTIC})
 
+# Undo as deltas (docs/EDITOR.md): diff, apply and invert over RFC 6901 pointers. The editor's undo stack stores one of
+# these per edit instead of a copy of the whole scene.
+add_executable(json_patch_test tests/json_patch_test.cpp src/engine/json_patch.cpp)
+target_include_directories(json_patch_test PRIVATE ${CMAKE_SOURCE_DIR}/src)
+target_link_libraries(json_patch_test PRIVATE nlohmann_json::nlohmann_json)
+target_compile_options(json_patch_test PRIVATE ${UKIYO_WARNINGS_PEDANTIC})
+
+# The asset pipeline: .meta sidecars, stable GUIDs, the guid -> path index, broken references, a move repaired by GUID,
+# and the scene entry an import setting produces.
+add_executable(asset_db_test tests/asset_db_test.cpp src/engine/asset_db.cpp)
+target_include_directories(asset_db_test PRIVATE ${CMAKE_SOURCE_DIR}/src)
+target_link_libraries(asset_db_test PRIVATE nlohmann_json::nlohmann_json)
+target_compile_options(asset_db_test PRIVATE ${UKIYO_WARNINGS_PEDANTIC})
+
+# The other editor tools: git status parsing, git command lines, the locale files, and the packer's argument list.
+add_executable(editor_tools_test tests/editor_tools_test.cpp src/engine/vcs.cpp src/engine/localisation.cpp
+               src/pack/pack_cli.cpp)
+target_include_directories(editor_tools_test PRIVATE ${CMAKE_SOURCE_DIR}/src)
+target_link_libraries(editor_tools_test PRIVATE nlohmann_json::nlohmann_json)
+target_compile_options(editor_tools_test PRIVATE ${UKIYO_WARNINGS_PEDANTIC})
+
+# The camera the Scene view builds with: perspective, orthographic, zoom, pan and flying.
+add_executable(camera_test tests/camera_test.cpp src/engine/camera.cpp)
+target_include_directories(camera_test PRIVATE ${CMAKE_SOURCE_DIR}/src)
+target_link_libraries(camera_test PRIVATE glm::glm)
+target_compile_options(camera_test PRIVATE ${UKIYO_WARNINGS_PEDANTIC})
+
 # Budgeted loading (Flax 1.11's async scene loading): the scheduler that decides how much of a scene one frame pays for,
 # driven by a fake clock so a budget is a number the test can hold it to.
 add_executable(async_load_test tests/async_load_test.cpp src/engine/async_load.cpp)
@@ -779,7 +806,8 @@ if(UKIYO_EDITOR)
     set_target_properties(ukiyo_editor PROPERTIES AUTOMOC ON CXX_STANDARD 17)
     target_include_directories(ukiyo_editor PRIVATE ${CMAKE_SOURCE_DIR}/editor/src)
     target_compile_definitions(ukiyo_editor PRIVATE UKIYO_ROOT="${CMAKE_SOURCE_DIR}")
-    target_link_libraries(ukiyo_editor PRIVATE ukiyo_core ukiyo_systems ukiyo_nodeeditor Qt6::Widgets)
+    # ukiyo_pack_core is the package command: the Build page calls the same argument builder the packer and its test do.
+    target_link_libraries(ukiyo_editor PRIVATE ukiyo_core ukiyo_systems ukiyo_pack_core ukiyo_nodeeditor Qt6::Widgets)
     target_compile_options(ukiyo_editor PRIVATE ${UKIYO_WARNINGS})
     # main_window.cpp is very large. Optimising it at -O3 needs more memory than the build machine has,
     # so this one file is built at -O0 (the build machine has about 1 GB; -O1 runs out of memory here).
