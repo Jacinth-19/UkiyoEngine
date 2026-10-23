@@ -709,7 +709,7 @@ public:
         // for this frame's submission and lands after the read. (One frame in flight, per the note at the top of
         // this file — that is what makes resolve-then-reset in the same place correct.)
         resolveGpuTimes();
-        if (timePool_) vkCmdResetQueryPool(cb_, 0, kGpuTimeSlots * 2);
+        if (timePool_) vkCmdResetQueryPool(cb_, timePool_, 0, kGpuTimeSlots * 2);
         inFrame_ = true;
         return true;
     }
@@ -719,11 +719,11 @@ public:
     // stays NOT_READY at resolve time and keeps its previous value.
     void beginGpuTime(uint32_t slot) override {
         if (!timePool_ || !inFrame_ || slot >= kGpuTimeSlots) return;
-        vkCmdWriteTimestamp(cb_, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, slot * 2);
+        vkCmdWriteTimestamp(cb_, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, timePool_, slot * 2);
     }
     void endGpuTime(uint32_t slot) override {
         if (!timePool_ || !inFrame_ || slot >= kGpuTimeSlots) return;
-        vkCmdWriteTimestamp(cb_, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, slot * 2 + 1);
+        vkCmdWriteTimestamp(cb_, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, timePool_, slot * 2 + 1);
     }
     std::vector<float> gpuTimesMs() override { return timePool_ ? gpuTimes_ : std::vector<float>{}; }
 
