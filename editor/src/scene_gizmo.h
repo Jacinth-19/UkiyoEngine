@@ -52,14 +52,11 @@ float handleLength(const ukiyo::OrbitCamera& cam, glm::vec3 origin);
 // The handle under the pointer, or Part::None. Handles that are hidden by the view rule are not hit either.
 Part hitTest(const ukiyo::OrbitCamera& cam, int w, int h, Tool tool, glm::vec3 origin, QPointF mouse);
 
-// True when a handle belongs to the tool being used.
-bool partInTool(Part part, Tool tool);
-// The world axis a handle lies along (for a plane handle, its normal; for the uniform handle, zero).
+// The world axis a handle lies along (for the uniform handle, zero; a plane handle's own axis is kept separately, in
+// planeNormal, because a square lies in a plane rather than along a line).
 glm::vec3 partAxis(Part part);
 // True for the three plane handles.
 bool isPlanePart(Part part);
-// The plane handle whose normal is `axis`.
-Part planePartFor(Axis axis);
 
 // The angle in degrees of the ray's hit on the ring around `axis` through `origin`, from a stable reference direction.
 bool ringAngle(const Ray& r, glm::vec3 origin, glm::vec3 axis, float* deg);

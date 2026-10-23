@@ -14,7 +14,6 @@ namespace editor::gizmo {
 
 namespace {
 
-using ukiyo::gizmo::Axis;
 using ukiyo::gizmo::deltaDeg;
 
 constexpr double kHitPixels = 8.0;          // how close the pointer must be to a handle
@@ -49,7 +48,9 @@ glm::vec3 planeNormal(Part p) {
 }
 
 QColor baseColour(Part p) {
-    const glm::vec3 a = partAxis(p);
+    // A plane handle takes its colour from the axis it *faces*, not the axes it spans: the square between +Y and +Z is
+    // the X plane, and says X.
+    const glm::vec3 a = isPlanePart(p) ? planeNormal(p) : partAxis(p);
     if (a.x > 0.5f) return QColor(229, 72, 77);     // X
     if (a.y > 0.5f) return QColor(70, 167, 88);     // Y
     if (a.z > 0.5f) return QColor(62, 99, 221);     // Z
@@ -123,24 +124,6 @@ glm::vec3 partAxis(Part part) {
 }
 
 bool isPlanePart(Part part) { return part == Part::MoveYZ || part == Part::MoveZX || part == Part::MoveXY; }
-
-Part planePartFor(Axis axis) {
-    switch (axis) {
-    case Axis::X: return Part::MoveYZ;
-    case Axis::Y: return Part::MoveZX;
-    case Axis::Z: return Part::MoveXY;
-    }
-    return Part::MoveXY;
-}
-
-bool partInTool(Part part, Tool tool) {
-    switch (tool) {
-    case Tool::Move: return part >= Part::MoveX && part <= Part::MoveXY;
-    case Tool::Rotate: return part >= Part::RotateX && part <= Part::RotateZ;
-    case Tool::Scale: return part >= Part::ScaleX && part <= Part::ScaleUniform;
-    }
-    return false;
-}
 
 bool project(const ukiyo::OrbitCamera& cam, int w, int h, glm::vec3 p, QPointF* out) {
     const glm::mat4 vp = cam.proj(float(w) / float(std::max(h, 1))) * cam.view();

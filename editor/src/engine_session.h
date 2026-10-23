@@ -372,6 +372,8 @@ private:
     struct Placement {
         glm::vec3 position{0.0f};
         float yawDeg = 0.0f;
+        float pitchDeg = 0.0f;
+        float rollDeg = 0.0f;
     };
     std::vector<Placement> playStart_;   // placements before play, restored by stopPlay
     std::vector<glm::vec3> playLast_;    // entity positions after the previous tick
