@@ -58,7 +58,10 @@ struct Primitive {
     // once into `vgeomIndices`; every cluster is a range of it, so the renderer draws a cut with no extra vertex data.
     VGeomMesh vgeom;
     std::unique_ptr<rhi::Buffer> vgeomIndices;
-    bool hasVGeom() const { return vgeomIndices != nullptr && vgeom.valid(); }
+    // GPU copy of the tree for the compute cut (docs/VGEOM.md §7): clusters as VGeomGpuCluster, children as
+    // uints. Uploaded once next to vgeomIndices; hasVGeom() requires both, because the dispatch reads them.
+    std::unique_ptr<rhi::Buffer> vgeomClusters, vgeomChildren;
+    bool hasVGeom() const { return vgeomIndices != nullptr && vgeomClusters != nullptr && vgeom.valid(); }
 };
 
 // A morph target driven by an expression: target `target` of mesh `mesh` at `weight`.

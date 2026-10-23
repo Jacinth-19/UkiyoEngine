@@ -329,11 +329,21 @@ public:
     void clearGraphMaterials() { graphMaterials_.clear(); }
 
 private:
-    // One frame's selection for one draw: the clusters the walk chose, and the contiguous runs of the cluster index
-    // stream they form, so the renderer issues one draw per run instead of one per cluster.
+    // One frame's selection for one draw. The CPU path keeps the clusters the walk chose and the contiguous runs
+    // of the cluster index stream they form. The GPU path (docs/VGEOM.md §7) selects on the compute queue instead:
+    // the cut owns a region of the frame's work buffer — [idCount, cmdCount][ids pow2][commands cap*5], in uints —
+    // and every pass draws it with one drawIndexedIndirect over the command region, where each written entry is a
+    // merged run and every unwritten slot is a zero command that draws nothing.
     struct VGeomCut {
-        std::vector<uint32_t> clusters;
-        std::vector<std::pair<uint32_t, uint32_t>> runs;   // (firstIndex, indexCount)
+        std::vector<uint32_t> clusters;                      // CPU path only
+        std::vector<std::pair<uint32_t, uint32_t>> runs;     // CPU path only: (firstIndex, indexCount)
+        bool gpu = false;                                    // selected by the compute kernel
+        const Primitive* prim = nullptr;
+        glm::mat4 model{1.0f};
+        uint32_t idBase = 0;   // uint offset of the id region (idCount lives two uints before it)
+        uint32_t pow2 = 0;     // id region padded to this power of two for the kernel's sort
+        uint32_t cmdBase = 0;  // uint offset of the command region
+        uint32_t cmdCap = 0;   // command capacity: one slot per cluster — the unmerged worst case
     };
     struct Rec {
         Model* model;
@@ -380,6 +390,13 @@ private:
 
     // Pipelines.
     std::unique_ptr<rhi::Pipeline> pShadow_, pSky_, pGrid_, pGridWater_, pOutline_;
+    // The virtual-geometry compute cut (docs/VGEOM.md §7): the pipeline is built once (stays null when vgeom_cut
+    // cannot be built, which leaves vgGpu_ false and the CPU walk in charge), per-primitive descriptor sets, and
+    // the frame's work and view buffers — both uploaded fresh on frames the GPU path runs.
+    std::unique_ptr<rhi::Pipeline> pVGeomCut_;
+    bool vgGpu_ = false;
+    std::unique_ptr<rhi::Buffer> vgWork_, vgView_;
+    std::map<const Primitive*, std::unique_ptr<rhi::DescriptorSet>> vgSets_;
     std::unique_ptr<rhi::Pipeline> pMToon_[2][2];   // [blend][doubleSided]
     std::unique_ptr<rhi::Pipeline> pDepth_[2];      // depth prepass, [doubleSided]
     std::unique_ptr<rhi::Pipeline> pMmdToon_[2][2];  // MMD-style toon look [blend][doubleSided]

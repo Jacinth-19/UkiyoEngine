@@ -243,6 +243,22 @@ void Renderer::buildPipelines() {
                            rhi::Blend::None, {}, true);
     pUnderwater_ = make("fullscreen", "underwater", {S::Post}, false, rhi::Cull::None, false, false,
                         rhi::Blend::Alpha, {F::RGBA16F}, false);
+
+    // The virtual-geometry cut runs on the compute queue when its shader is built (docs/VGEOM.md §7). A missing
+    // or failing vgeom_cut.comp is not an error — a tool or test harness may run without the shaderc output — so
+    // the failure keeps the CPU walk: vgGpu_ only picks between two paths that select the same clusters.
+    if (!pVGeomCut_) {
+        try {
+            rhi::PipelineDesc c;
+            c.computeShader = "vgeom_cut";
+            c.sets = {rhi::SetType::Compute};
+            pVGeomCut_ = dev_.createPipeline(c);
+            vgGpu_ = true;
+        } catch (...) {
+            pVGeomCut_.reset();
+            vgGpu_ = false;
+        }
+    }
 }
 
 void Renderer::setSceneLights(std::vector<SceneLight> lights) {
@@ -599,6 +615,49 @@ void Renderer::setTrails(const std::vector<const Trail*>& alpha, const std::vect
     trailAdditive_ = additive;
 }
 
+namespace {
+
+// The storage-buffer form of VGeomView for the compute cut: five normalized frustum planes (Gribb-Hartmann, the
+// same rows and normalization selectVGeom uses), then the eye, the pixel scale, the error budget, the cull flag.
+// std430 — five vec4s, one vec4 of eye+scale, four floats — 112 bytes, matching shaders/vgeom_cut.comp.
+struct VgGpuView {
+    glm::vec4 planes[5];
+    glm::vec4 eyePixel;   // eye.xyz, pixelScale in w
+    float errorPixels = 1.0f;
+    float cullOn = 1.0f;
+    float pad0 = 0.0f, pad1 = 0.0f;
+};
+static_assert(sizeof(VgGpuView) == 112, "VgGpuView must match the cut shader's std430 block");
+
+// The push block for one cut item: the instance's world matrix and its work-buffer region. A mat4 followed by
+// four consecutive uints lands at the same offsets (64..76) under both the scalar and std140 layouts, so one
+// definition serves both backends' PUSH macros. 80 bytes, inside the 128-byte push limit.
+struct VgPush {
+    glm::mat4 model{1.0f};
+    uint32_t idBase = 0, cmdBase = 0, pow2 = 0, root = 0;
+};
+static_assert(sizeof(VgPush) == 80, "VgPush must match the cut shader's push block");
+
+void fillVgView(const VGeomView& view, float errorPixels, VgGpuView* out) {
+    const glm::mat4& m = view.viewProj;
+    auto row = [&m](int i) { return glm::vec4(m[0][i], m[1][i], m[2][i], m[3][i]); };
+    const glm::vec4 r3 = row(3);
+    glm::vec4 planes[5] = {r3 + row(0), r3 - row(0), r3 + row(1), r3 - row(1), r3 - row(2)};
+    for (glm::vec4& p : planes) p /= std::max(glm::length(glm::vec3(p)), 1e-6f);
+    for (int i = 0; i < 5; ++i) out->planes[i] = planes[i];
+    out->eyePixel = glm::vec4(view.eye, view.pixelScale);
+    out->errorPixels = errorPixels;
+    out->cullOn = view.cull ? 1.0f : 0.0f;
+}
+
+uint32_t ceilPow2(uint32_t v) {
+    uint32_t p = 1;
+    while (p < v) p <<= 1;
+    return p;
+}
+
+}  // namespace
+
 void Renderer::render(const OrbitCamera& cam, const std::vector<Model*>& models,
                       float time, uint32_t frameIndex, const RenderSettings& s) {
     drawCalls_ = 0;
@@ -757,6 +816,7 @@ void Renderer::render(const OrbitCamera& cam, const std::vector<Model*>& models,
     constexpr float kCullMargin = 0.25f;   // metres, covers morph targets that move past the rest bounds
     std::vector<Rec> opaque, colorOpaque, blended, outlined, mmdEdges, graph, graphBlend, graphOutlined;
     std::deque<VGeomCut> vgeomCuts;   // stable addresses: Rec keeps a pointer into this
+    uint32_t vgWorkU = 0;             // frame work-buffer cursor in uints (GPU cut only)
     for (Model* m : models) {
         if (!m) continue;
         const glm::vec3 centre = glm::vec3(m->root * glm::vec4(0.5f * (m->boundsMin + m->boundsMax), 1.0f));
@@ -775,21 +835,36 @@ void Renderer::render(const OrbitCamera& cam, const std::vector<Model*>& models,
             if (s.vgeom && prim->hasVGeom()) {
                 vgeomCuts.emplace_back();
                 VGeomCut& cut = vgeomCuts.back();
-                VGeomStats stats;
-                selectVGeom(prim->vgeom, m->nodes[d.node].world, vgView, s.vgeomPixels, cut.clusters, &stats);
-                vgeomStats_.clusters += stats.clusters;
-                vgeomStats_.leaves += stats.leaves;
-                vgeomStats_.triangles += stats.triangles;
-                vgeomStats_.culled += stats.culled;
-                std::sort(cut.clusters.begin(), cut.clusters.end(), [&](uint32_t a, uint32_t b) {
-                    return prim->vgeom.clusters[a].firstIndex < prim->vgeom.clusters[b].firstIndex;
-                });
-                for (uint32_t id : cut.clusters) {
-                    const VGeomCluster& cl = prim->vgeom.clusters[id];
-                    if (!cut.runs.empty() && cut.runs.back().first + cut.runs.back().second == cl.firstIndex)
-                        cut.runs.back().second += cl.indexCount;
-                    else
-                        cut.runs.emplace_back(cl.firstIndex, cl.indexCount);
+                if (vgGpu_) {
+                    // Compute cut: this draw becomes one dispatch. Its region of the frame work buffer, in
+                    // uints: [idCount, cmdCount][ids pow2][commands cap*5] — headers and command tail are
+                    // zeroed by the upload below; the kernel rewrites everything it uses.
+                    const uint32_t count = uint32_t(prim->vgeom.clusters.size());
+                    cut.gpu = true;
+                    cut.prim = prim;
+                    cut.model = m->nodes[d.node].world;
+                    cut.pow2 = ceilPow2(count);
+                    cut.idBase = vgWorkU + 2;
+                    cut.cmdBase = cut.idBase + cut.pow2;
+                    cut.cmdCap = count;
+                    vgWorkU = cut.cmdBase + count * 5;
+                } else {
+                    VGeomStats stats;
+                    selectVGeom(prim->vgeom, m->nodes[d.node].world, vgView, s.vgeomPixels, cut.clusters, &stats);
+                    vgeomStats_.clusters += stats.clusters;
+                    vgeomStats_.leaves += stats.leaves;
+                    vgeomStats_.triangles += stats.triangles;
+                    vgeomStats_.culled += stats.culled;
+                    std::sort(cut.clusters.begin(), cut.clusters.end(), [&](uint32_t a, uint32_t b) {
+                        return prim->vgeom.clusters[a].firstIndex < prim->vgeom.clusters[b].firstIndex;
+                    });
+                    for (uint32_t id : cut.clusters) {
+                        const VGeomCluster& cl = prim->vgeom.clusters[id];
+                        if (!cut.runs.empty() && cut.runs.back().first + cut.runs.back().second == cl.firstIndex)
+                            cut.runs.back().second += cl.indexCount;
+                        else
+                            cut.runs.emplace_back(cl.firstIndex, cl.indexCount);
+                    }
                 }
                 r.vgeomCut = &cut;
             }
@@ -817,6 +892,48 @@ void Renderer::render(const OrbitCamera& cam, const std::vector<Model*>& models,
         }
     }
 
+    // The compute cut (docs/VGEOM.md §7): upload the frame's work buffer — zeroed headers and command tails, since
+    // the kernel fills what it uses and the draws read every other slot as a zero command that draws nothing —
+    // upload the selection view, then dispatch one thread per vgeom item. Device::dispatch brackets every call
+    // with barriers, so the next item's atomics and the indirect draws below both see each region's writes. The
+    // work buffer only ever grows, and a growth waits for idle first: the sets bind it by pointer.
+    if (vgGpu_ && !vgeomCuts.empty()) {
+        const size_t workBytes = size_t(vgWorkU) * 4;
+        if (!vgWork_ || vgWork_->size() < workBytes) {
+            dev_.waitIdle();
+            vgWork_ = dev_.createBuffer(rhi::BufferUsage::Storage, workBytes);
+            vgSets_.clear();
+        }
+        if (!vgView_) vgView_ = dev_.createBuffer(rhi::BufferUsage::Storage, sizeof(VgGpuView));
+        std::vector<uint8_t> zeros(workBytes, 0);
+        vgWork_->upload(zeros.data(), workBytes);
+        VgGpuView view{};
+        fillVgView(vgView, s.vgeomPixels, &view);
+        vgView_->upload(&view, sizeof(view));
+        dev_.bindPipeline(pVGeomCut_.get());
+        for (VGeomCut& cut : vgeomCuts) {
+            if (!cut.gpu) continue;
+            auto it = vgSets_.find(cut.prim);
+            if (it == vgSets_.end()) {
+                auto set = dev_.createDescriptorSet(rhi::SetType::Compute);
+                set->setBuffer(0, cut.prim->vgeomClusters.get());
+                set->setBuffer(1, cut.prim->vgeomChildren.get());
+                set->setBuffer(2, vgWork_.get());
+                set->setBuffer(3, vgView_.get());
+                it = vgSets_.emplace(cut.prim, std::move(set)).first;
+            }
+            dev_.bindDescriptorSet(0, it->second.get());
+            VgPush push;
+            push.model = cut.model;
+            push.idBase = cut.idBase;
+            push.cmdBase = cut.cmdBase;
+            push.pow2 = cut.pow2;
+            push.root = cut.prim->vgeom.root;
+            dev_.pushConstants(&push, sizeof(push));
+            dev_.dispatch(1, 1, 1);
+        }
+    }
+
     auto drawWith = [&](const Rec& r, rhi::Pipeline* pipe, rhi::DescriptorSet* frameSet,
                         rhi::DescriptorSet* materialSet, glm::vec4 p0) {
         const bool skinned = r.skin >= 0;
@@ -841,10 +958,18 @@ void Renderer::render(const OrbitCamera& cam, const std::vector<Model*>& models,
         dev_.bindIndexBuffer(vgeom ? r.prim->vgeomIndices.get() : ib);
         dev_.pushConstants(&pc, sizeof(pc));
         if (vgeom) {
-            for (const auto& run : r.vgeomCut->runs) {
-                dev_.drawIndexed(run.second, run.first);
+            if (r.vgeomCut->gpu) {
+                // One indirect draw over the region the kernel wrote: each entry is a merged run of clusters,
+                // every unwritten slot a zero command. Triangle totals would need a readback we will not pay
+                // for mid-frame, so this path counts the call and leaves triangles_ to the CPU path's numbers.
+                dev_.drawIndexedIndirect(vgWork_.get(), size_t(r.vgeomCut->cmdBase) * 4, r.vgeomCut->cmdCap);
                 ++drawCalls_;
-                triangles_ += run.second / 3;
+            } else {
+                for (const auto& run : r.vgeomCut->runs) {
+                    dev_.drawIndexed(run.second, run.first);
+                    ++drawCalls_;
+                    triangles_ += run.second / 3;
+                }
             }
         } else {
             dev_.drawIndexed(ic);

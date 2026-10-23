@@ -28,18 +28,21 @@ hub self-test. [TERRAIN.md](TERRAIN.md) documents the ground, the preview tool a
 
 `src/rhi/rhi.h` is deliberately small. For this system the relevant facts are:
 
-* `BufferUsage` is `{Vertex, Index, Uniform}`. There is **no storage buffer** and no append/counter buffer.
-* `Device` has `draw`, `drawIndexed`, `drawInstanced`, `drawIndexedInstanced` and `drawFullscreen`. There is **no
-  indirect draw** and **no dispatch**; there are no compute pipelines.
-* `GLBuffer` allocates `GL_DYNAMIC_STORAGE_BIT` only, and `GLDescriptorSet` binds uniform buffers and textures only.
-  `VKBuffer` maps the same three usages onto Vulkan usage bits, and the descriptor pool declares only
-  `UNIFORM_BUFFER` and `COMBINED_IMAGE_SAMPLER`.
-* The only per-draw data channels are a 128-byte push block (`model` + `p0`–`p3`) and a `ShaderMaterial` descriptor
-  set (textures, plus one uniform buffer at binding 15).
+* `BufferUsage` is `{Vertex, Index, Uniform, Storage, Indirect}`. Storage buffers exist, and `Indirect` adds the
+  draw-indirect flag (`STORAGE | INDIRECT` on Vulkan).
+* `Device` has `draw`, `drawIndexed`, `drawInstanced`, `drawIndexedInstanced`, `drawFullscreen`, `dispatch` and
+  `drawIndexedIndirect`; `PipelineDesc::computeShader` builds a compute pipeline on both backends, and the
+  `SetType::Compute` descriptor set is four storage bindings.
+* Timestamp queries for the GPU profiler are also in (`docs/PROFILER.md`).
+* The per-draw data channels are the same as before: a 128-byte push block (`model` + `p0`–`p3`) and a
+  `ShaderMaterial` descriptor set (textures, plus one uniform buffer at binding 15).
 
-So there is no place for `AppendStructuredBuffer`, `ComputeBuffer.CopyCount`, a Hi-Z read or an indirect args buffer.
-Adding them would mean a new buffer type, a compute pipeline path and an indirect draw on both the GL and the Vulkan
-backend — a separate, much larger change. This item adapts instead, and says so.
+What is still absent is a counter **readback** — there is no `CopyCount` and no way to ask the GPU how many blades it
+wrote without stalling. The engine's answer to that in the one system that has moved (virtual geometry,
+`docs/VGEOM.md` §7) is the zero-command contract: pre-size the indirect region, let unwritten slots stay zero, draw
+the whole capacity. `compute_test` proves the dispatch→storage→indirect→pixels round trip on both backends. This
+item still adapts on the CPU — tested, small, no readback needed — and the paragraph below says what moving it would
+now take.
 
 ## What runs where now
 
@@ -113,7 +116,8 @@ cast into the atlas yet; that is the one shadow-side gap left, and it is a secon
 
 ## What to do next, if this becomes a priority
 
-The obvious ceiling is the RHI. A `BufferUsage::Storage` and `Device::dispatch`/`pipelineCompute` on both backends,
-plus `drawIndexedIndirect` and a counter readback, would let this become the reference's real pipeline: the scatter and
-the layer tests move to a compute shader that only runs when the tile changes, Hi-Z occlusion comes back, and the
-instance cap disappears. That is a renderer project on its own, not a grass one.
+The RHI was the obvious ceiling once; batch 4 removed it (storage, compute, indirect — above). What remains is the
+grass project itself: the scatter and the layer tests move to a compute shader that only runs when the tile changes,
+Hi-Z occlusion uses the depth buffer the frame already has, and the instance cap disappears — pre-sized indirect
+regions make the missing counter readback a non-issue, as `docs/VGEOM.md` §7 shows. That is a renderer project, not
+an RHI one, and this document's measurements still describe what ships today.

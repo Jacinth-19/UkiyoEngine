@@ -3,10 +3,10 @@
 // The reference is a GPU-driven system: a compute shader scatters jittered candidates per terrain cell, samples a
 // detail map and the layer splat masks, emits one 48-byte MeshData per blade, a second compute pass frustum- and
 // Hi-Z-culls them into an append buffer, and a third pass draws the survivors with DrawMeshInstancedIndirect. Ukiyo's
-// RHI has no compute stage, no storage buffers, and no indirect draw (see docs/GRASS.md for the full list), so the
-// scatter and the layer masking run here on the CPU once per tile, and the distance bands, the wind and the fade run
-// in the vertex shader. The result is the same look and the same knobs, with one draw call per 256 blades instead of
-// a GPU-built indirect list.
+// RHI now has all of that (storage buffers, compute dispatch, drawIndexedIndirect — batch 4, docs/GRASS.md §27),
+// and this item still adapts on the CPU on purpose: the scatter and the layer masking run here once per tile, the
+// distance bands, the wind and the fade run in the vertex shader, and the result is the same look and the same
+// knobs with one draw call per 256 blades. Moving it onto the queue is now a grass project, not an RHI one.
 //
 // Everything in this file is pure CPU code with no device, so the tests can run it without a GPU.
 #pragma once

@@ -1678,6 +1678,8 @@ int buildModelVGeom(rhi::Device& device, Model& model, const VGeomSettings& sett
         Primitive& p = model.primitives[i];
         p.vgeom = VGeomMesh{};
         p.vgeomIndices.reset();
+        p.vgeomClusters.reset();
+        p.vgeomChildren.reset();
         if (p.cpuVertices.size() < 3 || p.cpuIndices.size() < kMinSourceTriangles * 3 || !p.morphPos.empty()) continue;
         candidates.push_back(i);
         hashes.push_back(vgeomHash(&p.cpuVertices[0].pos.x, p.cpuVertices.size(), sizeof(rhi::Vertex),
@@ -1702,6 +1704,33 @@ int buildModelVGeom(rhi::Device& device, Model& model, const VGeomSettings& sett
         finalMeshes[k] = mesh;   // kept for the cache write below; the primitive owns the moved copy
         p.vgeomIndices = device.createBuffer(rhi::BufferUsage::Index, mesh.indices.size() * sizeof(uint32_t));
         p.vgeomIndices->upload(mesh.indices.data(), mesh.indices.size() * sizeof(uint32_t));
+        // The compute cut reads the tree from storage buffers (docs/VGEOM.md §7). The children stream is always
+        // created — a single-cluster mesh has none, and a descriptor needs a real buffer either way.
+        {
+            std::vector<VGeomGpuCluster> gpu(mesh.clusters.size());
+            for (size_t i = 0; i < mesh.clusters.size(); ++i) {
+                const VGeomCluster& c = mesh.clusters[i];
+                VGeomGpuCluster& g = gpu[i];
+                g.centreRadius = glm::vec4(c.centre, c.radius);
+                g.error = c.error;
+                g.childFirst = c.childFirst;
+                g.childCount = c.childCount;
+                g.firstIndex = c.firstIndex;
+                g.indexCount = c.indexCount;
+                g.level = c.level;
+                g.parent = c.parent;
+            }
+            p.vgeomClusters = device.createBuffer(rhi::BufferUsage::Storage, gpu.size() * sizeof(VGeomGpuCluster));
+            p.vgeomClusters->upload(gpu.data(), gpu.size() * sizeof(VGeomGpuCluster));
+            const size_t childBytes = std::max<size_t>(1, mesh.children.size()) * sizeof(uint32_t);
+            p.vgeomChildren = device.createBuffer(rhi::BufferUsage::Storage, childBytes);
+            if (!mesh.children.empty())
+                p.vgeomChildren->upload(mesh.children.data(), mesh.children.size() * sizeof(uint32_t));
+            else {
+                const uint32_t zero = 0;
+                p.vgeomChildren->upload(&zero, sizeof(zero));
+            }
+        }
         p.vgeom = std::move(mesh);
     }
     int built = 0;

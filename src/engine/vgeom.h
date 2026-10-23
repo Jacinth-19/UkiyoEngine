@@ -4,9 +4,11 @@
 // on each. The runtime half walks that tree per view and returns a cut: the coarse clusters whose projected error is
 // under a pixel budget, and/or their children where the surface needs detail.
 //
-// This header is plain CPU data: no device, no RHI, so the builder and the selector are testable without a GPU. The
-// renderer turns the cut into one index buffer and draws it (see Renderer::drawWith); no compute or indirect draw is
-// involved, which is the honest difference from real Nanite and is written down in docs/VGEOM.md.
+// This header is plain CPU data: no device, no RHI, so the builder and the selector are testable without a GPU.
+// The renderer draws a cut from one index buffer (see Renderer::drawWith). Selection runs on the compute queue when
+// vgeom_cut.comp is built — the kernel repeats this walk's maths exactly, with selectVGeom as its pinned reference
+// and its fallback (tests/vgcut_test.cpp, docs/VGEOM.md §7). What still separates this from real Nanite is written
+// down in docs/VGEOM.md: no Hi-Z, no streaming, no cluster compression.
 #pragma once
 
 #include <cstddef>
@@ -39,6 +41,20 @@ struct VGeomSettings {
 
 // One cluster: a contiguous run in VGeomMesh::indices (which indexes the original vertex buffer), plus the bounds and
 // error that drive selection.
+// The cluster as the compute cut reads it (shaders/vgeom_cut.comp, docs/VGEOM.md §7): three vec4s in std430
+// order — centre+radius, then error/child/index/level/parent words. 48 bytes, no padding.
+struct VGeomGpuCluster {
+    glm::vec4 centreRadius;
+    float error;
+    uint32_t childFirst, childCount, firstIndex;
+    uint32_t indexCount, level, parent;
+    // std430 rounds a struct with a vec4 member to a multiple of 16 — 44 words-in becomes 48 with this pad, which
+    // is exactly the array stride the shader sees. glm::vec4 alone would not supply the padding here (x86 GLM
+    // aligns to 4), hence the explicit word.
+    uint32_t pad = 0;
+};
+static_assert(sizeof(VGeomGpuCluster) == 48, "VGeomGpuCluster must match the cut shader's std430 struct");
+
 struct VGeomCluster {
     uint32_t firstIndex = 0;
     uint32_t indexCount = 0;

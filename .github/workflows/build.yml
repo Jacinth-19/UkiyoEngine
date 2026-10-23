@@ -81,6 +81,12 @@ jobs:
         run: |
           set -o pipefail
           ./build/vgeom_test 2>&1 | tee /tmp/ukiyo-test-vgeom_test.log
+      # The compute cut's semantics, mirrored on the CPU: no GPU needed, so every OS proves the kernel agrees
+      # with selectVGeom before the GPU jobs exercise the shader itself.
+      - name: Run Virtual Geometry Cut Test
+        run: |
+          set -o pipefail
+          ./build/vgcut_test 2>&1 | tee /tmp/ukiyo-test-vgcut_test.log
       - name: Run Motion Matching Test
         run: |
           set -o pipefail
@@ -802,7 +808,7 @@ jobs:
             Write-Host "::warning::no crash dumps this run: $_"
           }
           $failed = @()
-          foreach ($t in @("systems_test", "script_test", "network_test", "project_test", "vgeom_test", "motion_test", "gi_test", "input_test", "trail_test", "search_test", "browser_zoom_test", "ao_test",
+          foreach ($t in @("systems_test", "script_test", "network_test", "project_test", "vgeom_test", "vgcut_test", "motion_test", "gi_test", "input_test", "trail_test", "search_test", "browser_zoom_test", "ao_test",
                     "contact_shadow_test", "pcss_test", "msdf_test", "alpha_mips_test", "transform_test", "lights_test", "save_test",
                     "property_search_test", "async_load_test", "game_data_test", "game_test", "afterglow_test", "pack_test",
                     "manifest_test", "scene_runtime_test", "hud_test", "character_test", "player_test",

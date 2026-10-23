@@ -561,6 +561,15 @@ target_include_directories(vgeom_test PRIVATE ${CMAKE_SOURCE_DIR}/src ${CMAKE_SO
 target_link_libraries(vgeom_test PRIVATE glm::glm)
 target_compile_options(vgeom_test PRIVATE ${UKIYO_WARNINGS})
 
+# The compute cut's algorithm, mirrored on the CPU: the kernel runs only on a device, so its semantics are pinned
+# against selectVGeom + the renderer's run merge here (docs/VGEOM.md §7).
+add_executable(vgcut_test tests/vgcut_test.cpp src/engine/vgeom.cpp third_party/meshoptimizer/simplifier.cpp
+               third_party/meshoptimizer/allocator.cpp)
+target_include_directories(vgcut_test PRIVATE ${CMAKE_SOURCE_DIR}/src ${CMAKE_SOURCE_DIR}/third_party
+                           ${CMAKE_SOURCE_DIR}/third_party/meshoptimizer)
+target_link_libraries(vgcut_test PRIVATE glm::glm)
+target_compile_options(vgcut_test PRIVATE ${UKIYO_WARNINGS})
+
 add_executable(particles_gpu_test tests/particles_gpu_test.cpp)
 # The wireframe view (Flax 1.13): a quad drawn filled and drawn as its edges, on both backends, counted from the capture.
 add_executable(wireframe_test tests/wireframe_test.cpp)

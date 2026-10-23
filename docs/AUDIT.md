@@ -33,15 +33,15 @@ Ratings are judgement, not measurement: 5 = production-ready, 3 = works with kno
 
 | Area | Score | What exists | The hole that matters |
 | --- | --- | --- | --- |
-| NPR / toon rendering | **4** | mtoon/VRM, outlines, 10 tonemaps, stylize, LUT, SSR/SSAO/GI/contact shadows, bloom, TAA | Single light; no IBL or lightmaps (reflections are a sky gradient); no compute; no GPU timings |
-| RHI | **3** | Vulkan + OpenGL behind one interface, MRT, mip chains, two backends in CI | No compute, indirect, storage buffers, queries, cube/array textures, BC/ASTC |
+| NPR / toon rendering | **4** | mtoon/VRM, outlines, 10 tonemaps, stylize, LUT, SSR/SSAO/GI/contact shadows, bloom, TAA | No IBL or lightmaps (reflections are a sky gradient); scene lights, compute and GPU timestamps since then (`docs/LIGHTS.md`, `docs/PROFILER.md`) |
+| RHI | **3** | Vulkan + OpenGL behind one interface, MRT, mip chains, two backends in CI | Compute, indirect, storage buffers and timestamp queries since then (`compute_test`, `docs/PROFILER.md`); no cube/array textures, BC/ASTC |
 | Terrain / grass / foliage | **4** | Heightmap tiles, 8 layers, brushes, erosion, foliage density, grass bands, per-chunk trimesh collision | No streaming or world partition; GI reads only the nearest tile |
-| Virtual geometry | **3** | 128-triangle cluster tree, screen-space cut, disk cache | CPU cut + per-cluster draws: no compute/indirect path (the doc says so) |
+| Virtual geometry | **3** | 128-triangle cluster tree, screen-space cut, disk cache | CPU cut at audit time; since then the cut runs on the compute queue with `drawIndexedIndirect` and the CPU walk is the fallback (batch 4, `docs/VGEOM.md` §7) |
 | Animation | **4** | State machine, blend trees, timeline/curve editor, motion matching, 2-bone + FABRIK IK, face SDF | No root motion (discarded by design), no bone masks or additive layers, no runtime retarget UI |
 | Physics | **2** | Jolt; static box/mesh, dynamic sphere/box, one raycast, contact events, pair filter, merged trimesh world | No capsule/character controller, no joints, no triggers, no layer masks, no shape casts, no heightfield |
 | Scene model | **2** | Flat instance list, prefabs + variants + overrides, empty objects | (At the time of the audit) position + yaw only, no scale/pitch/roll, no parenting, one camera, one sun — since then the transform carries a full rotation and a per-axis scale, and the hierarchy is real; see `docs/EDITOR.md` |
-| Audio | **2** | miniaudio; load/play/stop/volume/loop/spatial/listener, stereo pump | No buses, filters, reverb, snapshots, voice limit, streaming music |
-| Networking | **2** | UDP, reliability layer, byte IO, client/server, stats | Everything above transport: no snapshots, RPC, prediction, lobby — though README claims snapshots |
+| Audio | **2** | miniaudio; load/play/stop/volume/loop/spatial/listener, stereo pump | Three buses, reverb, voice limit and streaming since then (`docs/AUDIO.md`); no compression, ducking, Doppler, device-change handling |
+| Networking | **2** | UDP, reliability layer, byte IO, client/server, stats | Everything above transport: no snapshots, RPC, prediction, lobby (README now says so) |
 | Scripting | **2** | Lua 5.4 sandbox, 23 `ukiyo.*` functions, entity handles, scene switching | One script per scene; no hot reload, debugger, script editor, modules, spawn/despawn or save API |
 | Navigation | **3** | Recast/Detour, 8-stage bake, pathfinding, dtCrowd agents | Terrain is not baked into the navmesh; settings are hard-coded; no off-mesh links or area costs |
 | Asset pipeline | **1** | Path strings, JSON references, rename rewrite, uses/used-by scan | No GUIDs, `.meta`, import settings, texture compression, asset database, reimport |
@@ -179,6 +179,12 @@ from the scene. A neon street or a row of lanterns cannot be lit.
 On the credit side, the README is honest about this exact limit: *"the largest is GPU-driven virtual geometry, which needs
 compute or multi-draw in the RHI"* (README line 346). This is the one gap the docs do not oversell.
 
+**Since the audit:** batches 3–4 added timestamp queries, compute pipelines, storage buffers, `dispatch` and
+`drawIndexedIndirect` on both backends (`compute_test` in CI), and virtual geometry's cut now runs on that queue
+(`vgeom_cut.comp`, one dispatch per draw, indirect draws per pass — `docs/VGEOM.md` §7). The `vgeom.h`, `grass.h` and
+README quotations above describe the audited commit; those three were rewritten to tell the new truth. What remains
+here is cube/array textures and BC/ASTC compression.
+
 Samplers are `Filter{Nearest, Linear}` × `Wrap{Repeat, Clamp}` (`rhi.h:43-44`), so no anisotropic filtering control
 (there is no anisotropy setting anywhere; the only "anisotropic" in the tree is the hair highlight), no mirrored wrap, no
 border colour and no comparison samplers. Also absent: MSAA — the only multisample state in `src/` is `VK_SAMPLE_COUNT_1_BIT` (`vk_device.cpp:151, 535-536`), so
@@ -217,6 +223,10 @@ serialisable as arbitrary shapes — only sphere/box, radius/half-extents/mass.
 `src/systems/audio.h` is 52 lines: load, play, stop, volume, loop, spatial flag, listener, master volume, `pump()`.
 Missing: mix buses and sends, filters, reverb, compression, ducking, snapshots, voice limiting/priorities, streaming for
 long music, per-sound attenuation curves, Doppler, device change handling. Everything plays at once with one master gain.
+
+**Since the audit** the mixer grew three buses with a reverb insert, a stealing voice limit, streaming music with
+fades, and the same path on Android (`docs/AUDIO.md`, batch 2). Still missing: compression, ducking, Doppler,
+per-sound attenuation curves, device-change handling.
 
 ### 4.6 Networking
 

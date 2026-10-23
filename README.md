@@ -139,7 +139,8 @@ missing there.
 * **Grass** — jittered scatter per ground cell with detail-map thinning, three distance bands, per-blade bezier wind and
   widening, and a chunked indirect-friendly draw. See [docs/GRASS.md](docs/GRASS.md).
 * **Virtual geometry** — static meshes are clustered into a 128-triangle hierarchy with per-cluster error and drawn
-  through a screen-space cut, cached beside the model. See [docs/VGEOM.md](docs/VGEOM.md).
+  through a screen-space cut — selected by a compute shader when it is built, with the CPU walk kept as the fallback
+  — cached beside the model. See [docs/VGEOM.md](docs/VGEOM.md).
 * **Shadows** — three cascades into a 3 × 2048² atlas, slope-scaled bias, PCF.
 * **Traced bounce light** — one diffuse bounce traced against the terrain heightfield at half resolution, accumulated
   over sixteen frames, denoised by two à-trous passes and composited at full resolution. A fragment shader with no
@@ -429,7 +430,9 @@ own glslang package is generated with a broken SPIRV-Tools path; everything else
 ## Status
 
 The engine builds and tests on Linux and Windows CI, and the editor and hub run on Windows, Linux and macOS. Known gaps are listed
-at the end of each doc — the largest is GPU-driven virtual geometry, which needs compute or multi-draw in the RHI. The
+at the end of each doc — the largest were GPU virtual geometry and the mixer; the cut now runs on the compute queue
+with indirect draws ([docs/VGEOM.md](docs/VGEOM.md) §7) and the mixer ships three buses, reverb and streaming
+([docs/AUDIO.md](docs/AUDIO.md)). What remains there is page streaming and Hi-Z occlusion. The
 traced bounce light does not see creases narrower than 5 cm, and that has been measured rather than estimated: closing
 it changes 0.35 % of pixels in the reference and costs 17 % more march, which is why it is a documented trade
 ([docs/PATHTRACE.md](docs/PATHTRACE.md)).

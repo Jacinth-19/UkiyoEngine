@@ -556,10 +556,14 @@ public:
         auto p = std::make_unique<VKPipeline>();
         p->core = &core_;
 
-        // Pipeline layout: one set layout per entry in desc.sets, plus push constants.
+        // Pipeline layout: one set layout per entry in desc.sets, plus push constants. A compute pipeline declares
+        // its push range for the compute stage only — pushConstants() picks the same stage at record time.
         std::vector<VkDescriptorSetLayout> layouts;
         for (SetType t : desc.sets) layouts.push_back(setLayouts_[static_cast<size_t>(t)]);
-        VkPushConstantRange pcr{VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0, kPushConstantBytes};
+        const VkShaderStageFlags pushStages = desc.computeShader.empty()
+                                                  ? (VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT)
+                                                  : VK_SHADER_STAGE_COMPUTE_BIT;
+        VkPushConstantRange pcr{pushStages, 0, kPushConstantBytes};
         VkPipelineLayoutCreateInfo pl{VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO};
         pl.setLayoutCount = static_cast<uint32_t>(layouts.size());
         pl.pSetLayouts = layouts.data();
@@ -940,8 +944,11 @@ public:
     }
 
     void pushConstants(const void* data, size_t size) override {
-        vkCmdPushConstants(cb_, curLayout_, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0,
-                           static_cast<uint32_t>(size), data);
+        // The stage must be one the bound pipeline layout declared: compute layouts carry COMPUTE, graphics VF.
+        const VkShaderStageFlags stages = curBindPoint_ == VK_PIPELINE_BIND_POINT_COMPUTE
+                                              ? VK_SHADER_STAGE_COMPUTE_BIT
+                                              : (VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT);
+        vkCmdPushConstants(cb_, curLayout_, stages, 0, static_cast<uint32_t>(size), data);
     }
 
     void drawIndexed(uint32_t indexCount, uint32_t firstIndex) override {
@@ -1164,11 +1171,12 @@ private:
         // Index 7 is SetType::Hud: the glyph atlas, at binding 0. Its own set so the HUD pass binds one texture and
         // nothing else, and does not disturb the Frame set's units.
         setLayouts_[7] = make({B(0, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, F)});
-        // Index 8 is SetType::Compute: two storage buffers and a small UBO, visible to the compute stage only —
-        // the whole descriptor surface a dispatch gets (docs/VGEOM.md's GPU path uses 0 for cluster data and 1
-        // for the commands it writes).
+        // Index 8 is SetType::Compute: four storage buffers, visible to the compute stage only — the whole
+        // descriptor surface a dispatch gets (docs/VGEOM.md's GPU path): 0 = cluster data, 1 = children,
+        // 2 = the frame's indirect work buffer, 3 = the selection view. Storage, not UBO, for binding 3 so one
+        // layout serves Vulkan and GL, whose descriptor binder maps every Compute buffer to an SSBO binding.
         setLayouts_[8] = make({B(0, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, C), B(1, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, C),
-                               B(2, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, C)});
+                               B(2, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, C), B(3, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, C)});
     }
 
     void createSwapchain() {

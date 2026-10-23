@@ -28,7 +28,7 @@ tool's. A pixel-exact comparison against the source leaves 5 of 367 742 pixels u
 | Build the hierarchy | Parent groups, `children`, `neighbours`, `_parental_siblings`, per-cluster `error`, `parental_area`, `parental_triangle_density` | Groups of four in Morton order, per-parent `meshopt_simplify`, error = max(children, measured residual). Area and density metrics are not kept: the cut uses projected error directly |
 | Simplify | `StaticDecimator`/`Decimator` on an OpenMesh copy, per cluster | `meshopt_simplify` on a compacted `rhi::Vertex` array, border locked, absolute error budget. OpenMesh is not used; `meshoptimizer` is already part of the engine for item 15 |
 | Choose the cut | `LodTree::FillFaceVertRecursive`, `ShouldShow(metric)`: leaves always, else `error * childsib_triangle_density < metric² / 25` (the reference's own comment calls this "prone to error") | Screen-space error: `error · scale · pixelScale / distance`, refine while it exceeds a pixel budget. A non-positive budget forces the leaves |
-| Draw | SSBO cluster/face/vertex buffers, compute passes, a traversal that concatenates selected clusters into a fresh vertex and face list | The cut is a list of index ranges into **one** index buffer that indexes the primitive's **existing** vertex buffer. No vertex duplication. The RHI now has storage buffers, compute dispatch and `drawIndexedIndirect` (`compute_test`); the renderer's cut is still assembled on the CPU and drawn with plain `drawIndexed` |
+| Draw | SSBO cluster/face/vertex buffers, compute passes, a traversal that concatenates selected clusters into a fresh vertex and face list | The cut is a list of index ranges into **one** index buffer that indexes the primitive's **existing** vertex buffer. No vertex duplication. The RHI has storage buffers, compute dispatch and `drawIndexedIndirect` (`compute_test`), and the renderer uses them: `vgeom_cut.comp` assembles the cut on the queue — one dispatch per draw — and each pass issues one indirect draw over the region it wrote (`vgcut_test` pins the kernel to this document's CPU algorithm; the CPU walk remains the fallback) |
 
 ## 2. The tree
 
@@ -92,25 +92,42 @@ image of this page, and `tests/vgeom_test.cpp` now checks that no triangle whose
 cube is missing from a leaf cut.
 
 The traversal writes into a caller-provided vector (the renderer keeps one for the frame) and a returning overload
-exists for tools and tests. A full call over 1365 clusters takes **12 µs**.
+exists for tools and tests. A full call over 1365 clusters takes **12 µs**. This is also the algorithm the compute
+kernel runs: `shaders/vgeom_cut.comp` performs the same plane test and the same refinement on the GPU, and
+`tests/vgcut_test.cpp` requires the two to emit byte-identical indirect commands for every camera and budget it
+tries — the CPU walk is the kernel's pinned reference, not just its fallback.
 
 ## 4. In the renderer
 
 `Renderer` (`src/engine/renderer.cpp`) computes one cut per draw per frame, at gather time, and every pass that frame
-reuses it:
+reuses it. Two paths, selected once when the pipelines are built:
 
-* **Colour, depth prepass, outlines, graph materials** draw the cut. The selected clusters are sorted by `firstIndex`
-  and adjacent ranges are merged, so a near cut of contiguous leaves becomes a handful of `drawIndexed` calls instead
-  of one per cluster.
+* **GPU cut (the default).** When `vgeom_cut.comp` compiles (`vgGpu_`), gather only carves the draw a region of the
+  frame's work buffer — `[idCount, cmdCount][ids][commands]` in uints — and after the gather the renderer uploads the
+  buffer with those headers and command tails zeroed, uploads the selection view (the five normalized planes, eye,
+  pixel scale, budget, cull flag) into a storage buffer, and records **one dispatch per vgeom draw**. The kernel
+  walks, sorts (cluster id order *is* `firstIndex` order — the builder appends indices in creation order), merges
+  contiguous runs and writes indirect commands with `atomicAdd`. `Device::dispatch` brackets every call with
+  barriers, so the next item's atomics and the draws both see each region's writes; a growth of the work buffer
+  waits for idle first, because the per-primitive descriptor sets bind it by pointer.
+* **CPU fallback.** If the shader is missing or fails to build the pipeline, the flag stays false and the original
+  `selectVGeom` walk runs at gather — the behaviour before this section existed, kept for tools and harnesses.
+* **Colour, depth prepass, outlines, graph materials** draw the cut. The CPU path sorts the clusters by `firstIndex`
+  and merges adjacent ranges into `drawIndexed` calls. The GPU path issues **one `drawIndexedIndirect` per draw per
+  pass** over its command region: every entry is a merged run, every unwritten slot a zero command that draws
+  nothing, so no readback is needed to size the draw.
 * **Shadows** keep the classic path. The shadow pipeline binds the distance-LOD index buffer it bound before the
   feature existed, so a cut never changes a shadow silhouette and a coarse parent never opens a gap in one.
 * **Distance LOD** (`buildModelLods`, item 15) still picks that shadow buffer; the colour passes ignore it for a
   primitive with a tree, so the two do not fight.
 
-The renderer exposes `lastVGeomStats()` (clusters, leaves, triangles, culled).
+The renderer exposes `lastVGeomStats()` (clusters, leaves, triangles, culled). It fills only on the CPU path: the
+GPU path cannot report a cluster count without a mid-frame readback, which would cost a stall it exists to avoid.
 
 **Building and caching.** `buildModelVGeom` (`src/engine/model.cpp`) runs from the editor's model load and writes the
-tree's index stream into one GPU index buffer per primitive, alongside the existing per-LOD buffers. It skips primitives under 256 triangles, any
+tree's index stream into one GPU index buffer per primitive, alongside the existing per-LOD buffers, plus two
+storage buffers — the clusters as three vec4s (48 bytes each, matching the kernel's std430 struct) and the children
+stream — which the compute path reads and the CPU path never touches. It skips primitives under 256 triangles, any
 primitive with morph targets, and every primitive of a model with a skinned draw: the error is measured on the rest
 pose, which is wrong once a skin deforms it. Virtual geometry is a static-mesh feature here, as in the reference.
 
@@ -161,6 +178,16 @@ with stale-hash and stale-setting rejection.
 ./build/vgeom_test       # 29 checks, exit code 0
 ```
 
+`tests/vgcut_test.cpp` is the kernel's counterpart: it re-implements the compute path's phases — same planes, same
+stack walk, same bitonic sort, same run merge, same command layout — and compares the result to `selectVGeom` plus
+the renderer's merge for six cameras × six budgets × six model transforms (including non-uniform scale), cull on
+and off, and a fully culled view where both paths must produce zero commands. It runs on every OS in CI, no device
+required; the GPU jobs then exercise the shader itself through `lod_gpu_test`.
+
+```sh
+./build/vgcut_test        # 227 checks (223 kernel/cpu comparisons), exit code 0
+```
+
 `tools/vgeom_preview.cpp` renders the figure on this page without a GPU: it welds the Terrain Lab heightmap into one
 mesh, builds the real tree, selects real cuts and rasterizes them with a flat Lambert, tinting each cluster by level.
 
@@ -176,13 +203,15 @@ tile's own border).
 
 ## 7. What is different from Nanite
 
-* **Selection is CPU, once per draw.** No GPU culling, no Hi-Z: `selectVGeom` still runs on the CPU. The CPU cost is
-  small (12 µs a draw) but it scales with draws, not with pixels. The RHI that would move it — compute dispatches,
-  storage buffers, `drawIndexedIndirect` — exists now (`compute_test` proves the round trip on both backends); what
-  has not moved yet is the cut itself.
-* **The renderer still calls `drawIndexed`, not the indirect path.** A cut is a few calls after run merging — one per
-  contiguous range, not one per cluster. The RHI's `drawIndexedIndirect` and the all-zero-command safety contract it
-  depends on are in place, waiting for a compute producer.
+* **Selection runs on the compute queue, but serially.** `vgeom_cut.comp` is one thread per draw: walk, sort, merge,
+  all phases inside a single invocation. That moves the cut off the CPU for the price of a kernel that scales with the
+  tree (`pow2 · log² pow2` compares), but there is no Hi-Z, no two-pass occlusion and no per-workgroup parallelism —
+  frustum and screen-space error only, exactly what `selectVGeom` tests. The CPU walk remains the fallback when the
+  shader is absent and the reference every comparison test asserts against.
+* **The renderer draws the GPU cut with `drawIndexedIndirect`.** One indirect call per vgeom draw per pass over a
+  pre-sized command region; the kernel merges contiguous clusters into runs, and unwritten slots are zero commands
+  that draw nothing — the no-readback publish contract `compute_test` proved on both backends. The CPU path still
+  calls `drawIndexed` directly when it is the one running.
 * **No streaming.** Nanite pages cluster data in and out of a virtual texture; here the whole tree lives in RAM and in
   one index buffer. A 1 M-triangle mesh costs ~12 MB of indices.
 * **Border vertices are locked rather than stitched.** Neighbouring clusters at different levels share the same border
@@ -192,9 +221,10 @@ tile's own border).
   measured on the rest pose.
 * **No two-pass occlusion, no cluster compression, no mesh shaders.**
 
-Those are the honest gaps, and they are the order in which the system grows. The RHI has taken its step: compute
-dispatch, storage buffers and indirect draws ship and are tested (`compute_test`); GPU selection is the next thing to
-sit on top of them, then page streaming.
+Those are the honest gaps, and they are the order in which the system grows. The cut has taken its step: the RHI
+primitives (compute dispatch, storage buffers, `drawIndexedIndirect`) ship under `compute_test`, the selection runs
+on top of them under `vgcut_test` and the GPU jobs' `lod_gpu_test`, and what remains is page streaming — then Hi-Z,
+when a scene needs occlusion the frustum cannot give.
 
 ## 8. Turning it off
 
