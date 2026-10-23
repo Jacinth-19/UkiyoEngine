@@ -765,7 +765,7 @@ target_link_libraries(game_test PRIVATE ukiyo_core)
 target_compile_options(game_test PRIVATE ${UKIYO_WARNINGS})
 
 # Afterglow (docs/GAME.md): the second game's contract — manifest, scene, the ten relights the script and the
-# scene must agree on, the locales, and the audio tools/audio_gen.py wrote. Like game_data_test it needs only the
+# scene must agree on, the locales, and the audio tools/afterglow_audio.py wrote. Like game_data_test it needs only the
 # readers, so it builds in the Android job's ABI loop too.
 add_executable(afterglow_test tests/afterglow_test.cpp src/engine/build_manifest.cpp
                src/engine/scene_runtime.cpp src/engine/transform.cpp src/engine/lights.cpp

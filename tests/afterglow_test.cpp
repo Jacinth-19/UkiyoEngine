@@ -1,7 +1,7 @@
 // Afterglow's contract: the dusk village a player installs, checked without a device.
 //
 // Lantern Run's two tests hold *their* project's contract (they hardcode it on purpose — the sample must not drift).
-// This is the second game's: the manifest, the twenty-four instances and fifteen lights of Scenes/Village.ukscene,
+// This is the second game's: the manifest, the hundred and ten instances and fifteen lights of Scenes/Village.ukscene,
 // the ten relights the script and the scene must agree on, the locales a player sees, and the audio the music
 // pipeline wrote. Every claim docs/GAME.md makes about Afterglow appears below as a check, and CI runs this on
 // Linux, Windows and the two phone ABIs' compilation (game_data_test covers the phone readers; this covers the
@@ -105,7 +105,7 @@ int main(int argc, char** argv) {
           "the start scene loads", error);
     check(scene.warnings.empty(), "it loads without warnings",
           scene.warnings.empty() ? std::string() : scene.warnings.front());
-    check(scene.instances.size() == 24, "twenty-four instances", std::to_string(scene.instances.size()));
+    check(scene.instances.size() == 110, "a hundred and ten instances", std::to_string(scene.instances.size()));
     check(scene.lights.size() == 15, "fifteen lights, one under the sixteen a scene may author",
           std::to_string(scene.lights.size()));
 

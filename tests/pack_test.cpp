@@ -42,10 +42,32 @@ uint16_t u16(const std::string& b, size_t at) {
     return uint16_t(uint8_t(b[at]) | uint8_t(b[at + 1]) << 8);
 }
 
+// A real GLB container: the 12-byte header and one JSON chunk, padded to four bytes with spaces, which is exactly
+// what the packer's model scan and a glTF loader both expect to find.
+std::string makeGlb(const std::string& jsonText) {
+    std::string body = jsonText;
+    while (body.size() % 4) body.push_back(' ');
+    std::string out;
+    auto put = [&out](uint32_t v) {
+        for (int i = 0; i < 4; ++i) out.push_back(char((v >> (8 * i)) & 0xFF));
+    };
+    put(0x46546C67u);                       // 'glTF'
+    put(2u);
+    put(uint32_t(12 + 8 + body.size()));
+    put(uint32_t(body.size()));
+    put(0x4E4F534Au);                       // 'JSON'
+    out += body;
+    return out;
+}
+
 // A game project laid out the way Lantern Run is: its own directory, and references that leave it.
 fs::path makeProject(const fs::path& root) {
     writeFile(root / "shared" / "font.ttf", "a font, honestly");
-    writeFile(root / "shared" / "prop.glb", std::string(256, 'g'));
+    writeFile(root / "shared" / "prop.glb", makeGlb(
+        R"({"asset":{"version":"2.0"},
+            "buffers":[{"byteLength":4,"uri":"data:application/octet-stream;base64,AAAAAA=="}],
+            "images":[{"uri":"Textures/palette.png"}]})"));
+    writeFile(root / "shared" / "Textures" / "palette.png", "a palette, honestly");
     writeFile(root / "build" / "ukiyo_player", std::string(1024, 'p'));
     writeFile(root / "build" / "shaders" / "spv" / "hud.frag.spv", std::string(64, 's'));
     writeFile(root / "build" / "shaders" / "gl" / "hud.frag", "// a shader\n");
@@ -134,6 +156,27 @@ int main() {
           "everything in the project directory ships, referenced or not");
     check(has("shared/font.ttf"), "the font outside the project ships at the path the project names it by");
     check(has("shared/prop.glb"), "so does a model a scene points at");
+    check(has("shared/Textures/palette.png"),
+          "a texture the model's glTF names by uri ships beside it");
+    {
+        // The packer reads the model's own JSON: an unparseable model fails the build with its path, loud and
+        // early, instead of shipping something the loader chokes on later.
+        writeFile(root / "shared" / "broken.glb", std::string(64, 'x'));
+        writeFile(root / "games" / "tiny" / "Scenes" / "Main.ukscene",
+                  R"({"format":"ukiyo-scene","version":2,"models":[
+                        {"name":"Prop","path":"../../shared/prop.glb"},
+                        {"name":"Broken","path":"../../shared/broken.glb"},
+                        {"name":"Runner","empty":true,"components":{"script":{"path":"Scripts/run.lua"}}}]})");
+        std::vector<std::string> brokenFiles;
+        std::string brokenError;
+        const bool failed = !ukiyo::pack::collect(root.string(), project.string(), &brokenFiles, &brokenError);
+        const bool names = brokenError.find("broken.glb") != std::string::npos;
+        check(failed && names, "an unreadable model fails the collection with its path", brokenError);
+        writeFile(root / "games" / "tiny" / "Scenes" / "Main.ukscene",
+                  R"({"format":"ukiyo-scene","version":2,"models":[
+                        {"name":"Prop","path":"../../shared/prop.glb"},
+                        {"name":"Runner","empty":true,"components":{"script":{"path":"Scripts/run.lua"}}}]})");
+    }
     check(has("games/tiny/Sound/beep.wav"),
           "a soundtrack the script names by string ships with the package");
 

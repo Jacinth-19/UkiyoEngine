@@ -426,6 +426,9 @@ own glslang package is generated with a broken SPIRV-Tools path; everything else
 * Animation library: Quaternion Universal Animation Library (CC0). Sample characters: Alicia Solid and Seed-san (VRM).
   Physics: Jolt. Mesh simplification: meshoptimizer. Icons: Material Symbols (Apache 2.0). Type: Shippori Mincho and IBM
   Plex Sans JP (SIL OFL).
+* Afterglow's models: Kenney's Nature and Fantasy Town kits (CC0, fetched byte-pinned by tools/fetch_afterglow_audio's
+  sibling fetcher). Its soundtrack mixes recordings from facebookincubator/Meta-open-sound: Oculus Audio Pack 1
+  (CC BY 4.0, credited in games/afterglow/CREDITS.md, which ships with the game) and Meta Piano (CC0).
 
 ## Status
 

@@ -58,8 +58,25 @@ CI runs the check, so the committed binaries and the generator cannot drift apar
 four files, 81 KB. The materials are simple on purpose — a base colour, an emissive factor for the paper — because they
 are what the engine's loader reads from any glTF, and a first game should not depend on an exporter's extensions.
 
-The character is the one real asset: `assets/AliciaSolid_vrm-0.51.vrm`, a VRM 0.x model the engine's loader already
-handles, referenced the way the player's own fixtures reference it (`../../assets/…`).
+The character is a real asset either way: `assets/AliciaSolid_vrm-0.51.vrm`, a VRM 0.x model the engine's loader
+already handles, referenced the way the player's own fixtures reference it (`../../assets/…`).
+
+## Afterglow's assets are real
+
+Lantern Run's four props stay generated — CI proves they match their tool. Afterglow is a village, and a village is
+modelling work. `tools/fetch_afterglow_assets.py` copies thirty-four pieces from Kenney's Nature and Fantasy Town
+kits — CC0, source URL and every sha256 baked into the tool — into `games/afterglow/assets/`: trees, rocks, fences,
+stalls, a cart, a windmill, bamboo, campfire stones, path tiles, and the kits' shared palette texture the town
+pieces reference from inside their own glTF. `python3 tools/fetch_afterglow_assets.py --check` runs in CI, so an
+upstream re-upload cannot drift the game, and every pinned file appears in `Scenes/Village.ukscene`: paths laid
+from each torii gate to the centre circle, a fence run inset from the east wall, bamboo in both far corners, the
+windmill on the north-west skyline.
+
+The soundtrack comes from recordings, too. `tools/afterglow_audio.py` mixes field wind, wind chimes, a bell tree, a
+whoosh and sampled piano notes into exactly the three files `Scripts/game.lua` plays — 48 kHz mono PCM16 at the
+durations `afterglow_test` measures — as a fixed schedule, so the same sources give byte-identical wavs every run.
+The Oculus recordings are CC BY 4.0; Meta Piano is CC0. `games/afterglow/CREDITS.md` carries the attribution the
+package ships with, and the audio tool's `--check` pins those wavs by hash in CI.
 
 ## Checking it
 
@@ -124,7 +141,7 @@ as the truth — relight "Stone F" in the editor and it stops being a target, by
 
 ### Checking it
 
-`afterglow_test` runs in the portable job on Linux and Windows and needs no device: manifest, all twenty-four
+`afterglow_test` runs in the portable job on Linux and Windows and needs no device: manifest, all a hundred and ten
 instances and fifteen lights, every light named and uniquely, the exact set that starts dark, the script's hooks and
 its references to the audio files, both locales present with a translated Japanese line, and WAV headers at 48 kHz
 whose durations match what the music pipeline wrote. The device half sits next to Lantern Run's in the `gpu` job:

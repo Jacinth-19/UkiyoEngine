@@ -282,6 +282,10 @@ jobs:
         run: |-
           set -o pipefail
           ./build/afterglow_test games/afterglow 2>&1 | tee /tmp/ukiyo-test-afterglow_test.log
+          # The third-party models and the three wavs are byte-pinned (fetcher and audio tool), so drift fails here
+          # with a file name — hashes only, no network and no DSP install on the runner.
+          python3 tools/fetch_afterglow_assets.py --check
+          python3 tools/afterglow_audio.py --check
       # The packer (docs/PACKAGING.md): what a package contains, that it verifies, that a corrupted file is caught and
       # that a reference outside the repository is refused.
       - name: Run Packer Test

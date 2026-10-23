@@ -184,6 +184,58 @@ bool collect(const std::string& rootDir, const std::string& projectDir, std::vec
         }
     }
 
+    // A model can reference files the scene never names: glTF images[...].uri points at a texture beside the
+    // model (Kenney's fantasy-town kit shares one Textures/colormap.png across every piece), and a .gltf can put
+    // its vertex data in an external buffer the same way. Those names live inside the model file — the .glb's JSON
+    // chunk or the .gltf itself — where the scene and the script scan above cannot see them, so the package would
+    // silently ship a white model. Read each model reference, collect its external uris, and let the same existence
+    // loop check them: a missing texture fails the build with its path, which is the correct outcome, and data:
+    // uris are embedded and skipped.
+    const size_t fromModels = references.size();
+    for (size_t i = 0; i < fromModels; ++i) {
+        const fs::path model = references[i];
+        std::string ext = model.extension().string();
+        std::transform(ext.begin(), ext.end(), ext.begin(), [](unsigned char c) { return char(std::tolower(c)); });
+        if (ext != ".glb" && ext != ".gltf") continue;
+        const std::vector<uint8_t> bytes = readAll(model);
+        if (bytes.size() < 12) {
+            *error = "model is not a readable glTF file: " + slash(model);
+            return false;
+        }
+        std::string text;
+        const bool binary = bytes.size() >= 20 && std::memcmp(bytes.data(), "glTF", 4) == 0;
+        if (binary) {
+            const uint32_t jsonBytes = uint32_t(bytes[12]) | uint32_t(bytes[13]) << 8 | uint32_t(bytes[14]) << 16 |
+                                       uint32_t(bytes[15]) << 24;
+            const uint32_t jsonType = uint32_t(bytes[16]) | uint32_t(bytes[17]) << 8 | uint32_t(bytes[18]) << 16 |
+                                      uint32_t(bytes[19]) << 24;
+            if (jsonType != 0x4E4F534Au || size_t(jsonBytes) + 20 > bytes.size()) {
+                *error = "model's JSON chunk is missing or malformed: " + slash(model);
+                return false;
+            }
+            text.assign(bytes.begin() + 20, bytes.begin() + 20 + jsonBytes);
+        } else {
+            text.assign(bytes.begin(), bytes.end());
+        }
+        json root = json::parse(text, nullptr, false);
+        if (root.is_discarded() || !root.is_object()) {
+            *error = "model's JSON is not parseable: " + slash(model);
+            return false;
+        }
+        for (const char* key : {"images", "buffers"}) {
+            const auto it = root.find(key);
+            if (it == root.end() || !it->is_array()) continue;
+            for (const json& entry : *it) {
+                const json& uri = entry["uri"];
+                if (!uri.is_string()) continue;
+                const std::string u = uri.get<std::string>();
+                if (u.compare(0, 5, "data:") == 0) continue;   // embedded payload, nothing to ship
+                const fs::path ref = model.parent_path() / fs::path(u);
+                references.push_back(ref);
+            }
+        }
+    }
+
     if (references.empty()) {
         *error = "the manifest names no font and no scenes";
         return false;

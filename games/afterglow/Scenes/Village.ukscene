@@ -338,6 +338,930 @@
           "path": "Scripts/game.lua"
         }
       }
+    },
+    {
+      "name": "Path Circle",
+      "path": "assets/path_stoneCircle.glb",
+      "position": [
+        0,
+        0,
+        0
+      ]
+    },
+    {
+      "name": "Path N1",
+      "path": "assets/path_stone.glb",
+      "position": [
+        0,
+        0,
+        -8.4
+      ]
+    },
+    {
+      "name": "Path N2",
+      "path": "assets/path_stone.glb",
+      "position": [
+        0,
+        0,
+        -9.4
+      ]
+    },
+    {
+      "name": "Path N3",
+      "path": "assets/path_stone.glb",
+      "position": [
+        0,
+        0,
+        -10.4
+      ]
+    },
+    {
+      "name": "Path N4",
+      "path": "assets/path_stone.glb",
+      "position": [
+        0,
+        0,
+        -11.4
+      ]
+    },
+    {
+      "name": "Path S1",
+      "path": "assets/path_stone.glb",
+      "position": [
+        0,
+        0,
+        7.4
+      ]
+    },
+    {
+      "name": "Path S2",
+      "path": "assets/path_stone.glb",
+      "position": [
+        0,
+        0,
+        8.4
+      ]
+    },
+    {
+      "name": "Path S3",
+      "path": "assets/path_stone.glb",
+      "position": [
+        0,
+        0,
+        9.4
+      ]
+    },
+    {
+      "name": "Path S4",
+      "path": "assets/path_stone.glb",
+      "position": [
+        0,
+        0,
+        10.4
+      ]
+    },
+    {
+      "name": "Path E1",
+      "path": "assets/path_stone.glb",
+      "position": [
+        7.4,
+        0,
+        0
+      ]
+    },
+    {
+      "name": "Path E2",
+      "path": "assets/path_stone.glb",
+      "position": [
+        8.4,
+        0,
+        0
+      ]
+    },
+    {
+      "name": "Path E3",
+      "path": "assets/path_stone.glb",
+      "position": [
+        9.4,
+        0,
+        0
+      ]
+    },
+    {
+      "name": "Path E4",
+      "path": "assets/path_stone.glb",
+      "position": [
+        10.4,
+        0,
+        0
+      ]
+    },
+    {
+      "name": "Path E5",
+      "path": "assets/path_stone.glb",
+      "position": [
+        11.4,
+        0,
+        0
+      ]
+    },
+    {
+      "name": "Path W1",
+      "path": "assets/path_stone.glb",
+      "position": [
+        -7.4,
+        0,
+        0
+      ]
+    },
+    {
+      "name": "Path W2",
+      "path": "assets/path_stone.glb",
+      "position": [
+        -8.4,
+        0,
+        0
+      ]
+    },
+    {
+      "name": "Path W3",
+      "path": "assets/path_stone.glb",
+      "position": [
+        -9.4,
+        0,
+        0
+      ]
+    },
+    {
+      "name": "Path W4",
+      "path": "assets/path_stone.glb",
+      "position": [
+        -10.4,
+        0,
+        0
+      ]
+    },
+    {
+      "name": "Path W5",
+      "path": "assets/path_stone.glb",
+      "position": [
+        -11.4,
+        0,
+        0
+      ]
+    },
+    {
+      "name": "Tree Oak 1",
+      "path": "assets/tree_oak.glb",
+      "position": [
+        12,
+        0,
+        -4
+      ],
+      "scale": 1.8
+    },
+    {
+      "name": "Tree Oak 2",
+      "path": "assets/tree_oak.glb",
+      "position": [
+        -13,
+        0,
+        -4.5
+      ],
+      "scale": 1.6
+    },
+    {
+      "name": "Tree Oak 3",
+      "path": "assets/tree_oak.glb",
+      "position": [
+        -10.5,
+        0,
+        6.5
+      ],
+      "scale": 1.4
+    },
+    {
+      "name": "Tree Pine 1",
+      "path": "assets/tree_pineTallA.glb",
+      "position": [
+        15,
+        0,
+        5
+      ],
+      "scale": 2.2
+    },
+    {
+      "name": "Tree Pine 2",
+      "path": "assets/tree_pineTallA.glb",
+      "position": [
+        -15,
+        0,
+        -6.5
+      ],
+      "scale": 2.4
+    },
+    {
+      "name": "Tree Pine 3",
+      "path": "assets/tree_pineTallA.glb",
+      "position": [
+        9.5,
+        0,
+        12.8
+      ],
+      "scale": 1.8
+    },
+    {
+      "name": "Tree Fat 1",
+      "path": "assets/tree_fat.glb",
+      "position": [
+        11.5,
+        0,
+        14.5
+      ],
+      "scale": 1.7
+    },
+    {
+      "name": "Tree Fat 2",
+      "path": "assets/tree_fat.glb",
+      "position": [
+        -11,
+        0,
+        -14
+      ],
+      "scale": 1.6
+    },
+    {
+      "name": "Tree Detailed 1",
+      "path": "assets/tree_detailed.glb",
+      "position": [
+        6,
+        0,
+        -13.5
+      ],
+      "scale": 1.5
+    },
+    {
+      "name": "Tree Detailed 2",
+      "path": "assets/tree_detailed.glb",
+      "position": [
+        -6.2,
+        0,
+        13.2
+      ],
+      "scale": 1.4
+    },
+    {
+      "name": "Tree High 1",
+      "path": "assets/tree-high.glb",
+      "position": [
+        -13,
+        0,
+        10.5
+      ],
+      "scale": 1.4
+    },
+    {
+      "name": "Tree High 2",
+      "path": "assets/tree-high.glb",
+      "position": [
+        13.8,
+        0,
+        -13.6
+      ],
+      "scale": 1.3
+    },
+    {
+      "name": "Tree Town 1",
+      "path": "assets/tree.glb",
+      "position": [
+        14.2,
+        0,
+        9.8
+      ],
+      "scale": 1.2
+    },
+    {
+      "name": "Tree Town 2",
+      "path": "assets/tree.glb",
+      "position": [
+        -14.6,
+        0,
+        0.5
+      ],
+      "scale": 1.1
+    },
+    {
+      "name": "Stall Red",
+      "path": "assets/stall-red.glb",
+      "position": [
+        -4.2,
+        0,
+        5.0
+      ],
+      "scale": 1,
+      "rotation": [
+        0,
+        20,
+        0
+      ]
+    },
+    {
+      "name": "Stall Green",
+      "path": "assets/stall-green.glb",
+      "position": [
+        4.2,
+        0,
+        -4.6
+      ],
+      "scale": 1,
+      "rotation": [
+        0,
+        200,
+        0
+      ]
+    },
+    {
+      "name": "Windmill",
+      "path": "assets/windmill.glb",
+      "position": [
+        -13.5,
+        0,
+        -14.8
+      ],
+      "scale": 1.6,
+      "rotation": [
+        0,
+        35,
+        0
+      ]
+    },
+    {
+      "name": "Campfire Stones",
+      "path": "assets/campfire_stones.glb",
+      "position": [
+        -2.6,
+        0,
+        -2.6
+      ]
+    },
+    {
+      "name": "Campfire Logs",
+      "path": "assets/campfire_logs.glb",
+      "position": [
+        -2.6,
+        0,
+        -2.6
+      ]
+    },
+    {
+      "name": "Log Stack",
+      "path": "assets/log_stack.glb",
+      "position": [
+        -3.6,
+        0,
+        -3.3
+      ],
+      "scale": 1,
+      "rotation": [
+        0,
+        40,
+        0
+      ]
+    },
+    {
+      "name": "Stump Seat",
+      "path": "assets/stump_round.glb",
+      "position": [
+        -1.7,
+        0,
+        -3.5
+      ]
+    },
+    {
+      "name": "Cart",
+      "path": "assets/cart.glb",
+      "position": [
+        4.6,
+        0,
+        7.6
+      ],
+      "scale": 1,
+      "rotation": [
+        0,
+        25,
+        0
+      ]
+    },
+    {
+      "name": "Cart Wheel",
+      "path": "assets/wheel.glb",
+      "position": [
+        5.4,
+        0,
+        8.5
+      ],
+      "scale": 1,
+      "rotation": [
+        0,
+        25,
+        0
+      ]
+    },
+    {
+      "name": "Fence Corner East N",
+      "path": "assets/fence_corner.glb",
+      "position": [
+        16.5,
+        0,
+        -7.5
+      ],
+      "scale": 1,
+      "rotation": [
+        0,
+        90,
+        0
+      ]
+    },
+    {
+      "name": "Fence E1",
+      "path": "assets/fence_simple.glb",
+      "position": [
+        16.5,
+        0,
+        -6.5
+      ],
+      "scale": 1,
+      "rotation": [
+        0,
+        90,
+        0
+      ]
+    },
+    {
+      "name": "Fence E2",
+      "path": "assets/fence_simple.glb",
+      "position": [
+        16.5,
+        0,
+        -5.5
+      ],
+      "scale": 1,
+      "rotation": [
+        0,
+        90,
+        0
+      ]
+    },
+    {
+      "name": "Fence E3",
+      "path": "assets/fence_simple.glb",
+      "position": [
+        16.5,
+        0,
+        -4.5
+      ],
+      "scale": 1,
+      "rotation": [
+        0,
+        90,
+        0
+      ]
+    },
+    {
+      "name": "Fence E4",
+      "path": "assets/fence_simple.glb",
+      "position": [
+        16.5,
+        0,
+        -3.5
+      ],
+      "scale": 1,
+      "rotation": [
+        0,
+        90,
+        0
+      ]
+    },
+    {
+      "name": "Fence Gate East",
+      "path": "assets/fence_gate.glb",
+      "position": [
+        16.5,
+        0,
+        -2.5
+      ],
+      "scale": 1,
+      "rotation": [
+        0,
+        90,
+        0
+      ]
+    },
+    {
+      "name": "Fence Planks E1",
+      "path": "assets/fence_planks.glb",
+      "position": [
+        16.5,
+        0,
+        -0.5
+      ],
+      "scale": 1,
+      "rotation": [
+        0,
+        90,
+        0
+      ]
+    },
+    {
+      "name": "Fence E5",
+      "path": "assets/fence_simple.glb",
+      "position": [
+        16.5,
+        0,
+        0.5
+      ],
+      "scale": 1,
+      "rotation": [
+        0,
+        90,
+        0
+      ]
+    },
+    {
+      "name": "Fence E6",
+      "path": "assets/fence_simple.glb",
+      "position": [
+        16.5,
+        0,
+        1.5
+      ],
+      "scale": 1,
+      "rotation": [
+        0,
+        90,
+        0
+      ]
+    },
+    {
+      "name": "Fence Corner East S",
+      "path": "assets/fence_corner.glb",
+      "position": [
+        16.5,
+        0,
+        2.5
+      ],
+      "scale": 1,
+      "rotation": [
+        0,
+        90,
+        0
+      ]
+    },
+    {
+      "name": "Bamboo 1",
+      "path": "assets/crops_bambooStageB.glb",
+      "position": [
+        -15,
+        0,
+        10
+      ],
+      "scale": 1.15
+    },
+    {
+      "name": "Bamboo 2",
+      "path": "assets/crops_bambooStageB.glb",
+      "position": [
+        -14.2,
+        0,
+        10.7
+      ],
+      "scale": 1.15
+    },
+    {
+      "name": "Bamboo 3",
+      "path": "assets/crops_bambooStageB.glb",
+      "position": [
+        -15.7,
+        0,
+        11.1
+      ],
+      "scale": 1.15
+    },
+    {
+      "name": "Bamboo 4",
+      "path": "assets/crops_bambooStageB.glb",
+      "position": [
+        15.1,
+        0,
+        -10.6
+      ],
+      "scale": 1.1
+    },
+    {
+      "name": "Bamboo 5",
+      "path": "assets/crops_bambooStageB.glb",
+      "position": [
+        15.7,
+        0,
+        -11.2
+      ],
+      "scale": 1.1
+    },
+    {
+      "name": "Rock Large 1",
+      "path": "assets/rock_largeA.glb",
+      "position": [
+        -10.2,
+        0,
+        -3.6
+      ],
+      "scale": 1.3
+    },
+    {
+      "name": "Rock Large 2",
+      "path": "assets/rock_largeA.glb",
+      "position": [
+        10.8,
+        0,
+        3.9
+      ],
+      "scale": 1.2
+    },
+    {
+      "name": "Rock 3",
+      "path": "assets/rock_largeC.glb",
+      "position": [
+        7.6,
+        0,
+        13.1
+      ],
+      "scale": 1.5
+    },
+    {
+      "name": "Rock 4",
+      "path": "assets/rock_largeC.glb",
+      "position": [
+        -12.6,
+        0,
+        12.4
+      ],
+      "scale": 1.2
+    },
+    {
+      "name": "Rock 5",
+      "path": "assets/rock_smallF.glb",
+      "position": [
+        13,
+        0,
+        -7.2
+      ],
+      "scale": 1.1
+    },
+    {
+      "name": "Bush 1",
+      "path": "assets/plant_bushLarge.glb",
+      "position": [
+        -14.5,
+        0,
+        -8.6
+      ]
+    },
+    {
+      "name": "Bush 2",
+      "path": "assets/plant_bushLarge.glb",
+      "position": [
+        14,
+        0,
+        6.6
+      ]
+    },
+    {
+      "name": "Bush 3",
+      "path": "assets/plant_bushLarge.glb",
+      "position": [
+        -7.2,
+        0,
+        -15.2
+      ]
+    },
+    {
+      "name": "Bush 4",
+      "path": "assets/plant_bushLarge.glb",
+      "position": [
+        5.8,
+        0,
+        15.4
+      ]
+    },
+    {
+      "name": "Bush 5",
+      "path": "assets/plant_bushSmall.glb",
+      "position": [
+        -13.2,
+        0,
+        1.8
+      ]
+    },
+    {
+      "name": "Bush 6",
+      "path": "assets/plant_bushSmall.glb",
+      "position": [
+        13.6,
+        0,
+        -1.2
+      ]
+    },
+    {
+      "name": "Bush 7",
+      "path": "assets/plant_bushSmall.glb",
+      "position": [
+        2.4,
+        0,
+        -15.6
+      ]
+    },
+    {
+      "name": "Grass 1",
+      "path": "assets/grass_large.glb",
+      "position": [
+        -12.2,
+        0,
+        -11.9
+      ],
+      "scale": 1.1
+    },
+    {
+      "name": "Grass 2",
+      "path": "assets/grass_large.glb",
+      "position": [
+        12.7,
+        0,
+        10.5
+      ],
+      "scale": 1.1
+    },
+    {
+      "name": "Grass 3",
+      "path": "assets/grass_large.glb",
+      "position": [
+        -7.4,
+        0,
+        -13.8
+      ],
+      "scale": 1.1
+    },
+    {
+      "name": "Grass 4",
+      "path": "assets/grass_large.glb",
+      "position": [
+        8.2,
+        0,
+        15.3
+      ],
+      "scale": 1.1
+    },
+    {
+      "name": "Grass 5",
+      "path": "assets/grass_large.glb",
+      "position": [
+        15.6,
+        0,
+        -14.6
+      ],
+      "scale": 1.1
+    },
+    {
+      "name": "Grass 6",
+      "path": "assets/grass_large.glb",
+      "position": [
+        -15.9,
+        0,
+        -2.4
+      ],
+      "scale": 1.1
+    },
+    {
+      "name": "Flower Red 1",
+      "path": "assets/flower_redB.glb",
+      "position": [
+        -3.5,
+        0,
+        6.7
+      ]
+    },
+    {
+      "name": "Flower Red 2",
+      "path": "assets/flower_redB.glb",
+      "position": [
+        3.7,
+        0,
+        -6.5
+      ]
+    },
+    {
+      "name": "Flower Yellow 1",
+      "path": "assets/flower_yellowA.glb",
+      "position": [
+        -10.9,
+        0,
+        5.7
+      ]
+    },
+    {
+      "name": "Flower Yellow 2",
+      "path": "assets/flower_yellowA.glb",
+      "position": [
+        11.1,
+        0,
+        -5.7
+      ]
+    },
+    {
+      "name": "Street Lamp 1",
+      "path": "assets/lantern.glb",
+      "position": [
+        -1.9,
+        0,
+        14.6
+      ],
+      "scale": 1,
+      "rotation": [
+        0,
+        15,
+        0
+      ]
+    },
+    {
+      "name": "Street Lamp 2",
+      "path": "assets/lantern.glb",
+      "position": [
+        2.0,
+        0,
+        -15.3
+      ],
+      "scale": 1,
+      "rotation": [
+        0,
+        -10,
+        0
+      ]
+    },
+    {
+      "name": "Street Lamp 3",
+      "path": "assets/lantern.glb",
+      "position": [
+        -12.4,
+        0,
+        2.4
+      ]
+    },
+    {
+      "name": "Pot 1",
+      "path": "assets/pot_large.glb",
+      "position": [
+        -1.5,
+        0,
+        1.7
+      ]
+    },
+    {
+      "name": "Pot 2",
+      "path": "assets/pot_large.glb",
+      "position": [
+        1.6,
+        0,
+        -1.6
+      ]
+    },
+    {
+      "name": "Hedge 1",
+      "path": "assets/hedge.glb",
+      "position": [
+        -5.5,
+        0,
+        3.5
+      ],
+      "scale": 1,
+      "rotation": [
+        0,
+        90,
+        0
+      ]
+    },
+    {
+      "name": "Hedge 2",
+      "path": "assets/hedge.glb",
+      "position": [
+        -6.5,
+        0,
+        3.5
+      ],
+      "scale": 1,
+      "rotation": [
+        0,
+        90,
+        0
+      ]
     }
   ],
   "lights": [
