@@ -98,6 +98,7 @@ ukiyo_player --build Build/build.json --project .          windowed, Vulkan by d
 ukiyo_player --backend gl                                 OpenGL 4.5
 ukiyo_player --headless --shot out.png --seconds 3        render N seconds, capture, exit
 ukiyo_player --selftest --project tests/fixtures/player   boot, tick 60 frames, print, exit
+ukiyo_player --locale ja                                  the language the game's own text shows
 ```
 
 `main.cpp` is presentation only: GLFW window, RHI device, `Renderer`, model loading (reloading when the scene generation

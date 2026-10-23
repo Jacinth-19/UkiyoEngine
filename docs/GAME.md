@@ -1,8 +1,10 @@
-# The first game: Lantern Run
+# Games: Lantern Run and Afterglow
 
 The engine has had a player, a scene format and a script API for a while. What it did not have was a *game* — a project
-that is not a test fixture, that someone can open, play and ship. Lantern Run is that project, and it is deliberately
-small: one courtyard, five paper lanterns, one character and one script.
+that is not a test fixture, that someone can open, play and ship. There are two now. **Lantern Run** is deliberately
+small: one courtyard, five paper lanterns, one character and one script — the project that proved a game was possible.
+**Afterglow** is the one CI ships on every platform: a dusk village to relight, with saves, a soundtrack, localisation
+and its own contract test. This page covers both; the first half is Lantern Run's story, the second is Afterglow's.
 
 ```
 ukiyo_player --project games/lantern-run --build Build/build.json
@@ -75,16 +77,70 @@ with the same reader the player uses, and checks the things that break silently:
 The device half is in the `gpu` job: it packages the game, runs the package's own launcher on lavapipe, and requires
 `player: 1 script running`, no `player: warning:` line, and a frame that `tools/frame_check.py` accepts.
 
-## The three builds
+## Lantern Run's three builds
 
 | Platform | What CI produces | Where it runs |
 | --- | --- | --- |
 | Linux | `lantern-run-linux.zip` and a folder package | the `gpu` job runs the package's launcher on lavapipe and captures `docs/lantern-run.png` |
 | Windows | `lantern-run-windows.zip`, built and packaged by MSVC | not run in CI: the Windows runner has no Vulkan device |
-| Android | `lantern-run-android`: a signed APK, arm64 + x86_64, no Java | built and signed, not launched: CI has no phone ([docs/ANDROID.md](ANDROID.md)) |
+| Android | inside `afterglow-android`: the project is staged alongside the flagship | built and signed, not launched: CI has no phone ([docs/ANDROID.md](ANDROID.md)) |
 
 The desktop packages carry the player binary, the project tree at its repo-relative path (`games/lantern-run/…`), the
 character and font it references, and the compiled shaders. The APK carries the same trees inside its assets.
+
+## The shipped game: Afterglow
+
+A dusk village, and everything anyone else lit has gone out. Four stone lanterns still burn and ten do not — four
+stones and all six paper flames — and the walk is to remember each one back into the world: sparks, a chime, the path
+brightening, the run saving itself. When the tenth takes, the gate answers. One biome, one verb, one thumb: there is
+no interact key to bind and nothing a touch screen can miss, which is why the same game runs on a phone.
+
+```
+ukiyo_player --project games/afterglow --build Build/build.json
+```
+
+![Afterglow: the village at dusk](afterglow.png)
+
+*The frame the `gpu` job captures from the packaged game, on lavapipe: `renders/afterglow.png`, published to
+`docs/afterglow.png` by CI.*
+
+### What it exercises that Lantern Run could not
+
+The game was written *after* the systems it needs, and it is the reason each one exists:
+
+| System | In Afterglow |
+| --- | --- |
+| Named scene lights | fifteen lights, every one named; `ukiyo.setLightEnabled` relights from Lua, `setLightIntensity` makes the paper flames flicker |
+| Save slots | `saveSet`/`saveGet` into a `SaveGame` store, `saveWrite(0)` on every relight, `saveRead(0)`/`saveSlotExists(0)` on continue — `saves/slot0.uksv` |
+| Localisation | `ukiyo.tr` in the HUD line; `assets/locales/en.json` and a real `ja.json`, loaded by the player from the project's base language or `--locale` |
+| Soundtrack | `ukiyo.playMusic` streams `assets/music/dusk_loop.wav` (26.7 s loop), `playSound` the spark and the gate bell — all three written by `tools/audio_gen.py` |
+| Touch | Android's virtual stick and look already run through the action maps; the game's own verb is proximity, so it needs no extra binding |
+| HUD | `ukiyo.hud` progress line, translated, `Lanterns n/10` |
+| Profile budget | the GPU profiler's slot timings over a scene with bloom, SSAO, contact shadows, PCSS and stars |
+
+The script (`games/afterglow/Scripts/game.lua`) and the scene agree on a contract: the script addresses ten relights by
+the exact names the scene gives them, and `afterglow_test` fails if either side moves. The scene keeps `enabled` states
+as the truth — relight "Stone F" in the editor and it stops being a target, by itself.
+
+### Checking it
+
+`afterglow_test` runs in the portable job on Linux and Windows and needs no device: manifest, all twenty-four
+instances and fifteen lights, every light named and uniquely, the exact set that starts dark, the script's hooks and
+its references to the audio files, both locales present with a translated Japanese line, and WAV headers at 48 kHz
+whose durations match what the music pipeline wrote. The device half sits next to Lantern Run's in the `gpu` job:
+package it, run the package's launcher on lavapipe, require `player: 1 script running` and no warning, and a frame
+`tools/frame_check.py` accepts.
+
+### The three builds
+
+| Platform | What CI produces |
+| --- | --- |
+| Linux | `afterglow-linux.zip`, and the `gpu` job runs it and publishes `docs/afterglow.png` |
+| Windows | `afterglow-windows.zip`, packaged by MSVC |
+| Android | `afterglow-android`: a signed APK labelled *Afterglow*, arm64 + x86_64, no Java; both games are staged in its assets and it boots Afterglow |
+
+Lantern Run keeps its own packages and its own tests — it is the sample, and a sample that changes when the flagship
+does is not a sample.
 
 ## Making it yours
 

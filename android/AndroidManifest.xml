@@ -1,6 +1,6 @@
 <?xml version="1.0" encoding="utf-8"?>
 <!--
-  Lantern Run, packaged the way a game is: the native activity starts libukiyo_player.so, and there is no Java code at
+  Afterglow (and Lantern Run), packaged the way a game is: the native activity starts libukiyo_player.so, and there is no Java code at
   all (hasCode=false) — the whole game is C++ and the NDK's native-activity glue.
 
   versionCode below is the fallback: CI overrides it with the run number, so every build the pipeline produces has a
@@ -19,7 +19,7 @@
     <uses-feature android:name="android.hardware.vulkan.version" android:version="0x403000" android:required="true" />
 
     <application
-        android:label="Lantern Run"
+        android:label="Afterglow"
         android:icon="@mipmap/ic_launcher"
         android:hasCode="false"
         android:allowBackup="false"

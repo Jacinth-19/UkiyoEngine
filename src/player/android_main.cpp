@@ -240,7 +240,7 @@ void android_main(android_app* state) {
     // device refuses, AudioEngine reports it and the game runs silent - one path, three platforms, no #ifdef.
     ukiyo::PlayerApp app(true);
     std::string error;
-    const std::string project = "games/lantern-run";
+    const std::string project = "games/afterglow";
     if (!app.start(project + "/Build/build.json", project, &error)) {
         LOGE("the game did not start: %s", error.c_str());
         return;

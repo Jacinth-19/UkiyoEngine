@@ -17,7 +17,8 @@ There is no Java in the APK. `AndroidManifest.xml` sets `android:hasCode="false"
 ```
 lib/arm64-v8a/libukiyo_player.so     the player, engine, renderer, physics, Lua, audio
 lib/x86_64/libukiyo_player.so        the same, for an emulator
-assets/games/lantern-run/…           the project: scene, script, generated GLB art
+assets/games/afterglow/…            the game that boots: scene, script, music, locales
+assets/games/lantern-run/…           the first game, staged beside it
 assets/assets/AliciaSolid_vrm-0.51.vrm   the character the scene references (../../../assets/…)
 assets/editor/res/fonts/…            the font the manifest names
 assets/shaders/spv/…                 the compiled Vulkan shaders
@@ -52,7 +53,8 @@ apksigner verify LanternRun.apk
 adb install -r LanternRun.apk
 ```
 
-The APK from a CI run is attached to it as `lantern-run-android`.
+The APK from a CI run is attached to it as `afterglow-android` (label *Afterglow*; the player boots
+`games/afterglow`, and Lantern Run is staged in the assets too).
 
 ## Signing, versionCode, and installing over the last build
 

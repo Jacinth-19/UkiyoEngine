@@ -67,6 +67,9 @@ public:
     const std::vector<PlayerInstance>& instances() const { return instances_; }
     World* world() { return world_.get(); }
     const World* world() const { return world_.get(); }
+    // The language to show the game's own text in (--locale). Empty means the project's base language, which is
+    // what the editor plays with too.
+    void setLocaleOverride(std::string code) { localeOverride_ = std::move(code); }
     // The lights to render with: the world's copy while it runs (ukiyo.setLightEnabled changes it), the scene's own
     // before a world exists.
     const std::vector<SceneLight>& renderLights() const { return world_ ? world_->sceneLights() : scene_.lights; }
@@ -102,6 +105,7 @@ private:
 
     BuildManifest manifest_;
     std::string projectRoot_;
+    std::string localeOverride_;
     RuntimeScene scene_;
     std::vector<PlayerInstance> instances_;
     std::unique_ptr<World> world_;

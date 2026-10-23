@@ -1,5 +1,7 @@
 #include "player/player_app.h"
 
+#include "engine/localisation.h"
+
 #include <algorithm>
 #include <cmath>
 #include <cstdio>
@@ -132,6 +134,12 @@ void PlayerApp::buildWorld() {
     world_->setProjectRoot(projectRoot_);
     world_->setSaveDir(projectRoot_ + "/saves");
     world_->setSceneLights(scene_.lights);
+    // The language the game shows. --locale wins, then the project's own base language (project.json's "locale",
+    // then the first catalogue). A catalogue that is not there is not an error: ukiyo.tr falls back to the key's
+    // own text and the game still runs — which is also what an English-only project needs to do here, nothing.
+    const std::string code = localeOverride_.empty() ? ukiyo::baseLocale(projectRoot_) : localeOverride_;
+    LocaleCatalog catalog;
+    if (ukiyo::loadLocale(projectRoot_, code, &catalog, nullptr)) world_->setLocale(std::move(catalog));
     lastEntityPos_.assign(instances_.size(), glm::vec3(0.0f));
     speed_.assign(instances_.size(), 0.0f);
 

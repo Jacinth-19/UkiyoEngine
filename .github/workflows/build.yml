@@ -271,6 +271,11 @@ jobs:
           ./build/game_test games/lantern-run 2>&1 | tee /tmp/ukiyo-test-game_test.log
           # The committed GLBs have to be exactly what the generator writes, or the game and its source have drifted.
           ./build/lantern_assets --check
+      # Afterglow (docs/GAME.md): the shipped game's contract — manifest, scene, the ten relights, locales and audio.
+      - name: Check Afterglow
+        run: |-
+          set -o pipefail
+          ./build/afterglow_test games/afterglow 2>&1 | tee /tmp/ukiyo-test-afterglow_test.log
       # The packer (docs/PACKAGING.md): what a package contains, that it verifies, that a corrupted file is caught and
       # that a reference outside the repository is refused.
       - name: Run Packer Test
@@ -288,6 +293,16 @@ jobs:
         with:
           name: lantern-run-linux
           path: dist/lantern-run-linux.zip
+      # The shipped game, packaged the same way: its own folder, its own launcher, its own zip.
+      - name: Package Afterglow for Linux
+        run: |-
+          ./build/ukiyo_pack --project games/afterglow --player build/ukiyo_player --platform linux \
+            --shaders build/shaders --out dist/afterglow-linux --zip dist/afterglow-linux.zip
+      - name: Upload Afterglow for Linux
+        uses: actions/upload-artifact@v4
+        with:
+          name: afterglow-linux
+          path: dist/afterglow-linux.zip
       # The input runtime, its asset format and its actions, driven from synthetic devices: no window, no GPU, no GLFW.
       # It checks press/hold/tap/multitap, 1D and 2D composites, processors, control schemes, rebinding, and that the
       # .inputactions file the engine writes loads back byte-for-byte. docs/INPUT.md.
@@ -596,6 +611,31 @@ jobs:
         with:
           name: lantern-run-frame
           path: renders/lantern-run.png
+      # The shipped game, packaged and run the same way — the check is the same: the script is running, nothing
+      # warned, and the frame has a dusk village in it rather than a black rectangle.
+      - name: Package and run Afterglow
+        env:
+          QT_QPA_PLATFORM: xcb
+        run: |-
+          set -o pipefail
+          export VK_ICD_FILENAMES="$(ls /usr/share/vulkan/icd.d/*lvp* | head -1)"
+          ./build/ukiyo_pack --project games/afterglow --player build/ukiyo_player --platform linux \
+            --shaders build/shaders --out dist/afterglow-linux --zip dist/afterglow-linux.zip
+          xvfb-run -a -s "-screen 0 1280x720x24" sh dist/afterglow-linux/run.sh --backend vk --headless \
+            --seconds 4 --shot "$GITHUB_WORKSPACE/renders/afterglow.png" 2>&1 | tee /tmp/ukiyo-afterglow.log
+          grep -q "player: 1 script running" /tmp/ukiyo-afterglow.log
+          if grep -q "player: warning:" /tmp/ukiyo-afterglow.log; then
+            echo "::error::Afterglow started with warnings:"
+            grep "player: warning:" /tmp/ukiyo-afterglow.log
+            exit 1
+          fi
+          python3 tools/frame_check.py renders/afterglow.png
+      - name: Upload Afterglow's first frame
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: afterglow-frame
+          path: renders/afterglow.png
       - name: Upload the player frame and the logs
         if: always()
         uses: actions/upload-artifact@v4
@@ -734,6 +774,16 @@ jobs:
         with:
           name: lantern-run-windows
           path: dist/lantern-run-windows.zip
+      # The shipped game's Windows package, before the tests for the same reason.
+      - name: Package Afterglow for Windows
+        run: |-
+          ./build/ukiyo_pack.exe --project games/afterglow --player build/ukiyo_player.exe --platform windows `
+            --shaders build/shaders --out dist/afterglow-windows --zip dist/afterglow-windows.zip
+      - name: Upload Afterglow for Windows
+        uses: actions/upload-artifact@v4
+        with:
+          name: afterglow-windows
+          path: dist/afterglow-windows.zip
 
       # The same tests the Linux job runs, in the same order, in one step: a failing test's own output is the only
       # useful diagnostic, and the job log is not reachable from everywhere, so the last lines go out as annotations.
@@ -754,7 +804,7 @@ jobs:
           $failed = @()
           foreach ($t in @("systems_test", "script_test", "network_test", "project_test", "vgeom_test", "motion_test", "gi_test", "input_test", "trail_test", "search_test", "browser_zoom_test", "ao_test",
                     "contact_shadow_test", "pcss_test", "msdf_test", "alpha_mips_test", "transform_test", "lights_test", "save_test",
-                    "property_search_test", "async_load_test", "game_data_test", "game_test", "pack_test",
+                    "property_search_test", "async_load_test", "game_data_test", "game_test", "afterglow_test", "pack_test",
                     "manifest_test", "scene_runtime_test", "hud_test", "character_test", "player_test",
                     "json_patch_test", "asset_db_test", "editor_tools_test", "camera_test", "gizmo_math_test", "plugin_test")) {
             Write-Host "::group::$t"
@@ -983,6 +1033,7 @@ jobs:
       - name: Check the ABIs
         run: |
           file build-android-arm64/game_data_test build-android-x86_64/game_data_test
+          file build-android-arm64/afterglow_test build-android-x86_64/afterglow_test
           file build-android-arm64/search_test build-android-x86_64/search_test
           file build-android-arm64/browser_zoom_test build-android-x86_64/browser_zoom_test
           file build-android-arm64/transform_test build-android-x86_64/transform_test
@@ -1021,8 +1072,9 @@ jobs:
           # The project tree, the character it references, its font and the compiled shaders: the same trees a desktop
           # package carries, staged into the APK's assets. The app copies them out on first launch, so every relative
           # path in the project resolves on the phone exactly as it does on a desktop.
-          mkdir -p apk/assets/games/lantern-run apk/assets/assets apk/assets/editor/res/fonts
+          mkdir -p apk/assets/games/lantern-run apk/assets/games/afterglow apk/assets/assets apk/assets/editor/res/fonts
           cp -r games/lantern-run/. apk/assets/games/lantern-run/
+          cp -r games/afterglow/. apk/assets/games/afterglow/
           cp assets/AliciaSolid_vrm-0.51.vrm apk/assets/assets/
           cp editor/res/fonts/IBMPlexSansJP-Regular.ttf apk/assets/editor/res/fonts/
           ( cd apk/assets && find . -type f | sed 's|^\./||' | LC_ALL=C sort > files.txt )
@@ -1041,7 +1093,7 @@ jobs:
           # Name the step a failure happens in, as an annotation: job logs are not always fetchable after the fact,
           # and "exit code 1" alone says nothing about which command broke.
           assemble_step="start"
-          on_assemble_error() { echo "::error::Lantern Run assembly failed in step: $assemble_step"; }
+          on_assemble_error() { echo "::error::Afterglow assembly failed in step: $assemble_step"; }
           trap on_assemble_error ERR
 
           # The launcher icon, five densities of the same drawing (tools/android_icon.cpp), linked as @mipmap/ic_launcher.
@@ -1070,25 +1122,25 @@ jobs:
             ks_alias="${{ secrets.ANDROID_KEYSTORE_ALIAS }}"
             key_pass="${{ secrets.ANDROID_KEYSTORE_KEY_PASS }}"
             "$build_tools/apksigner" sign --ks "$ks" --ks-pass "pass:$ks_pass" --ks-key-alias "$ks_alias" \
-              --key-pass "pass:${key_pass:-$ks_pass}" --out LanternRun.apk apk/aligned.apk
+              --key-pass "pass:${key_pass:-$ks_pass}" --out Afterglow.apk apk/aligned.apk
           else
             ks="android/lantern-run-ci.p12"
             "$build_tools/apksigner" sign --ks "$ks" --ks-type pkcs12 --ks-pass pass:lantern-run-ci \
-              --key-pass pass:lantern-run-ci --out LanternRun.apk apk/aligned.apk
+              --key-pass pass:lantern-run-ci --out Afterglow.apk apk/aligned.apk
           fi
           assemble_step="verify"
-          "$build_tools/apksigner" verify LanternRun.apk
+          "$build_tools/apksigner" verify Afterglow.apk
           assemble_step="report"
           # The version the phone will see, printed so a run's number is readable from its log.
-          "$build_tools/aapt2" dump badging LanternRun.apk | grep -E "^package:|^application:" | head -4
-          unzip -l LanternRun.apk | grep -E "lib/|mipmap|lantern-run-ci" | tail -6
+          "$build_tools/aapt2" dump badging Afterglow.apk | grep -E "^package:|^application:" | head -4
+          unzip -l Afterglow.apk | grep -E "lib/|mipmap|lantern-run-ci" | tail -6
           trap - ERR
 
       # The APK is the deliverable, so it is attached to the run: an Android build nobody can install is a build log.
       - uses: actions/upload-artifact@v4
         with:
-          name: lantern-run-android
-          path: LanternRun.apk
+          name: afterglow-android
+          path: Afterglow.apk
 
   # The first game's frame comes from the gpu job, which is where a device exists, so it is published here rather than
   # in the Linux job: the artifact is downloaded, copied into docs/ and committed the same way the hub screenshots are.
@@ -1103,16 +1155,22 @@ jobs:
         with:
           name: lantern-run-frame
           path: renders
-      - name: Publish the first game's frame
+      - uses: actions/download-artifact@v4
+        with:
+          name: afterglow-frame
+          path: renders
+      - name: Publish the games' frames
         run: |
           test -f renders/lantern-run.png
+          test -f renders/afterglow.png
           cp renders/lantern-run.png docs/lantern-run.png
+          cp renders/afterglow.png docs/afterglow.png
           git config user.name "ukiyo-ci"
           git config user.email "ci@ukiyo.invalid"
-          git add docs/lantern-run.png
+          git add docs/lantern-run.png docs/afterglow.png
           if git diff --cached --quiet; then echo "no change"; exit 0; fi
           branch="${GITHUB_REF_NAME}"
-          git commit -m "Lantern Run frame from CI [skip ci]"
+          git commit -m "Game frames from CI [skip ci]"
           for attempt in 1 2 3; do
             git fetch origin "+refs/heads/$branch:refs/remotes/origin/$branch"
             git rebase "origin/$branch" || { git rebase --abort; exit 1; }

@@ -1,6 +1,8 @@
 # Shipping a game
 
-The player runs a project in place: `ukiyo_player --project games/lantern-run --build Build/build.json`. A build is that
+The player runs a project in place: `ukiyo_player --project games/lantern-run --build Build/build.json`. CI packages
+that sample *and* the shipped game `games/afterglow` the same way — the second is how `afterglow-linux` and
+`afterglow-windows` exist; everything below describes both. A build is that
 plus the files that travel with it, arranged so the same relative paths still resolve. `ukiyo_pack` does the arranging,
 and `ukiyo_pack --zip` turns it into the thing a player downloads.
 

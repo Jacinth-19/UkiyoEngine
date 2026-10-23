@@ -49,6 +49,7 @@ struct Options {
     std::string shot;
     float seconds = 0.0f;
     std::string shaders;   // --shaders: the compiled shaders this build shipped (a package's shaders/ folder)
+    std::string locale;    // --locale: the language the game's own text shows; else the project's base language
 };
 
 Options parseArgs(int argc, char** argv) {
@@ -64,7 +65,8 @@ Options parseArgs(int argc, char** argv) {
             std::string b;
             next(&b);
             o.backend = b == "gl" ? rhi::Backend::OpenGL : rhi::Backend::Vulkan;
-        } else if (a == "--headless") o.headless = true;
+        } else if (a == "--locale") next(&o.locale);
+        else if (a == "--headless") o.headless = true;
         else if (a == "--selftest") o.selftest = true;
         else if (a == "--no-hud") o.hud = false;
         else if (a == "--wireframe") o.wireframe = true;
@@ -85,6 +87,7 @@ Options parseArgs(int argc, char** argv) {
         } else if (a == "--help" || a == "-h") {
             std::printf("usage: ukiyo_player [--build Build/build.json] [--project dir] [--backend vk|gl]\n"
                         "                    [--headless --shot out.png --seconds N] [--no-hud] [--selftest]\n"
+                        "                    [--locale CODE]\n"
                         "                    [--load-budget MS] [--wireframe] [--shaders DIR]\n");
             std::exit(0);
         }
@@ -137,6 +140,7 @@ int main(int argc, char** argv) {
     if (opt.selftest) return runSelfTest(argc, argv);
 
     ukiyo::PlayerApp app(!opt.headless);
+    app.setLocaleOverride(opt.locale);
     std::string error;
     if (!app.start(opt.build, opt.project, &error)) {
         std::fprintf(stderr, "player: %s\n", error.c_str());

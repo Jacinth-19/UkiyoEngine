@@ -750,6 +750,16 @@ add_executable(game_test tests/game_test.cpp)
 target_link_libraries(game_test PRIVATE ukiyo_core)
 target_compile_options(game_test PRIVATE ${UKIYO_WARNINGS})
 
+# Afterglow (docs/GAME.md): the second game's contract — manifest, scene, the ten relights the script and the
+# scene must agree on, the locales, and the audio tools/audio_gen.py wrote. Like game_data_test it needs only the
+# readers, so it builds in the Android job's ABI loop too.
+add_executable(afterglow_test tests/afterglow_test.cpp src/engine/build_manifest.cpp
+               src/engine/scene_runtime.cpp src/engine/transform.cpp src/engine/lights.cpp
+               src/engine/localisation.cpp)
+target_include_directories(afterglow_test PRIVATE ${CMAKE_SOURCE_DIR}/src)
+target_link_libraries(afterglow_test PRIVATE glm::glm nlohmann_json::nlohmann_json)
+target_compile_options(afterglow_test PRIVATE ${UKIYO_WARNINGS})
+
 # The packer (docs/PACKAGING.md): what a package contains, that it verifies, and that a corrupted file is caught.
 add_executable(pack_test tests/pack_test.cpp)
 target_link_libraries(pack_test PRIVATE ukiyo_pack_core)
