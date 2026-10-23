@@ -175,8 +175,9 @@ long long reported = 0;
 void* recentlyFreed[64] = {};
 int recentlyFreedNext = 0;
 
-// Defined below; insert() needs it to report a lost block.
-void note(const char* what, size_t size, const void* where, bool fatal);
+// Defined below; insert() needs it to report a lost block. The suffix is an optional extra fact: the owner of a
+// wild pointer, or anything else the caller already knows and the format does not cover.
+void note(const char* what, size_t size, const void* where, bool fatal, const char* suffix = "");
 
 unsigned slotOf(void* ptr) { return static_cast<unsigned>((reinterpret_cast<uintptr_t>(ptr) >> 4) & (kSlots - 1)); }
 
@@ -231,7 +232,7 @@ void* allocate(size_t size) {
     return raw + kGuard;
 }
 
-void note(const char* what, size_t size, const void* where, bool fatal) {
+void note(const char* what, size_t size, const void* where, bool fatal, const char* suffix) {
     if (fatal) ++failures;   // a run that damaged its own heap is not a passing run, however it ends
     if (reported >= 8) return;
     char place[288] = "";
@@ -243,8 +244,8 @@ void note(const char* what, size_t size, const void* where, bool fatal) {
     std::snprintf(place, sizeof place, " (%s)", described);
 #endif
     char line[512];
-    std::snprintf(line, sizeof line, "CRASH %s at check %d, section '%s': block of %zu bytes at %p%s", what, checks,
-                  lastSection, size, where, place);
+    std::snprintf(line, sizeof line, "CRASH %s at check %d, section '%s': block of %zu bytes at %p%s%s", what, checks,
+                  lastSection, size, where, place, suffix);
     std::printf("%s\n", line);
     if (traceLog) {
         traceLog << line << "\n";
@@ -258,12 +259,33 @@ void release(void* ptr) {
     Entry* e = findEntry(ptr);
     if (!e) {
         // Either a library freed something it allocated inside its own DLL, or this heap is being handed a pointer it
-        // never handed out -- a double free, or a pointer that was never a block.
+        // never handed out -- a double free, or a pointer that was never a block. Both are failures, and neither
+        // goes to the CRT: free() on a pointer that is not a block start IS the corruption being reported, not a
+        // diagnosis of it -- on Windows it aborted the run at the report line, three checks before the block's
+        // owner could be named and the rest of the test seen.
         bool seen = false;
         for (void* freed : recentlyFreed) seen = seen || freed == ptr;
-        note(seen ? "double free" : "free of an unknown pointer", 0, ptr, seen);
+        // Name the live block the wild pointer lands inside, if any: a wild free is almost always garbage read out
+        // of a block that something smashed, and the owner says where the rot set in. An interior pointer only --
+        // a hit on ptr == block start would mean the table lost a block, which insert()'s full-window report rules
+        // out long before this scan could run.
+        char owner[96] = "";
+        for (int i = 0; i < kSlots && !seen; ++i) {
+            const Entry& o = table[i];
+            const unsigned char* lo = static_cast<const unsigned char*>(o.ptr);
+            if (!lo) continue;
+            const unsigned char* p = static_cast<const unsigned char*>(ptr);
+            if (p >= lo - kGuard && p < lo + o.size) {
+                std::snprintf(owner, sizeof owner, " (inside live block %p, %zu bytes)", o.ptr, o.size);
+                break;
+            }
+        }
+        note(seen ? "double free" : "free of an unknown pointer", 0, ptr, true, owner);
         if (seen) return;   // do not hand a double free to the CRT: it would report corruption somewhere else
-        std::free(ptr);
+        // Remember the refused pointer as if it had been freed, so the next release of it reports once, and record
+        // the failure: the run continues so the remaining checks say what else is wrong.
+        recentlyFreed[recentlyFreedNext] = ptr;
+        recentlyFreedNext = (recentlyFreedNext + 1) % 64;
         return;
     }
     if (!intact(ptr, e->size)) {

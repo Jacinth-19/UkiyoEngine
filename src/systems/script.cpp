@@ -202,7 +202,12 @@ ScriptHost::ScriptHost() {
 }
 
 ScriptHost::~ScriptHost() {
-    if (L_) lua_close(L_);
+    if (!L_) return;
+    // Collect before closing: a script that smashed a heap block would otherwise have that block freed by the close
+    // sweep, sections away from the section that smashed it -- exactly how a wild write drifts away from its cause.
+    // A full cycle here walks every object through the allocator while the guilty section is still on the record.
+    lua_gc(L_, LUA_GCCOLLECT, 0);
+    lua_close(L_);
 }
 
 void ScriptHost::setSearchPaths(std::vector<std::string> roots) { roots_ = std::move(roots); }
