@@ -14533,7 +14533,7 @@ void MainWindow::fillBuildPage(QVBoxLayout* v) {
     QLineEdit* icon = new QLineEdit(editor::prefs::text(QStringLiteral("build/icon"), QString()));
     icon->setObjectName(QStringLiteral("buildIcon"));
     icon->setPlaceholderText(QStringLiteral("assets/icon.png (optional)"));
-    icon->setToolTip(QStringLiteral("Window icon, and the launcher icon of an Android package"));
+    icon->setToolTip(QStringLiteral("Copied into the package as icon.png, where the platform's packaging step picks it up"));
 
     QPushButton* package = new QPushButton(QStringLiteral("Package and Run"));
     package->setObjectName(QStringLiteral("buildPackage"));
@@ -14612,6 +14612,14 @@ void MainWindow::fillBuildPage(QVBoxLayout* v) {
             return;
         }
         packageStatus->setText(QStringLiteral("Packaged into %1").arg(QString::fromStdString(request.outDir)));
+        // The icon ships with the package. Nothing in the player reads it yet; a platform packaging step does (the
+        // Android assembly in CI is the one that exists), and a file that is not copied cannot be picked up at all.
+        const QString iconPath = icon->text().trimmed();
+        if (!iconPath.isEmpty()) {
+            const QString from = QDir(projectRoot_).absoluteFilePath(iconPath);
+            const QString to = QDir(QString::fromStdString(request.outDir)).absoluteFilePath(QStringLiteral("icon.png"));
+            if (QFileInfo::exists(from) && !QFile::copy(from, to)) log(QStringLiteral("package: could not copy ") + from);
+        }
         // Run it: the package is a folder with the player inside, so starting the game is starting that file.
         QString exe = QDir(QString::fromStdString(request.outDir)).absoluteFilePath(t == ukiyo::pack::Target::Windows
                                                                                      ? QStringLiteral("ukiyo_player.exe")
