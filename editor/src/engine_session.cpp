@@ -1,4 +1,5 @@
 #include "engine/localisation.h"
+#include "engine/transform.h"
 #include "engine_session.h"
 
 #include "engine/script_project.h"
@@ -116,16 +117,14 @@ std::unique_ptr<Model> readModelFile(rhi::Device& dev, const QString& path, bool
 
 } // namespace
 
-glm::mat4 EngineSession::placementOf(const glm::vec3& position, float yawDeg) {
-    return placementOf(position, yawDeg, 1.0f);
-}
-
-glm::mat4 EngineSession::placementOf(const glm::vec3& position, float yawDeg, float scale) {
-    // Scale first, then turn, then place: a scaled instance turns about its own origin and stands where it is put.
-    const float k = scale > 0.0001f ? scale : 0.0001f;
-    return glm::translate(glm::mat4(1.0f), position) *
-           glm::rotate(glm::mat4(1.0f), glm::radians(yawDeg), glm::vec3(0.0f, 1.0f, 0.0f)) *
-           glm::scale(glm::mat4(1.0f), glm::vec3(k));
+glm::mat4 EngineSession::placementOf(const glm::vec3& position, const glm::vec3& eulerDeg, const glm::vec3& scale) {
+    // Scale, then turn, then place. The rotation is the engine's own Euler order (ZXY, transform.h), so an instance
+    // turned by a gizmo reads the same angles the Inspector shows and a script would get.
+    const glm::vec3 k(std::max(std::fabs(scale.x), 0.0001f),
+                      std::max(std::fabs(scale.y), 0.0001f),
+                      std::max(std::fabs(scale.z), 0.0001f));
+    return glm::translate(glm::mat4(1.0f), position) * ukiyo::rotationMatrix(eulerDeg) *
+           glm::scale(glm::mat4(1.0f), k);
 }
 
 Model* EngineSession::activeModel() const {
@@ -175,7 +174,7 @@ bool EngineSession::loadModel(const QString& path, QString* error) {
     in.terrainGpu.reset();
     in.model = std::move(m);
     in.path = path.toStdString();
-    in.model->placement = placementOf(in.position, in.yawDeg, in.scale);
+    in.model->placement = placementOf(in.position, {in.pitchDeg, in.yawDeg, in.rollDeg}, in.scale);
     applyPlacement(*in.model);
     applyGraphMaterials();
     bindActive();
@@ -197,7 +196,7 @@ void EngineSession::attachModel(std::unique_ptr<Model> m, const QString& path, c
     in.path = path.toStdString();
     in.position = glm::vec3(position[0], position[1], position[2]);
     in.yawDeg = yawDeg;
-    in.model->placement = placementOf(in.position, in.yawDeg, in.scale);
+    in.model->placement = placementOf(in.position, {in.pitchDeg, in.yawDeg, in.rollDeg}, in.scale);
     applyPlacement(*in.model);
     instances_.push_back(std::move(in));
     active_ = static_cast<int>(instances_.size()) - 1;
@@ -267,13 +266,16 @@ bool EngineSession::setActiveInstance(int index) {
     return true;
 }
 
-bool EngineSession::setInstancePlacement(int index, const float position[3], float yawDeg, float scale) {
+bool EngineSession::setInstancePlacement(int index, const float position[3], float yawDeg, float pitchDeg,
+                                         float rollDeg, const float scale[3]) {
     if (index < 0 || index >= static_cast<int>(instances_.size())) return false;
     Instance& in = instances_[index];
     in.position = glm::vec3(position[0], position[1], position[2]);
     in.yawDeg = yawDeg;
-    in.scale = scale;
-    in.model->placement = placementOf(in.position, in.yawDeg, in.scale);
+    in.pitchDeg = pitchDeg;
+    in.rollDeg = rollDeg;
+    if (scale) in.scale = glm::vec3(scale[0], scale[1], scale[2]);
+    in.model->placement = placementOf(in.position, {in.pitchDeg, in.yawDeg, in.rollDeg}, in.scale);
     applyPlacement(*in.model);
     return true;
 }
@@ -760,7 +762,9 @@ EngineSession::PlacedModel EngineSession::instanceInfo(int index) const {
     p.position[1] = in.position.y;
     p.position[2] = in.position.z;
     p.yawDeg = in.yawDeg;
-    p.scale = in.scale;
+    p.pitchDeg = in.pitchDeg;
+    p.rollDeg = in.rollDeg;
+    for (int k = 0; k < 3; ++k) p.scale[k] = in.scale[k];
     p.prefab = in.prefab;
     p.prefabId = in.prefabId;
     p.overrides = in.overrides;
@@ -1342,7 +1346,7 @@ bool EngineSession::startPlay(QString* error) {
     const int active = active_;
     for (size_t i = 0; i < instances_.size(); ++i) {
         Instance& in = instances_[i];
-        playStart_.push_back({in.position, in.yawDeg});
+        playStart_.push_back({in.position, in.yawDeg, in.pitchDeg, in.rollDeg});
         playLast_.push_back(in.position);
         playSpeed_.push_back(0.0f);
         playScale_.push_back(in.scale);
@@ -1464,9 +1468,10 @@ void EngineSession::stopPlay() {
     const bool restored = restoreEditorScene();
     for (size_t i = 0; i < playStart_.size() && i < instances_.size(); ++i) {
         const Placement& p = playStart_[i];
-        const float sc = i < playScale_.size() ? playScale_[i] : 1.0f;
+        const glm::vec3 sc = i < playScale_.size() ? playScale_[i] : glm::vec3(1.0f);
+        const float scf[3] = {sc.x, sc.y, sc.z};
         const float pos[3] = {p.position.x, p.position.y, p.position.z};
-        setInstancePlacement(static_cast<int>(i), pos, p.yawDeg, sc);
+        setInstancePlacement(static_cast<int>(i), pos, p.yawDeg, p.pitchDeg, p.rollDeg, scf);
     }
     playStart_.clear();
     playLast_.clear();

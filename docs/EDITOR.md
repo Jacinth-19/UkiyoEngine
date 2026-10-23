@@ -101,9 +101,47 @@ it. The Game view's stats overlay shows the total and the stages that took measu
 time the game's own systems spent — physics, scripts, animation, navigation, particles — and it is deliberately
 not the GPU frame time, which the RHI does not expose.
 
+## The gizmos
+
+Both gizmos follow Blender's, because the shapes and the rules a designer's hand already knows are worth more
+than a house style: `source/blender/editors/transform/transform_gizmo_3d.cc` for the transform handles, and
+`source/blender/editors/space_view3d/view3d_gizmo_navigate_type.cc` for the corner axis widget. What is borrowed
+is the *behaviour*; the geometry, drawing and drag code here are this engine's own.
+
+The transform gizmo has three sets of handles, one per tool:
+
+| Tool | Handles |
+| --- | --- |
+| Move | three arrows (X, Y, Z) and three plane squares (XY, YZ, ZX) |
+| Rotate | one ring per axis; the half of a ring behind the object is drawn faint |
+| Scale | three cubes, one per axis, and a cube at the centre that scales all three together |
+
+Three rules from Blender make it feel right, and each is in `src/engine/gizmo_math.h` with its own test:
+
+* **Hit tests are in pixels.** A handle is grabbed if the pointer is within eight pixels of what was drawn, so
+  a handle is equally easy to catch whether the object is near or far. The math lives in a Qt-free engine file,
+  `src/engine/gizmo_math.cpp`, so it runs in CI without a window (`gizmo_math_test`, 36 checks).
+* **A handle that points at you is not drawn, and cannot be clicked.** `axisVisibility` is Blender's
+  `gizmo_get_idot`: an axis is shown when `1 - |dot(view, axis)| >= 0.02`, and a plane when the angle is larger
+  (`|dot| >= 0.175`), because a plane seen edge-on is a line you cannot aim at. A dot is not a target.
+* **The nearest handle wins.** A plane square under the pointer takes the click outright, since a square cannot
+  be pressed by accident; otherwise the closest line does, and a hovered or dragged handle is drawn wider and in
+  the highlight colour.
+
+A drag writes the transform once per mouse-move and takes **one** undo step for the whole drag, pushed when the
+drag starts and dropped again if the pointer never moved. `Escape` cancels a drag and puts the object back.
+
+Rotation is the engine's Euler order (ZXY, so yaw about Y, pitch about X, roll about Z). The Inspector shows
+the three angles and the three scale axes; a scene file writes `yawDeg` while a model only turns, and
+`rotation: [pitch, yaw, roll]` plus `scale` (a number when even, a vector when not) once it is tilted or
+stretched — the same fields `SceneRuntime` reads.
+
+The view gizmo sits in the top-right corner of the Scene view: six handles on a unit sphere, drawn back to
+front and mixed toward the view background by depth, so a ball behind reads as behind. Clicking one looks along
+that axis and switches the view to orthographic, which is what the widget is for — checking a silhouette or a
+side elevation against a known direction.
+
 ## What is not here yet
 
-* X and Z rotation on the gizmo. An instance has one yaw today; a full Euler means changing the instance
-  transform, the scene file and the colliders together, and half of that would be a worse answer than none.
 * Multi-object transform. The gizmo edits the selected instance.
 * A plugin API for editor extensions.

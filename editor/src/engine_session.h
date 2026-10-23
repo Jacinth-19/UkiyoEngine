@@ -127,14 +127,19 @@ public:
     // Makes instance `index` the active one (the target of the node and graph queries).
     bool setActiveInstance(int index);
     // Moves and turns an instance. Takes effect on the next frame.
-    bool setInstancePlacement(int index, const float position[3], float yawDeg, float scale = 1.0f);
+    // Rotation is Euler ZXY, the same order the engine's transform uses: roll about Z, then pitch about X, then yaw
+    // about Y. A gizmo ring per axis writes one of the three, and the matrix is rebuilt from all three.
+    bool setInstancePlacement(int index, const float position[3], float yawDeg, float pitchDeg = 0.0f,
+                              float rollDeg = 0.0f, const float scale[3] = nullptr);
 
     // Snapshot of one instance, for saving the scene.
     struct PlacedModel {
         std::string path;
         float position[3] = {0.0f, 0.0f, 0.0f};
         float yawDeg = 0.0f;
-        float scale = 1.0f;                 // uniform scale
+        float pitchDeg = 0.0f;
+        float rollDeg = 0.0f;
+        float scale[3] = {1.0f, 1.0f, 1.0f};   // per-axis scale
         std::string prefab;                 // .ukprefab this instance is linked to, or empty
         std::string prefabId;
         std::set<std::string> overrides;    // keys that the instance sets itself: "translation", "yawDeg"
@@ -308,9 +313,10 @@ private:
         std::string path;
         glm::vec3 position{0.0f};
         float yawDeg = 0.0f;
-        // Uniform scale. One number rather than three axes: an instance is a placed copy of a model, and non-uniform
-        // scale would have to reach the collider and the animation rig to stay honest. Artists scale the mesh.
-        float scale = 1.0f;
+        float pitchDeg = 0.0f;
+        float rollDeg = 0.0f;
+        // Per-axis scale, as Blender's scale handles have: dragging one axis handle stretches one axis.
+        glm::vec3 scale{1.0f};
         // Graph material assignments by this model's node index.
         std::map<int, std::string> nodeGraph;
         // Nodes drawn with the MMD-style toon look.
@@ -370,7 +376,7 @@ private:
     std::vector<Placement> playStart_;   // placements before play, restored by stopPlay
     std::vector<glm::vec3> playLast_;    // entity positions after the previous tick
     std::vector<float> playSpeed_;       // horizontal speed per instance, fed to the animation machines
-    std::vector<float> playScale_;       // instance scales before play, put back by stopPlay
+    std::vector<glm::vec3> playScale_;   // instance scales before play, put back by stopPlay
     ukiyo::FrameTiming playTiming_;      // the last play tick's breakdown
     bool profiling_ = false;
     // Instances with a capsule character (item 4), and the walk speed each was authored with. Driven from the game
@@ -421,8 +427,7 @@ private:
     std::vector<SceneNote> sceneNotes_;
     void noteScene(const std::string& text, bool structural);
     void bindActive();
-    static glm::mat4 placementOf(const glm::vec3& position, float yawDeg);
-    static glm::mat4 placementOf(const glm::vec3& position, float yawDeg, float scale);
+    static glm::mat4 placementOf(const glm::vec3& position, const glm::vec3& eulerDeg, const glm::vec3& scale);
     std::unique_ptr<AnimLibrary> lib_;
     ukiyo::ClipEdits clipEdits_;
     AnimPlayer player_;

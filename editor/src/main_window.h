@@ -26,6 +26,7 @@
 #include "engine/json_patch.h"
 #include "inspector_filter.h"
 #include "scene_gizmo.h"
+#include "view_gizmo.h"
 #include "engine_session.h"
 #include "engine/browser_zoom.h"
 #include "engine/terrain.h"
@@ -268,8 +269,11 @@ private:
     void instancePrefabDialog();
     void addPrefabToScene(const QString& prefabPath);
     void editActiveTransform();
-    // Sets the active instance's placement and records overrides against its prefab.
+    // Sets an instance's whole placement and records overrides against its prefab. The six-argument form is what the
+    // Inspector and the gizmo write; the three-argument form keeps the rotation's other two angles and the scale.
     void setInstanceTransform(int index, const float position[3], float yawDeg);
+    void setInstanceTransform(int index, const float position[3], float yawDeg, float pitchDeg, float rollDeg,
+                              const float scale[3]);
     void applyOverridesToPrefab();
     void revertOverrides();
     // Apply or revert the given override keys ("translation", "yawDeg") of one instance.
@@ -432,6 +436,7 @@ private:
     void gizmoHover(QPointF s);
     void cancelGizmoDrag();
     void paintGizmo(QPainter& p);
+    void paintViewGizmo(QPainter& p);   // Scene view: the corner axis widget
     void paintColliders(QPainter& p);     // Scene view: physics colliders as wireframes (Physics > Show colliders)
     void paintNavPreview(QPainter& p);    // Scene view: the last agent path preview
     // Find and Replace on object names. findInNames returns the next matching index after `from`, wrapping, or -1.
@@ -440,7 +445,8 @@ private:
     int replaceInNames(const QString& find, const QString& replacement, bool matchCase);
     void openFindReplace();
     void updateMemoryStatus();
-    void applyInstanceTransform(int index, const float position[3], float yawDeg, float scale = 1.0f);
+    void applyInstanceTransform(int index, const float position[3], float yawDeg, float pitchDeg, float rollDeg,
+                                const float scale[3]);
     void copyInstance(int index);
     void duplicateInstance(int index);
     void deleteInstance(int index);
@@ -610,14 +616,22 @@ private:
     bool gizmoDragging_ = false;
     bool gizmoPushed_ = false;    // this drag pushed an undo step
     bool gizmoChanged_ = false;
-    float gizmoScale0_ = 1.0f;   // the instance's scale when the drag began
-    QPointF gizmoCenter0_;       // the gizmo's screen centre, and where the pointer was, for a scale drag
-    QPointF gizmoMouse0_;   // the drag has moved or turned the instance
+    glm::vec3 gizmoScale0_{1.0f};   // the instance's scale when the drag began
+    QPointF gizmoCenter0_;          // the gizmo's screen centre, for the uniform scale handle
+    QPointF gizmoMouse0_;           // where the pointer was when the drag began
+    glm::vec3 gizmoHit0_{0.0f};     // the pointer's point on a plane handle when the drag began
     int gizmoIndex_ = -1;
     glm::vec3 gizmoOrigin0_{0.0f};   // position when the drag began
     float gizmoYaw0_ = 0.0f;
+    float gizmoPitch0_ = 0.0f;
+    float gizmoRoll0_ = 0.0f;
     float gizmoT0_ = 0.0f;           // axis parameter under the pointer when the drag began
     float gizmoTheta0_ = 0.0f;       // ring angle under the pointer when the drag began
+    // View gizmo (view_gizmo.h): the corner widget's handle under the pointer, or -1.
+    int viewGizmoHover_ = -1;
+    bool viewGizmoPress(QPointF s);
+    void viewGizmoHover(QPointF s);
+    void viewGizmoSnap(int handle);
     bool snapOn_ = false;
     float moveSnap_ = 0.25f;         // metres
     float rotateSnapDeg_ = 15.0f;

@@ -255,7 +255,12 @@ bool loadRuntimeScene(const std::string& path, const std::string& projectRoot, R
         if (m.contains("position")) in.transform.position = vec3Of(m["position"], in.transform.position);
         if (m.contains("yawDeg") && m["yawDeg"].is_number()) in.transform.rotationDeg.y = m["yawDeg"].get<float>();
         if (m.contains("rotation")) in.transform.rotationDeg = vec3Of(m["rotation"], in.transform.rotationDeg);
-        if (m.contains("scale")) in.transform.scale = vec3Of(m["scale"], in.transform.scale);
+        // A scale may be one number when it is uniform: that is what a person types, and what the editor writes for a
+        // prop scaled evenly.
+        if (m.contains("scale")) {
+            if (m["scale"].is_number()) in.transform.scale = glm::vec3(m["scale"].get<float>());
+            else in.transform.scale = vec3Of(m["scale"], in.transform.scale);
+        }
         readComponents(m.value("components", json::object()), &in.components);
         if (m.contains("lod") && m["lod"].is_array())
             for (const json& v : m["lod"]) in.lod.push_back(v.get<float>());

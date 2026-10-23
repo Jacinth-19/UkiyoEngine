@@ -650,6 +650,13 @@ target_link_libraries(editor_tools_test PRIVATE nlohmann_json::nlohmann_json)
 target_compile_options(editor_tools_test PRIVATE ${UKIYO_WARNINGS_PEDANTIC})
 
 # The camera the Scene view builds with: perspective, orthographic, zoom, pan and flying.
+# The Scene view's gizmos: only the geometry, so it runs without a window. Pointing, plane and ring drags, Blender's
+# visibility rule, snapping, and the view gizmo's layout.
+add_executable(gizmo_math_test tests/gizmo_math_test.cpp src/engine/gizmo_math.cpp)
+target_include_directories(gizmo_math_test PRIVATE ${CMAKE_SOURCE_DIR}/src)
+target_link_libraries(gizmo_math_test PRIVATE glm::glm)
+target_compile_options(gizmo_math_test PRIVATE ${UKIYO_WARNINGS_PEDANTIC})
+
 add_executable(camera_test tests/camera_test.cpp src/engine/camera.cpp)
 target_include_directories(camera_test PRIVATE ${CMAKE_SOURCE_DIR}/src)
 target_link_libraries(camera_test PRIVATE glm::glm)
@@ -770,6 +777,7 @@ if(UKIYO_EDITOR)
     editor/src/systems_json.cpp
     editor/src/scene_file.cpp
     editor/src/scene_gizmo.cpp
+    editor/src/view_gizmo.cpp
     editor/src/asset_ops.cpp
     editor/src/anim_file.cpp
     editor/src/anim_graph.cpp

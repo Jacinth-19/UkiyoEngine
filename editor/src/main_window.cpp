@@ -828,14 +828,20 @@ void MainWindow::buildCentral() {
         preview_->update();
     });
 
-    viewport_->onPress = [this](QPointF p) { return gizmoPress(p); };
+    // The view gizmo is checked first: it sits on top of the view, so a click in its corner turns the view rather than
+    // starting a drag on whatever is behind it.
+    viewport_->onPress = [this](QPointF p) { return viewGizmoPress(p) || gizmoPress(p); };
     viewport_->onDrag = [this](QPointF p) { gizmoDrag(p); };
     viewport_->onRelease = [this](QPointF) { gizmoRelease(); };
-    viewport_->onHover = [this](QPointF p) { gizmoHover(p); };
+    viewport_->onHover = [this](QPointF p) {
+        viewGizmoHover(p);
+        gizmoHover(p);
+    };
     viewport_->onPaint = [this](QPainter& p) {
         paintColliders(p);
         paintNavPreview(p);
         paintGizmo(p);
+        paintViewGizmo(p);
     };
     buildGizmoToolbar();
 }
@@ -2331,11 +2337,17 @@ void MainWindow::editActiveTransform() {
     QDoubleSpinBox* sy = spin(cur.position[1], -1000.0, 1000.0);
     QDoubleSpinBox* sz = spin(cur.position[2], -1000.0, 1000.0);
     QDoubleSpinBox* syaw = spin(cur.yawDeg, -360.0, 360.0);
+    QDoubleSpinBox* spitch = spin(cur.pitchDeg, -360.0, 360.0);
+    QDoubleSpinBox* sroll = spin(cur.rollDeg, -360.0, 360.0);
     syaw->setSingleStep(5.0);
+    spitch->setSingleStep(5.0);
+    sroll->setSingleStep(5.0);
     form->addRow(QStringLiteral("X (m)"), sx);
     form->addRow(QStringLiteral("Y (m)"), sy);
     form->addRow(QStringLiteral("Z (m)"), sz);
     form->addRow(QStringLiteral("Yaw (deg)"), syaw);
+    form->addRow(QStringLiteral("Pitch (deg)"), spitch);
+    form->addRow(QStringLiteral("Roll (deg)"), sroll);
     auto* buttons = new QDialogButtonBox(QDialogButtonBox::Ok | QDialogButtonBox::Cancel, &dlg);
     connect(buttons, &QDialogButtonBox::accepted, &dlg, &QDialog::accept);
     connect(buttons, &QDialogButtonBox::rejected, &dlg, &QDialog::reject);
@@ -2343,16 +2355,30 @@ void MainWindow::editActiveTransform() {
     if (dlg.exec() != QDialog::Accepted) return;
 
     const float pos[3] = {float(sx->value()), float(sy->value()), float(sz->value())};
-    setInstanceTransform(index, pos, float(syaw->value()));
+    const float sc[3] = {cur.scale.x, cur.scale.y, cur.scale.z};
+    setInstanceTransform(index, pos, float(syaw->value()), float(spitch->value()), float(sroll->value()), sc);
 }
 
-void MainWindow::setInstanceTransform(int index, const float position[3], float yawDeg) {
+void MainWindow::setInstanceTransform(int index, const float position[3], float yawDeg, float pitchDeg,
+                                      float rollDeg, const float scale[3]) {
     beginEdit(QStringLiteral("instance-transform:%1").arg(index));
-    applyInstanceTransform(index, position, yawDeg);
+    applyInstanceTransform(index, position, yawDeg, pitchDeg, rollDeg, scale);
+}
+
+// The inspector's position and yaw rows, which do not touch the other components of the rotation or the scale. The
+// current values come from the scene, so editing X does not silently reset a pitch set with the gizmo.
+void MainWindow::setInstanceTransform(int index, const float position[3], float yawDeg) {
+    std::vector<InstanceInfo> list;
+    runOnWorker([&] { list = worker_->instances(); });
+    if (index < 0 || index >= static_cast<int>(list.size())) return;
+    const InstanceInfo& cur = list[index];
+    const float sc[3] = {cur.scale.x, cur.scale.y, cur.scale.z};
+    setInstanceTransform(index, position, yawDeg, cur.pitchDeg, cur.rollDeg, sc);
 }
 
 // Writes a transform without an undo step. Gizmo drags call this, with one step taken at the start.
-void MainWindow::applyInstanceTransform(int index, const float position[3], float yawDeg, float scale) {
+void MainWindow::applyInstanceTransform(int index, const float position[3], float yawDeg, float pitchDeg,
+                                        float rollDeg, const float scale[3]) {
     std::vector<InstanceInfo> list;
     runOnWorker([&] { list = worker_->instances(); });
     if (index < 0 || index >= static_cast<int>(list.size())) return;
@@ -2364,6 +2390,8 @@ void MainWindow::applyInstanceTransform(int index, const float position[3], floa
     overrides.removeAll(QStringLiteral("translation"));
     overrides.removeAll(QStringLiteral("yawDeg"));
     overrides.removeAll(QStringLiteral("scale"));
+    overrides.removeAll(QStringLiteral("pitchDeg"));
+    overrides.removeAll(QStringLiteral("rollDeg"));
     if (!cur.prefab.isEmpty()) {
         prefab::Pose world;
         QString err;
@@ -2377,10 +2405,12 @@ void MainWindow::applyInstanceTransform(int index, const float position[3], floa
         if (moved) overrides << QStringLiteral("translation");
         if (std::fabs(yawDeg - world.yaw) > 1e-4f) overrides << QStringLiteral("yawDeg");
         // A prefab node has no scale of its own yet, so any scale is the instance's and is written as an override.
-        if (std::fabs(scale - 1.0f) > 1e-4f) overrides << QStringLiteral("scale");
+        if (std::fabs(scale[0] - 1.0f) > 1e-4f || std::fabs(scale[1] - 1.0f) > 1e-4f ||
+            std::fabs(scale[2] - 1.0f) > 1e-4f)
+            overrides << QStringLiteral("scale");
     }
     runOnWorker([&] {
-        worker_->setInstancePlacement(index, position, yawDeg, scale);
+        worker_->setInstancePlacement(index, position, yawDeg, pitchDeg, rollDeg, scale);
         if (!cur.prefab.isEmpty()) worker_->setInstanceLink(index, cur.prefab, cur.prefabId, overrides);
     });
     markDirty();
@@ -2440,6 +2470,8 @@ void MainWindow::applyOverridesFor(int index, const QStringList& keys) {
     if (applied.contains(QStringLiteral("translation")))
         for (int k = 0; k < 3; ++k) world.pos[k] = cur.position[k];
     if (applied.contains(QStringLiteral("yawDeg"))) world.yaw = cur.yawDeg;
+    // A prefab node has a position and a yaw only: pitch, roll and scale cannot be pushed into it, so they stay with
+    // the instance and never appear in `applied`.
     // The node's world is compose(compose(parent, local), inner). Solve for the local value that gives it.
     const prefab::Pose local = prefab::localOf(parentWorldOf(nodes, *node),
                                                prefab::compose(world, prefab::inverse(node->inner)));
@@ -2468,6 +2500,9 @@ void MainWindow::syncLinkedInstances() {
         int index;
         float pos[3];
         float yaw;
+        float pitch;
+        float roll;
+        float scale[3];
     };
     std::vector<Update> updates;
     QHash<QString, std::vector<prefab::FlatNode>> cache;
@@ -2491,13 +2526,19 @@ void MainWindow::syncLinkedInstances() {
         u.index = i;
         const bool ownPos = in.overrides.contains(QStringLiteral("translation"));
         const bool ownYaw = in.overrides.contains(QStringLiteral("yawDeg"));
+        const bool ownScale = in.overrides.contains(QStringLiteral("scale"));
         for (int k = 0; k < 3; ++k) u.pos[k] = ownPos ? in.position[k] : node->world.pos[k];
         u.yaw = ownYaw ? in.yawDeg : node->world.yaw;
+        // A prefab node has neither a pitch nor a roll, and no scale; those are the instance's own values, kept as they
+        // are unless the instance overrides the scale.
+        u.pitch = in.pitchDeg;
+        u.roll = in.rollDeg;
+        for (int k = 0; k < 3; ++k) u.scale[k] = ownScale ? in.scale[k] : 1.0f;
         updates.push_back(u);
     }
     if (updates.empty()) return;
     runOnWorker([&] {
-        for (const Update& u : updates) worker_->setInstancePlacement(u.index, u.pos, u.yaw);
+        for (const Update& u : updates) worker_->setInstancePlacement(u.index, u.pos, u.yaw, u.pitch, u.roll, u.scale);
     });
 }
 
@@ -3247,10 +3288,47 @@ void MainWindow::showInstanceProperties(int index) {
     }
     t->addRow(yawLabel, yawRow);
 
+    // Pitch and roll are the rest of the rotation. Yaw alone cannot lie a prop on its side, which a level needs.
+    QWidget* tiltRow = new QWidget;
+    QHBoxLayout* th = new QHBoxLayout(tiltRow);
+    th->setContentsMargins(0, 0, 0, 0);
+    QDoubleSpinBox* pitch = makeSpin(-360.0, 360.0, 5.0, 1, cur.pitchDeg);
+    QDoubleSpinBox* roll = makeSpin(-360.0, 360.0, 5.0, 1, cur.rollDeg);
+    pitch->setToolTip(QStringLiteral("Rotation about X"));
+    roll->setToolTip(QStringLiteral("Rotation about Z"));
+    th->addWidget(pitch, 1);
+    th->addWidget(roll, 1);
+    t->addRow(QStringLiteral("Pitch / Roll (deg)"), tiltRow);
+
+    // Scale, one box per axis. A prefab instance scales through the `scale` override; an unlinked one stores the vector.
+    QWidget* scaleRow = new QWidget;
+    QHBoxLayout* sh = new QHBoxLayout(scaleRow);
+    sh->setContentsMargins(0, 0, 0, 0);
+    std::vector<QDoubleSpinBox*> scl;
+    for (int k = 0; k < 3; ++k) {
+        scl.push_back(makeSpin(0.01, 100.0, 0.05, 3, cur.scale[k]));
+        sh->addWidget(scl.back(), 1);
+    }
+    QFont scaleFont = scaleRow->font();
+    scaleFont.setBold(linked && cur.overrides.contains(QStringLiteral("scale")));
+    scaleRow->setFont(scaleFont);
+    if (linked) {
+        QPushButton* revertScale = new QPushButton(QStringLiteral("Revert"));
+        revertScale->setEnabled(cur.overrides.contains(QStringLiteral("scale")));
+        revertScale->setToolTip(QStringLiteral("Restore the prefab's scale"));
+        sh->addWidget(revertScale);
+        connect(revertScale, &QPushButton::clicked, this, [this, index] {
+            revertOverridesFor(index, {QStringLiteral("scale")});
+            scheduleInstanceRefresh(index);
+        });
+    }
+    t->addRow(QStringLiteral("Scale"), scaleRow);
+
     // Any change writes the whole transform. setInstanceTransform works out which keys differ from the prefab.
-    auto write = [this, index, pos, yaw] {
+    auto write = [this, index, pos, yaw, pitch, roll, scl] {
         const float v[3] = {float(pos[0]->value()), float(pos[1]->value()), float(pos[2]->value())};
-        setInstanceTransform(index, v, float(yaw->value()));
+        const float sc[3] = {float(scl[0]->value()), float(scl[1]->value()), float(scl[2]->value())};
+        setInstanceTransform(index, v, float(yaw->value()), float(pitch->value()), float(roll->value()), sc);
     };
     auto writeAndMark = [this, index, write] {
         write();
@@ -3261,8 +3339,14 @@ void MainWindow::showInstanceProperties(int index) {
         // Rebuild the page when editing ends, so the Overrides list and Revert buttons match the new values.
         connect(s, &QAbstractSpinBox::editingFinished, this, [this, index] { scheduleInstanceRefresh(index); });
     }
-    connect(yaw, QOverload<double>::of(&QDoubleSpinBox::valueChanged), this, writeAndMark);
-    connect(yaw, &QAbstractSpinBox::editingFinished, this, [this, index] { scheduleInstanceRefresh(index); });
+    for (QDoubleSpinBox* s : {yaw, pitch, roll}) {
+        connect(s, QOverload<double>::of(&QDoubleSpinBox::valueChanged), this, writeAndMark);
+        connect(s, &QAbstractSpinBox::editingFinished, this, [this, index] { scheduleInstanceRefresh(index); });
+    }
+    for (QDoubleSpinBox* s : scl) {
+        connect(s, QOverload<double>::of(&QDoubleSpinBox::valueChanged), this, writeAndMark);
+        connect(s, &QAbstractSpinBox::editingFinished, this, [this, index] { scheduleInstanceRefresh(index); });
+    }
 
     // Terrain (item 18): the file and sizes are fixed when the tile is created. The brush, erosion, layers and foliage are below.
     if (cur.terrain) {
@@ -6235,6 +6319,13 @@ QJsonArray floatsJson(std::initializer_list<float> values) {
     return a;
 }
 
+// A scale as a scene file writes it: one number when it is uniform, because that is what a prop scaled evenly has, and
+// what a person writing the file by hand would say; a vector otherwise.
+QJsonValue scaleJson(const glm::vec3& s) {
+    if (std::fabs(s.x - s.y) < 1e-6f && std::fabs(s.x - s.z) < 1e-6f) return double(s.x);
+    return floatsJson({s.x, s.y, s.z});
+}
+
 QJsonObject cameraJson(const ukiyo::OrbitCamera& c) {
     QJsonObject o;
     o["target"] = floatsJson({c.target.x, c.target.y, c.target.z});
@@ -6493,14 +6584,27 @@ QJsonObject MainWindow::sceneDocument() {
             if (in.overrides.contains(QLatin1String("translation")))
                 ov["translation"] = floatsJson({in.position[0], in.position[1], in.position[2]});
             if (in.overrides.contains(QLatin1String("yawDeg"))) ov["yawDeg"] = double(in.yawDeg);
+            if (in.overrides.contains(QLatin1String("scale"))) ov["scale"] = scaleJson(in.scale);
             o["overrides"] = ov;
+            // Pitch and roll belong to the instance, not to the prefab node, so they are written alongside it, in the
+            // `rotation` form the runtime reads.
+            if (std::fabs(in.pitchDeg) > 1e-6f || std::fabs(in.rollDeg) > 1e-6f)
+                o["rotation"] = floatsJson({in.pitchDeg, in.yawDeg, in.rollDeg});
         } else {
             if (in.path == emptyModelPath()) o["empty"] = true;
             else o["path"] = QDir(projectRoot_).relativeFilePath(in.path);
             o["position"] = floatsJson({in.position[0], in.position[1], in.position[2]});
-            o["yawDeg"] = double(in.yawDeg);
-            // Only a scaled instance writes it, so a scene that never scaled anything keeps its exact bytes.
-            if (std::fabs(in.scale - 1.0f) > 1e-6f) o["scale"] = double(in.scale);
+            // `yawDeg` stays the plain form, so a scene whose models only turn about Y keeps the bytes it had. Once a
+            // model is tilted the three angles are written as `rotation`, the field the runtime reads.
+            if (std::fabs(in.pitchDeg) > 1e-6f || std::fabs(in.rollDeg) > 1e-6f)
+                o["rotation"] = floatsJson({in.pitchDeg, in.yawDeg, in.rollDeg});
+            else
+                o["yawDeg"] = double(in.yawDeg);
+            // Only a scaled instance writes it, so a scene that never scaled anything keeps its exact bytes. A uniform
+            // scale is one number, because that is what most props have and what a person would write by hand.
+            if (std::fabs(in.scale.x - 1.0f) > 1e-6f || std::fabs(in.scale.y - 1.0f) > 1e-6f ||
+                std::fabs(in.scale.z - 1.0f) > 1e-6f)
+                o["scale"] = scaleJson(in.scale);
         }
         if (!in.name.isEmpty()) o["name"] = in.name;
         // Game system settings. Only written when something is enabled.
@@ -7094,33 +7198,48 @@ bool MainWindow::selectionTarget(int* index, InstanceInfo* info) {
     return true;
 }
 
-bool MainWindow::gizmoPress(QPointF s) {
-    if (terrainBrush_.tool != TerrainTool::None) return terrainPress(s);
+bool MainWindow::gizmoPress(QPointF sPos) {
+    if (terrainBrush_.tool != TerrainTool::None) return terrainPress(sPos);
     int index = -1;
     InstanceInfo info;
     if (!gizmoTarget(&index, &info)) return false;
     const glm::vec3 origin(info.position[0], info.position[1], info.position[2]);
     const int w = viewport_->width(), h = viewport_->height();
-    const gizmo::Part part = gizmo::hitTest(gameCam_, w, h, gizmoTool_, origin, s);
+    const gizmo::Part part = gizmo::hitTest(gameCam_, w, h, gizmoTool_, origin, sPos);
     if (part == gizmo::Part::None) return false;
-    const gizmo::Ray r = gizmo::screenRay(gameCam_, w, h, s);
-    if (part == gizmo::Part::RotateYaw) {
-        float theta = 0.0f;
-        if (!gizmo::yawAngle(r, origin, &theta)) return false;
-        gizmoTheta0_ = theta;
-    } else if (part == gizmo::Part::Scale) {
-        QPointF c;
-        if (!gizmo::project(gameCam_, w, h, origin, &c)) return false;
-        gizmoCenter0_ = c;
-        gizmoMouse0_ = s;
-    } else {
-        gizmoT0_ = gizmo::axisParam(r, origin, part);
-    }
+    const gizmo::Ray r = gizmo::screenRay(gameCam_, w, h, sPos);
     gizmoIndex_ = index;
     gizmoPart_ = part;
     gizmoOrigin0_ = origin;
     gizmoYaw0_ = info.yawDeg;
+    gizmoPitch0_ = info.pitchDeg;
+    gizmoRoll0_ = info.rollDeg;
     gizmoScale0_ = info.scale;
+    gizmoT0_ = 0.0f;
+    gizmoTheta0_ = 0.0f;
+    gizmoHit0_ = glm::vec3(0.0f);
+    gizmoMouse0_ = sPos;
+    switch (gizmoTool_) {
+    case gizmo::Tool::Move:
+        if (gizmo::isPlanePart(part)) {
+            // A plane handle drags in its own plane: remember where in that plane the pointer started.
+            if (!gizmo::planePoint(r, origin, part, &gizmoHit0_)) return false;
+        } else {
+            gizmoT0_ = gizmo::axisParam(r, origin, part);
+        }
+        break;
+    case gizmo::Tool::Rotate:
+        if (!gizmo::ringAngle(r, origin, gizmo::partAxis(part), &gizmoTheta0_)) return false;
+        break;
+    case gizmo::Tool::Scale: {
+        // A scale drag measures from the gizmo's centre in pixels, so a rotation of the view does not change how much a
+        // pixel of travel scales the object.
+        QPointF c;
+        if (!gizmo::project(gameCam_, w, h, origin, &c)) return false;
+        gizmoCenter0_ = c;
+        break;
+    }
+    }
     gizmoDragging_ = true;
     gizmoChanged_ = false;
     gizmoPushed_ = beginEdit();   // one undo step for the whole drag
@@ -7128,35 +7247,81 @@ bool MainWindow::gizmoPress(QPointF s) {
     return true;
 }
 
-void MainWindow::gizmoDrag(QPointF s) {
+void MainWindow::gizmoDrag(QPointF sPos) {
     if (terrainStroke_) {
-        terrainStrokeDab(s);
+        terrainStrokeDab(sPos);
         return;
     }
     if (!gizmoDragging_) return;
     const int w = viewport_->width(), h = viewport_->height();
-    const gizmo::Ray r = gizmo::screenRay(gameCam_, w, h, s);
+    const gizmo::Ray r = gizmo::screenRay(gameCam_, w, h, sPos);
     float pos[3] = {gizmoOrigin0_.x, gizmoOrigin0_.y, gizmoOrigin0_.z};
     float yaw = gizmoYaw0_;
-    float scale = gizmoScale0_;
-    if (gizmoPart_ == gizmo::Part::Scale) {
-        scale = gizmo::scaledBy(gizmoScale0_, gizmoCenter0_, gizmoMouse0_, s, snapOn_ ? 0.1f : 0.0f);
-    } else if (gizmoPart_ == gizmo::Part::RotateYaw) {
+    float pitch = gizmoPitch0_;
+    float roll = gizmoRoll0_;
+    float scale[3] = {gizmoScale0_.x, gizmoScale0_.y, gizmoScale0_.z};
+
+    switch (gizmoTool_) {
+    case gizmo::Tool::Move:
+        if (gizmo::isPlanePart(gizmoPart_)) {
+            glm::vec3 hit;
+            if (!gizmo::planePoint(r, gizmoOrigin0_, gizmoPart_, &hit)) return;
+            const glm::vec3 p = gizmo::movedInPlane(gizmoOrigin0_, gizmoHit0_, hit, snapOn_ ? moveSnap_ : 0.0f);
+            pos[0] = p.x;
+            pos[1] = p.y;
+            pos[2] = p.z;
+        } else {
+            const float t = gizmo::axisParam(r, gizmoOrigin0_, gizmoPart_);
+            const glm::vec3 p = gizmo::movedPosition(gizmoOrigin0_, gizmoPart_, gizmoT0_, t, snapOn_ ? moveSnap_ : 0.0f);
+            pos[0] = p.x;
+            pos[1] = p.y;
+            pos[2] = p.z;
+        }
+        break;
+    case gizmo::Tool::Rotate: {
         float theta = 0.0f;
-        if (!gizmo::yawAngle(r, gizmoOrigin0_, &theta)) return;
-        yaw = gizmo::rotatedYaw(gizmoYaw0_, gizmoTheta0_, theta, snapOn_ ? rotateSnapDeg_ : 0.0f);
-    } else {
-        const float t = gizmo::axisParam(r, gizmoOrigin0_, gizmoPart_);
-        const glm::vec3 p = gizmo::movedPosition(gizmoOrigin0_, gizmoPart_, gizmoT0_, t, snapOn_ ? moveSnap_ : 0.0f);
-        pos[0] = p.x;
-        pos[1] = p.y;
-        pos[2] = p.z;
+        if (!gizmo::ringAngle(r, gizmoOrigin0_, gizmo::partAxis(gizmoPart_), &theta)) return;
+        // One ring turns one angle: the ring round X is pitch, round Y is yaw, round Z is roll, which is the engine's
+        // ZXY order read off the handles.
+        const float step = snapOn_ ? rotateSnapDeg_ : 0.0f;
+        if (gizmoPart_ == gizmo::Part::RotateX) pitch = gizmo::rotatedAngle(gizmoPitch0_, gizmoTheta0_, theta, step);
+        else if (gizmoPart_ == gizmo::Part::RotateY) yaw = gizmo::rotatedAngle(gizmoYaw0_, gizmoTheta0_, theta, step);
+        else if (gizmoPart_ == gizmo::Part::RotateZ) roll = gizmo::rotatedAngle(gizmoRoll0_, gizmoTheta0_, theta, step);
+        break;
     }
+    case gizmo::Tool::Scale: {
+        const float step = snapOn_ ? 0.1f : 0.0f;
+        const glm::vec2 at(float(sPos.x()), float(sPos.y()));
+        if (gizmoPart_ == gizmo::Part::ScaleUniform) {
+            // The centre handle scales all three axes by the same factor, from the ratio of the pointer's distance to
+            // the gizmo: drag to twice the radius and the object doubles.
+            const float f = gizmo::scaleRadial(glm::vec2(float(gizmoCenter0_.x()), float(gizmoCenter0_.y())),
+                                               glm::vec2(float(gizmoMouse0_.x()), float(gizmoMouse0_.y())), at);
+            for (int k = 0; k < 3; ++k) scale[k] = gizmo::snapScale(gizmoScale0_[k] * f, step);
+        } else {
+            // An axis handle scales only its own axis, measured along the handle: drag the cube out by one handle length
+            // and that axis doubles. The handle is measured on screen, so the view's angle does not change the feel.
+            const int k = gizmoPart_ == gizmo::Part::ScaleX ? 0 : gizmoPart_ == gizmo::Part::ScaleY ? 1 : 2;
+            const glm::vec3 axis = gizmo::partAxis(gizmoPart_);
+            QPointF base, tip;
+            if (!gizmo::project(gameCam_, w, h, gizmoOrigin0_, &base) ||
+                !gizmo::project(gameCam_, w, h, gizmoOrigin0_ + axis * gizmo::handleLength(gameCam_, gizmoOrigin0_), &tip))
+                return;
+            const glm::vec2 axisPixels(float(tip.x() - base.x()), float(tip.y() - base.y()));
+            const float travelled = gizmo::scaleDelta(glm::vec2(float(gizmoMouse0_.x()), float(gizmoMouse0_.y())), at,
+                                                      axisPixels, nullptr);
+            scale[k] = gizmo::snapScale(gizmoScale0_[k] * (1.0f + travelled), step);
+        }
+        break;
+    }
+    }
+
     const bool differs = pos[0] != gizmoOrigin0_.x || pos[1] != gizmoOrigin0_.y || pos[2] != gizmoOrigin0_.z ||
-                         yaw != gizmoYaw0_ || scale != gizmoScale0_;
+                         yaw != gizmoYaw0_ || pitch != gizmoPitch0_ || roll != gizmoRoll0_ ||
+                         scale[0] != gizmoScale0_.x || scale[1] != gizmoScale0_.y || scale[2] != gizmoScale0_.z;
     if (!differs && !gizmoChanged_) return;   // nothing to write yet
     gizmoChanged_ = gizmoChanged_ || differs;
-    applyInstanceTransform(gizmoIndex_, pos, yaw, scale);
+    applyInstanceTransform(gizmoIndex_, pos, yaw, pitch, roll, scale);
     viewport_->update();
 }
 
@@ -7179,19 +7344,20 @@ void MainWindow::gizmoRelease() {
 void MainWindow::cancelGizmoDrag() {
     if (!gizmoDragging_) return;
     const float pos[3] = {gizmoOrigin0_.x, gizmoOrigin0_.y, gizmoOrigin0_.z};
-    applyInstanceTransform(gizmoIndex_, pos, gizmoYaw0_, gizmoScale0_);
+    const float scale[3] = {gizmoScale0_.x, gizmoScale0_.y, gizmoScale0_.z};
+    applyInstanceTransform(gizmoIndex_, pos, gizmoYaw0_, gizmoPitch0_, gizmoRoll0_, scale);
     gizmoChanged_ = false;   // back where it started, so the release drops the undo step
     gizmoRelease();
 }
 
-void MainWindow::gizmoHover(QPointF s) {
+void MainWindow::gizmoHover(QPointF sPos) {
     if (gizmoDragging_) return;
     int index = -1;
     InstanceInfo info;
     gizmo::Part part = gizmo::Part::None;
     if (gizmoTarget(&index, &info)) {
         const glm::vec3 origin(info.position[0], info.position[1], info.position[2]);
-        part = gizmo::hitTest(gameCam_, viewport_->width(), viewport_->height(), gizmoTool_, origin, s);
+        part = gizmo::hitTest(gameCam_, viewport_->width(), viewport_->height(), gizmoTool_, origin, sPos);
     }
     if (part != gizmoHover_) {
         gizmoHover_ = part;
@@ -7424,6 +7590,48 @@ void MainWindow::paintGizmo(QPainter& p) {
                  gizmoDragging_ ? gizmoPart_ : gizmo::Part::None);
 }
 
+void MainWindow::paintViewGizmo(QPainter& p) {
+    const QRectF box = viewgizmo::bounds(viewport_->width(), viewport_->height());
+    viewgizmo::paint(p, gameCam_, box, viewGizmoHover_);
+}
+
+// A click on the view gizmo's corner widget looks along the axis that was clicked, the way the same widget does in
+// Blender: the view turns to face that axis, and it switches to orthographic, because the reason to press it is to check
+// a silhouette or a side elevation against a known direction.
+bool MainWindow::viewGizmoPress(QPointF sPos) {
+    const QRectF box = viewgizmo::bounds(viewport_->width(), viewport_->height());
+    if (!box.contains(sPos)) return false;
+    const int handle = viewgizmo::hitTest(gameCam_, box, sPos);
+    if (handle < 0) return false;
+    viewGizmoSnap(handle);
+    return true;
+}
+
+void MainWindow::viewGizmoSnap(int handle) {
+    float yaw = gameCam_.yaw;
+    float pitch = gameCam_.pitch;
+    viewgizmo::viewFor(handle, &yaw, &pitch);
+    gameCam_.yaw = yaw;
+    gameCam_.pitch = pitch;
+    gameCam_.orthographic = true;
+    orthoAction_->setChecked(true);
+    refresh();
+    viewport_->update();
+    const char* axis = viewgizmo::handleLabel(handle);
+    statusBar()->showMessage(axis[0] != '\0' ? QStringLiteral("Looking along %1").arg(QString::fromLatin1(axis))
+                                             : QStringLiteral("Looking along the opposite axis"),
+                             2500);
+}
+
+void MainWindow::viewGizmoHover(QPointF sPos) {
+    const QRectF box = viewgizmo::bounds(viewport_->width(), viewport_->height());
+    const int handle = box.contains(sPos) ? viewgizmo::hitTest(gameCam_, box, sPos) : -1;
+    if (handle != viewGizmoHover_) {
+        viewGizmoHover_ = handle;
+        viewport_->update();
+    }
+}
+
 // Create > Terrain: picks a raw 16-bit heightmap and adds a tile at the origin (item 18). The file must hold a square
 // of 65, 129, ..., 1025 samples per side, so it splits into whole 64-cell chunks.
 void MainWindow::createTerrainObject() {
@@ -7652,8 +7860,9 @@ bool MainWindow::applySceneDocument(const QJsonObject& root, const QString& sour
     }
     {
         const scene_file::SceneEntry first = entries[0];
+        const float firstScale[3] = {first.scale.x, first.scale.y, first.scale.z};
         runOnWorker([&] {
-            worker_->setInstancePlacement(0, first.position, first.yawDeg, first.scale);
+            worker_->setInstancePlacement(0, first.position, first.yawDeg, first.pitchDeg, first.rollDeg, firstScale);
             worker_->setInstanceName(0, first.name);
             if (!first.prefab.isEmpty())
                 worker_->setInstanceLink(0, first.prefab, first.prefabId, first.overrides);
@@ -7664,13 +7873,14 @@ bool MainWindow::applySceneDocument(const QJsonObject& root, const QString& sour
     }
     for (int k = 1; k < static_cast<int>(entries.size()); ++k) {
         const scene_file::SceneEntry e = entries[k];
+        const float eScale[3] = {e.scale.x, e.scale.y, e.scale.z};
         QString err;
         ModelInfo unused;
         bool ok = false;
         int index = -1;
         runOnWorker([&] {
             ok = worker_->addModel(e.path, e.position, e.yawDeg, &err, &unused, &index);
-            if (ok) worker_->setInstancePlacement(index, e.position, e.yawDeg, e.scale);
+            if (ok) worker_->setInstancePlacement(index, e.position, e.yawDeg, e.pitchDeg, e.rollDeg, eScale);
             if (ok && !e.prefab.isEmpty()) worker_->setInstanceLink(index, e.prefab, e.prefabId, e.overrides);
             if (ok) worker_->setInstanceComponents(index, e.components);
             if (ok) worker_->setInstanceLod(index, e.lodSwitches);
@@ -9188,9 +9398,10 @@ int MainWindow::runSelfTest() {
             const glm::vec3 snapped = gizmo::movedPosition(glm::vec3(0.1f, 0, 0), gizmo::Part::MoveX, 0.0f, 0.4f, 0.25f);
             check(near(snapped.x, 0.5f, 1e-5f) && snapped.y == 0.0f && snapped.z == 0.0f,
                   "moving X snaps only that axis to the 0.25 m grid");
-            check(near(gizmo::rotatedYaw(10.0f, 0.0f, 30.0f, 0.0f), 40.0f, 1e-4f), "a 30 degree sweep turns 30 degrees");
-            check(near(gizmo::rotatedYaw(10.0f, 0.0f, 33.0f, 15.0f), 45.0f, 1e-4f), "turns snap to 15 degree steps");
-            check(near(gizmo::rotatedYaw(0.0f, 170.0f, -170.0f, 0.0f), 20.0f, 1e-4f),
+            check(near(gizmo::rotatedAngle(10.0f, 0.0f, 30.0f, 0.0f), 40.0f, 1e-4f),
+                  "a 30 degree sweep turns 30 degrees");
+            check(near(gizmo::rotatedAngle(10.0f, 0.0f, 33.0f, 15.0f), 45.0f, 1e-4f), "turns snap to 15 degree steps");
+            check(near(gizmo::rotatedAngle(0.0f, 170.0f, -170.0f, 0.0f), 20.0f, 1e-4f),
                   "a sweep across 180 degrees takes the short way");
 
             const float s30 = std::sin(glm::radians(30.0f)), c30 = std::cos(glm::radians(30.0f));
@@ -9201,8 +9412,19 @@ int MainWindow::runSelfTest() {
             const glm::vec3 eyeSide(s30 * 2.0f, 3.0f, c30 * 2.0f);
             const gizmo::Ray ringRay{eyeSide, glm::normalize(glm::vec3(s30, 0.0f, c30) - eyeSide)};
             float theta = 0.0f;
-            check(gizmo::yawAngle(ringRay, glm::vec3(0.0f), &theta) && near(theta, 30.0f, 1e-3f),
-                  "a ray that hits the ring at 30 degrees reads 30 degrees");
+            check(gizmo::ringAngle(ringRay, glm::vec3(0.0f), glm::vec3(0.0f, 1.0f, 0.0f), &theta) &&
+                      near(theta, 30.0f, 1e-3f),
+                  "a ray that hits the Y ring at 30 degrees reads 30 degrees");
+
+            // Blender's visibility rule: an axis pointing at the viewer is not drawn, a plane seen edge-on is not either.
+            check(!ukiyo::gizmo::axisVisible(glm::vec3(0.0f, 0.0f, 1.0f), glm::vec3(0.0f, 0.0f, 1.0f), false),
+                  "an axis pointing at the viewer is hidden");
+            check(ukiyo::gizmo::axisVisible(glm::vec3(0.0f, 0.0f, 1.0f), glm::vec3(1.0f, 0.0f, 0.0f), false),
+                  "an axis across the view is drawn");
+            check(!ukiyo::gizmo::axisVisible(glm::vec3(0.0f, 0.0f, 1.0f), glm::vec3(0.0f, 0.0f, 1.0f), true),
+                  "a plane seen face-on is hidden: its square would cover the object");
+            check(ukiyo::gizmo::axisVisible(glm::vec3(0.0f, 0.0f, 1.0f), glm::vec3(1.0f, 0.0f, 0.0f), true),
+                  "a plane seen from the side is drawn");
         }
 
         // Real mouse events on the Scene view, with a model selected.
@@ -9304,6 +9526,51 @@ int MainWindow::runSelfTest() {
             undoEdit();
             settle();
             check(near(posOf(0).yawDeg, beforeTurn.yawDeg, 1e-3f), "undo restores the turn");
+
+            // Scale: drag the X cube out by one handle length, which doubles that axis and leaves the others alone.
+            setGizmoTool(gizmo::Tool::Scale);
+            settle();
+            const InstanceInfo beforeScale = posOf(0);
+            QPointF sGrab, sTo;
+            gizmo::project(gameCam_, w, h, o + ax * len, &sGrab);
+            gizmo::project(gameCam_, w, h, o + ax * (len * 2.0f), &sTo);
+            sendMouse(QEvent::MouseButtonPress, sGrab, Qt::LeftButton, Qt::LeftButton);
+            sendMouse(QEvent::MouseMove, sTo, Qt::NoButton, Qt::LeftButton);
+            sendMouse(QEvent::MouseButtonRelease, sTo, Qt::LeftButton, Qt::NoButton);
+            settle();
+            const InstanceInfo afterScale = posOf(0);
+            check(near(afterScale.scale.x, beforeScale.scale.x * 2.0f, 0.05f),
+                  "dragging the X scale handle by its length doubles X");
+            check(near(afterScale.scale.y, beforeScale.scale.y, 1e-4f) &&
+                      near(afterScale.scale.z, beforeScale.scale.z, 1e-4f),
+                  "a scale handle leaves the other two axes alone");
+            undoEdit();
+            settle();
+            check(near(posOf(0).scale.x, beforeScale.scale.x, 1e-4f), "undo restores the scale");
+
+            // The view gizmo: pressing its top handle looks down from above.
+            {
+                const QRectF box = viewgizmo::bounds(w, h);
+                QPointF above;
+                float depth = 0.0f;
+                for (int i = 0; i < viewgizmo::kHandleCount; ++i) {
+                    const QPointF at = viewgizmo::handlePoint(gameCam_, box, i, &depth);
+                    if (viewgizmo::handleDirection(i) == glm::vec3(0.0f, 1.0f, 0.0f)) above = at;
+                }
+                const float yawBefore = gameCam_.yaw;
+                sendMouse(QEvent::MouseButtonPress, above, Qt::LeftButton, Qt::LeftButton);
+                sendMouse(QEvent::MouseButtonRelease, above, Qt::LeftButton, Qt::NoButton);
+                settle();
+                check(near(gameCam_.pitch, 1.55334f, 1e-3f),
+                      "pressing the view gizmo's +Y handle looks straight down");
+                check(gameCam_.orthographic, "a view gizmo press switches the Scene view to orthographic");
+                gameCam_.yaw = yawBefore;
+                gameCam_.pitch = 0.15f;
+                gameCam_.orthographic = camBefore.orthographic;
+                refresh();
+                settle();
+            }
+
             setGizmoTool(gizmo::Tool::Move);
             settle();
 

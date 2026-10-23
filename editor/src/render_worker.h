@@ -66,7 +66,9 @@ struct InstanceInfo {
     QString path;
     float position[3] = {0.0f, 0.0f, 0.0f};
     float yawDeg = 0.0f;
-    float scale = 1.0f;         // uniform scale; 1 for an instance that was never scaled
+    float pitchDeg = 0.0f;
+    float rollDeg = 0.0f;
+    float scale[3] = {1.0f, 1.0f, 1.0f};   // per-axis scale
     QString prefab;             // linked .ukprefab, empty for a plain model
     QString prefabId;
     QStringList overrides;      // "translation", "yawDeg"
@@ -107,7 +109,8 @@ public:
                   int* index);
     // Makes an instance active and describes it in *info.
     bool activateInstance(int index, ModelInfo* info);
-    bool setInstancePlacement(int index, const float position[3], float yawDeg, float scale = 1.0f);
+    bool setInstancePlacement(int index, const float position[3], float yawDeg, float pitchDeg = 0.0f,
+                              float rollDeg = 0.0f, const float scale[3] = nullptr);
     bool setInstanceLink(int index, const QString& prefab, const QString& prefabId, const QStringList& overrides);
     // Removes every model from the scene.
     void clearScene() { session_.clearInstances(); }

@@ -109,8 +109,9 @@ bool RenderWorker::activateInstance(int index, ModelInfo* info) {
     return true;
 }
 
-bool RenderWorker::setInstancePlacement(int index, const float position[3], float yawDeg, float scale) {
-    return session_.setInstancePlacement(index, position, yawDeg, scale);
+bool RenderWorker::setInstancePlacement(int index, const float position[3], float yawDeg, float pitchDeg,
+                                        float rollDeg, const float scale[3]) {
+    return session_.setInstancePlacement(index, position, yawDeg, pitchDeg, rollDeg, scale);
 }
 
 bool RenderWorker::setInstanceLink(int index, const QString& prefab, const QString& prefabId,
@@ -128,7 +129,9 @@ std::vector<InstanceInfo> RenderWorker::instances() const {
         in.path = QString::fromStdString(p.path);
         for (int k = 0; k < 3; ++k) in.position[k] = p.position[k];
         in.yawDeg = p.yawDeg;
-        in.scale = p.scale;
+        in.pitchDeg = p.pitchDeg;
+        in.rollDeg = p.rollDeg;
+        for (int k = 0; k < 3; ++k) in.scale[k] = p.scale[k];
         in.prefab = QString::fromStdString(p.prefab);
         in.prefabId = QString::fromStdString(p.prefabId);
         for (const std::string& k : p.overrides) in.overrides << QString::fromStdString(k);

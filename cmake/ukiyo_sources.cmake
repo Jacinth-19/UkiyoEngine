@@ -12,6 +12,7 @@ set(UKIYO_CORE_SOURCES
   src/engine/anim.cpp
   src/engine/camera.cpp
   src/engine/transform.cpp
+  src/engine/gizmo_math.cpp
   src/engine/lights.cpp
   src/engine/text_atlas.cpp
   src/engine/msdf.cpp

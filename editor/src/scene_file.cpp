@@ -88,6 +88,23 @@ QJsonObject lightToJson(const ukiyo::SceneLight& l) {
     return o;
 }
 
+// A rotation as the runtime reads it: `rotation` [pitch, yaw, roll] when the file carries it, else the older
+// `yawDeg` with no tilt. Returns which field was used so the caller can tell a tilted model from a turned one.
+bool readRotation(const QJsonObject& o, glm::vec3* deg) {
+    const QJsonValue rot = o.value(QStringLiteral("rotation"));
+    if (rot.isArray() && rot.toArray().size() >= 3) {
+        const QJsonArray a = rot.toArray();
+        *deg = glm::vec3(float(a[0].toDouble()), float(a[1].toDouble()), float(a[2].toDouble()));
+        return true;
+    }
+    // `pitchDeg` and `rollDeg` are the fields an editor build before `rotation` wrote. They still open, so a scene
+    // authored with them is not lost.
+    *deg = glm::vec3(float(o.value(QStringLiteral("pitchDeg")).toDouble()),
+                     float(o.value(QStringLiteral("yawDeg")).toDouble()),
+                     float(o.value(QStringLiteral("rollDeg")).toDouble()));
+    return false;
+}
+
 QJsonArray lightsToJson(const std::vector<ukiyo::SceneLight>& lights) {
     QJsonArray a;
     for (const ukiyo::SceneLight& l : lights) a.append(lightToJson(l));
@@ -450,6 +467,22 @@ QJsonObject waterToJson(const ukiyo::WaterVolume& v) {
     return o;
 }
 
+namespace {
+
+// A scale is one number when it is even and three when it is not: a scene that only ever scaled everything up writes
+// "scale": 2, and one that stretched one axis writes [1, 2, 1]. Both read the same way.
+glm::vec3 readScale(const QJsonValue& v) {
+    if (v.isArray()) {
+        const QJsonArray a = v.toArray();
+        if (a.size() == 3)
+            return glm::vec3(float(a[0].toDouble(1.0)), float(a[1].toDouble(1.0)), float(a[2].toDouble(1.0)));
+    }
+    if (v.isDouble()) return glm::vec3(float(v.toDouble(1.0)));
+    return glm::vec3(1.0f);
+}
+
+} // namespace
+
 void parseSceneEntries(const QJsonObject& root, const QString& projectRoot, SceneContents* out) {
     out->active = std::max(0, root.value(QLatin1String("active")).toInt(0));
     parseWater(root, &out->water, &out->hasWater);
@@ -488,8 +521,21 @@ void parseSceneEntries(const QJsonObject& root, const QString& projectRoot, Scen
                 e.overrides << QStringLiteral("yawDeg");
             }
             if (ov.contains(QStringLiteral("scale"))) {
-                e.scale = float(ov.value(QStringLiteral("scale")).toDouble(1.0));
+                e.scale = readScale(ov.value(QStringLiteral("scale")));
                 e.overrides << QStringLiteral("scale");
+            }
+            // Pitch and roll are the instance's own: a prefab node carries a position and a yaw, so there is nothing in
+            // the prefab for them to be overridden from. They sit next to the reference, not inside `overrides`.
+            glm::vec3 deg;
+            readRotation(o, &deg);
+            // The prefab's yaw is the base; the file's rotation, when it has one, is the instance's own.
+            if (o.contains(QStringLiteral("rotation"))) {
+                e.pitchDeg = deg.x;
+                e.yawDeg = deg.y;
+                e.rollDeg = deg.z;
+            } else {
+                e.pitchDeg = deg.x;
+                e.rollDeg = deg.z;
             }
         } else if (o.value("empty").toBool()) {
             QString emptyErr;
@@ -499,13 +545,21 @@ void parseSceneEntries(const QJsonObject& root, const QString& projectRoot, Scen
             }
             e.path = emptyModelPath();
             readFloats(o.value("position"), e.position, 3);
-            e.yawDeg = float(o.value("yawDeg").toDouble());
-            e.scale = float(o.value(QStringLiteral("scale")).toDouble(1.0));
+            glm::vec3 deg;
+            readRotation(o, &deg);
+            e.pitchDeg = deg.x;
+            e.yawDeg = deg.y;
+            e.rollDeg = deg.z;
+            e.scale = readScale(o.value(QStringLiteral("scale")));
         } else {
             e.path = QDir(projectRoot).absoluteFilePath(o.value("path").toString());
             readFloats(o.value("position"), e.position, 3);
-            e.yawDeg = float(o.value("yawDeg").toDouble());
-            e.scale = float(o.value(QStringLiteral("scale")).toDouble(1.0));
+            glm::vec3 deg;
+            readRotation(o, &deg);
+            e.pitchDeg = deg.x;
+            e.yawDeg = deg.y;
+            e.rollDeg = deg.z;
+            e.scale = readScale(o.value(QStringLiteral("scale")));
         }
         e.name = o.value("name").toString();
         entries.push_back(e);

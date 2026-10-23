@@ -233,6 +233,12 @@ jobs:
         run: |-
           set -o pipefail
           ./build/camera_test 2>&1 | tee /tmp/ukiyo-test-camera_test.log
+      # The gizmos' geometry: the view's ray, axis and plane drags, the visibility rule, snapping, and the view gizmo's
+      # six handles. No window and no GPU, so a wrong angle fails here rather than in a screenshot.
+      - name: Run Gizmo Math Test
+        run: |-
+          set -o pipefail
+          ./build/gizmo_math_test 2>&1 | tee /tmp/ukiyo-test-gizmo_math_test.log
       # Budgeted loading (Flax 1.11's async scene loading): the scheduler that decides how much of a scene one frame pays
       # for, driven by a fake clock so a budget is a number the test can hold it to.
       - name: Run Async Load Test
@@ -732,7 +738,7 @@ jobs:
                     "contact_shadow_test", "pcss_test", "msdf_test", "alpha_mips_test", "transform_test", "lights_test", "save_test",
                     "property_search_test", "async_load_test", "game_data_test", "game_test", "pack_test",
                     "manifest_test", "scene_runtime_test", "hud_test", "character_test", "player_test",
-                    "json_patch_test", "asset_db_test", "editor_tools_test", "camera_test")) {
+                    "json_patch_test", "asset_db_test", "editor_tools_test", "camera_test", "gizmo_math_test")) {
             Write-Host "::group::$t"
             # script_test keeps a trace in a file as well as on stdout: a process that dies on Windows has been seen to
             # lose the last lines of a redirected stdout, and a file is flushed on every line.
