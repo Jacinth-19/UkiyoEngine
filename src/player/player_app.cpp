@@ -225,6 +225,10 @@ void PlayerApp::setKey(const std::string& key, bool down) {
     if (world_) world_->setKeyHeld(key, down);
 }
 
+void PlayerApp::setTouch(int finger, bool down, glm::vec2 position, glm::vec2 delta) {
+    if (world_) world_->setTouch(finger, down, position, delta);
+}
+
 void PlayerApp::syncInstancesFromWorld() {
     if (!world_) return;
     for (size_t i = 0; i < instances_.size(); ++i) {

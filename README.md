@@ -228,7 +228,9 @@ Java at all; [docs/ANDROID.md](docs/ANDROID.md) has the layout, the tools and wh
   old binding back; a game gets Unity's `RebindingOperation` as `RebindOperation` (status, timeout, conflicts, undo).
   The parser and runtime are tested in CI, on Linux and Windows, against the semantics of the Unity Input System
   rather than a simplified subset. See [docs/INPUT.md](docs/INPUT.md).
-* **Audio** through miniaudio; **networking** over UDP with snapshots and interpolation.
+* **Audio** through miniaudio; **networking** over UDP with a tested reliability layer — sequenced datagrams,
+  fragmentation and an optional encrypted tunnel. Snapshots, interpolation and prediction above that transport are
+  not built yet, and [docs/AUDIT.md](docs/AUDIT.md) §4.6 says what that costs a multiplayer game.
 * **Virtual file system** with a pak format (`tools/ukiyo_pak.cpp`), so a shipped project is one folder.
 * **Asset search** as engine code: Godot's fuzzy ranking (word starts, file names and whole-token hits ahead of
   scattered letters, with the matched runs returned for highlighting) and a glob grammar with classes, groups,

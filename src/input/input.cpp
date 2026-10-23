@@ -33,6 +33,8 @@ const char* deviceName(DeviceKind k) {
     case DeviceKind::Keyboard: return "Keyboard";
     case DeviceKind::Mouse: return "Mouse";
     case DeviceKind::Gamepad: return "Gamepad";
+    // Unity's layout name, so a binding written by this engine resolves in Unity and the reverse also holds.
+    case DeviceKind::Touch: return "Touchscreen";
     }
     return "Device";
 }
@@ -45,6 +47,7 @@ bool deviceKindFromPath(const std::string& path, DeviceKind* out) {
     if (name == "Keyboard") { if (out) *out = DeviceKind::Keyboard; return true; }
     if (name == "Mouse") { if (out) *out = DeviceKind::Mouse; return true; }
     if (name == "Gamepad" || name == "Joystick") { if (out) *out = DeviceKind::Gamepad; return true; }
+    if (name == "Touchscreen" || name == "Touch") { if (out) *out = DeviceKind::Touch; return true; }
     return false;
 }
 
@@ -197,6 +200,19 @@ const std::vector<std::string>& gamepadControls() {
         "start", "select", "guide",
         "leftStick", "rightStick", "dpad",
         "dpad/up", "dpad/down", "dpad/left", "dpad/right",
+    };
+    return names;
+}
+
+// The Touchscreen, as Unity spells its controls. Positions are in screen fractions (0..1, origin top-left), not
+// Unity's pixels: this engine's HUD and camera maths are all resolution-independent, and a binding that carries a
+// pixel position would stop meaning the same thing on a second device. Everything else - the names, the primary/
+// secondary split, press - is Unity's, so an asset written against either engine reads in the other.
+const std::vector<std::string>& touchControls() {
+    static const std::vector<std::string> names = {
+        "primaryTouch/press", "primaryTouch/position", "primaryTouch/delta",
+        "secondaryTouch/press", "secondaryTouch/position", "secondaryTouch/delta",
+        "touchCount",
     };
     return names;
 }
@@ -375,15 +391,17 @@ Device::Device(DeviceKind kind, int index) : kind_(kind), index_(index) {
     // Every named control exists from the start with a zero value. A backend writes into them; a binding resolves
     // against them; a test can read them. Creating them lazily would make a binding to an untouched control null.
     const std::vector<std::string>* list = kind == DeviceKind::Keyboard ? &keyboardControls()
-                                          : kind == DeviceKind::Mouse  ? &mouseControls()
-                                                                       : &gamepadControls();
-    ControlType type = ControlType::Button;
+                                          : kind == DeviceKind::Mouse    ? &mouseControls()
+                                          : kind == DeviceKind::Gamepad  ? &gamepadControls()
+                                                                        : &touchControls();
     for (const std::string& n : *list) {
-        type = ControlType::Button;
-        if (n == "position" || n == "delta") type = ControlType::Vector2;
-        else if (n == "scroll") type = ControlType::Vector2;
+        ControlType type = ControlType::Button;
+        // Touch names are qualified ("primaryTouch/position"), so the test covers the qualified and the bare form.
+        if (n.find("position") != std::string::npos || n.find("delta") != std::string::npos ||
+            n == "scroll")
+            type = ControlType::Vector2;
         else if (n == "leftStick" || n == "rightStick" || n == "dpad") type = ControlType::Vector2;
-        else if (n == "leftTrigger" || n == "rightTrigger") type = ControlType::Axis;
+        else if (n == "leftTrigger" || n == "rightTrigger" || n == "touchCount") type = ControlType::Axis;
         controls_[n] = Control{n, type, 0.0f, glm::vec2(0.0f), 0.0f, glm::vec2(0.0f)};
     }
 }

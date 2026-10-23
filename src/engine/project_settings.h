@@ -13,8 +13,9 @@ namespace engine {
 struct InputAction {
     std::string name;   // e.g. "Jump"
     // What the action is bound to: a control path naming its device ("<Keyboard>/space", "<Gamepad>/buttonSouth",
-    // "<Mouse>/leftButton"), or a bare portable key ("Space", "W", "Left") for a project file written before paths.
-    // The editor writes paths; a bare key is the keyboard's path and is still read.
+    // "<Mouse>/leftButton", "<Touchscreen>/primaryTouch/press"), or a bare portable key ("Space", "W", "Left") for a
+    // project file written before paths. The editor writes paths; a bare key is the keyboard's path and is still
+    // read. Touch positions on a binding are screen fractions (0..1, origin top-left), not Unity's pixels.
     std::string key;
 };
 

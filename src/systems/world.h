@@ -150,6 +150,10 @@ public:
     void setInputActions(const std::vector<engine::InputAction>& actions);
     // The editor reports key presses and releases for the game view, in Qt's portable key text.
     void setKeyHeld(const std::string& key, bool down);
+    // A finger on glass, in screen fractions (0..1, origin top-left): finger 0 is the primary touch and 1 the
+    // secondary. Writes <Touchscreen> controls in the same State, so an action bound to
+    // "<Touchscreen>/primaryTouch/press" fires from a real touch event on Android and from a test on any machine.
+    void setTouch(int finger, bool down, const glm::vec2& position, const glm::vec2& delta);
     bool actionDown(const std::string& action) const;
     // A game's own line in the player's HUD, set by a script (`ukiyo.hud`). The player reads it after every tick and
     // shows it under the title, which is how a game says "3 of 5 lanterns" without owning the HUD renderer. Empty

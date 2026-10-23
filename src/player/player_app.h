@@ -49,6 +49,9 @@ public:
 
     // Key state in Qt's portable key text ("W", "Space", "Left"), which is what the input asset and scripts speak.
     void setKey(const std::string& key, bool down);
+    // A finger on the touch screen: finger 0 is the primary touch, 1 the secondary, positions are screen fractions
+    // (0..1, origin top-left). Forwards to the world's input State, so <Touchscreen> actions fire like any other.
+    void setTouch(int finger, bool down, glm::vec2 position, glm::vec2 delta);
 
     // One frame. dt is seconds and is clamped by the caller.
     void tick(float dt);

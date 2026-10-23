@@ -42,6 +42,7 @@ DeviceKind deviceKindFromName(const std::string& path, bool* known) {
     *known = true;
     if (path == "<Keyboard>") return DeviceKind::Keyboard;
     if (path == "<Mouse>") return DeviceKind::Mouse;
+    if (path == "<Touchscreen>" || path == "<Touch>") return DeviceKind::Touch;
     *known = path == "<Gamepad>" || path == "<Joystick>";
     return DeviceKind::Gamepad;
 }
@@ -166,7 +167,7 @@ AssetLoadResult loadAssetJson(State& state, const std::string& text) {
             const DeviceKind kind = deviceKindFromName(path, &known);
             if (!known) {
                 result.warnings.push_back("control scheme \"" + scheme.name + "\": device \"" + path +
-                                          "\" is not supported (no touch or XR devices)");
+                                          "\" is not supported (no XR devices)");
                 continue;
             }
             scheme.devices.push_back(kind);

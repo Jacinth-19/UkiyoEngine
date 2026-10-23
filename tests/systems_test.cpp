@@ -476,6 +476,35 @@ static double pumpRms(AudioEngine& a, uint32_t frames) {
     return std::sqrt(sum / double(buf.size()));
 }
 
+// A touch event on Android reaches a script through the same path a key does: project settings bind
+// "<Touchscreen>/primaryTouch/press" into the Gameplay map, and setTouch writes the control the binding resolved to.
+static void testWorldTouch() {
+    ukiyo::World w;
+    w.setInputActions({{"Jump", "Space"}, {"Light", "<Touchscreen>/primaryTouch/press"}});
+    ukiyo::input::ActionMap* gameplay = w.input().map("Gameplay");
+    check(gameplay != nullptr && gameplay->find("Light") != nullptr, "touch: the action exists");
+    ukiyo::input::Action* light = gameplay ? gameplay->find("Light") : nullptr;
+    check(light && light->bindings.size() == 1 && light->bindings[0].path == "<Touchscreen>/primaryTouch/press",
+          "touch: a <Touchscreen> path from project settings reaches the world");
+    check(!w.actionDown("Light"), "touch: it starts released");
+
+    w.setTouch(0, true, glm::vec2(0.25f, 0.5f), glm::vec2(0.0f));
+    check(w.actionDown("Light"), "touch: a finger down fires the action");
+    glm::vec2 pos(0.0f);
+    check(w.input().readPath("<Touchscreen>/primaryTouch/position", &pos) && std::fabs(pos.x - 0.25f) < 1e-5f,
+          "touch: the position is readable as a screen fraction");
+    check(w.input().readPath("<Touchscreen>/touchCount", &pos) && std::fabs(pos.x - 1.0f) < 1e-5f,
+          "touch: touchCount reads one finger down");
+    check(!w.actionDown("Jump"), "touch: the keyboard action does not fire from a touch");
+    w.setTouch(0, false, glm::vec2(0.25f, 0.5f), glm::vec2(0.0f));
+    check(!w.actionDown("Light"), "touch: lifting the finger releases it");
+
+    // The second finger is a different control, so a look-drag never fires an action bound to the primary touch.
+    w.setTouch(1, true, glm::vec2(0.8f, 0.2f), glm::vec2(0.1f, 0.0f));
+    check(!w.actionDown("Light"), "touch: the secondary touch does not fire a primary-touch action");
+    w.setTouch(1, false, glm::vec2(0.8f, 0.2f), glm::vec2(0.0f));
+}
+
 // Rebinding from the top of the stack (docs/INPUT.md §7, §9a): an action map built from project settings, a rebind
 // that writes a gamepad path into it, and the value a script reads afterwards.
 static void testWorldRebind() {
@@ -1961,6 +1990,7 @@ int main() {
     testPhysics();
     testActions();
     testWorldInput();
+    testWorldTouch();
     testWorldRebind();
     testNavigation();
     testAudio();

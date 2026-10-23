@@ -29,8 +29,9 @@ bool resolveBindingText(const std::string& text, std::string* stored, std::strin
             return fail("\"" + trimmed + "\" does not name a device. Use <Keyboard>/space or <Gamepad>/buttonSouth.");
         const std::string control = controlNameFromPath(trimmed);
         const std::vector<std::string>& known = kind == DeviceKind::Keyboard ? keyboardControls()
-                                                : kind == DeviceKind::Mouse  ? mouseControls()
-                                                                             : gamepadControls();
+                                                : kind == DeviceKind::Mouse    ? mouseControls()
+                                                : kind == DeviceKind::Gamepad  ? gamepadControls()
+                                                                              : touchControls();
         if (control.empty() || std::find(known.begin(), known.end(), control) == known.end())
             return fail("\"" + trimmed + "\" is not a control on that device.");
         if (stored) *stored = trimmed;

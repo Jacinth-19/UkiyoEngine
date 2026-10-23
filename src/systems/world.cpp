@@ -762,9 +762,12 @@ void World::setInputActions(const std::vector<engine::InputAction>& actions) {
         uinput::DeviceKind kind;
         if (!uinput::deviceKindFromPath(path, &kind)) continue;
         const auto& known = kind == uinput::DeviceKind::Keyboard ? uinput::keyboardControls()
-                           : kind == uinput::DeviceKind::Mouse  ? uinput::mouseControls()
-                                                                : uinput::gamepadControls();
-        const std::string control = path.substr(path.rfind('/') + 1);
+                           : kind == uinput::DeviceKind::Mouse    ? uinput::mouseControls()
+                           : kind == uinput::DeviceKind::Gamepad  ? uinput::gamepadControls()
+                                                                  : uinput::touchControls();
+        // After the first slash, not the last: a control name may contain slashes ("primaryTouch/press",
+        // "dpad/up"), and cutting at the last one would look up "press" and silently drop the binding.
+        const std::string control = path.substr(path.find('/') + 1);
         if (std::find(known.begin(), known.end(), control) == known.end()) continue;
         uinput::Binding binding;
         binding.path = path;
@@ -786,6 +789,24 @@ void World::setKeyHeld(const std::string& key, bool down) {
     keyboard->setButton(control, down);
     // Key events arrive between ticks, and a script (or the editor's self-test) can ask actionDown() before the next
     // tick. Evaluating now with dt 0 makes the press visible immediately; the next tick's update re-latches it.
+    input_.update(0.0f);
+}
+
+void World::setTouch(int finger, bool down, const glm::vec2& position, const glm::vec2& delta) {
+    const char* prefix = finger == 0 ? "primaryTouch" : finger == 1 ? "secondaryTouch" : nullptr;
+    if (!prefix) return;
+    uinput::Device* touch = input_.firstDevice(uinput::DeviceKind::Touch);
+    if (!touch) touch = &input_.addDevice(uinput::DeviceKind::Touch, 0);
+    const std::string base = prefix;
+    touch->setButton(base + "/press", down);
+    touch->setVector2(base + "/position", position);
+    // The delta of the latest event since the previous update: several moves between two ticks leave the last one,
+    // which is what a camera drag reads. On release the delta is zero - a lift has no direction.
+    touch->setVector2(base + "/delta", down ? delta : glm::vec2(0.0f));
+    const float count = (touch->find("primaryTouch/press")->x >= 0.5f ? 1.0f : 0.0f) +
+                        (touch->find("secondaryTouch/press")->x >= 0.5f ? 1.0f : 0.0f);
+    touch->setAxis("touchCount", count);
+    // Same reason as setKeyHeld: a script can ask between ticks.
     input_.update(0.0f);
 }
 

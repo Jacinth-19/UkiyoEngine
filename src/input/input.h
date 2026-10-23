@@ -61,9 +61,11 @@ struct Control {
     glm::vec2 asVector2() const { return type == ControlType::Vector2 ? xy : glm::vec2(x, 0.0f); }
 };
 
-enum class DeviceKind { Keyboard, Mouse, Gamepad };
+enum class DeviceKind { Keyboard, Mouse, Gamepad, Touch };
 
-const char* deviceName(DeviceKind k);   // "Keyboard", "Mouse", "Gamepad"
+// The device kind a binding path starts with. Touch is named the way Unity names it - "Touchscreen" - so a path
+// written here opens in Unity; "<Touch>" is accepted as an alias when reading.
+const char* deviceName(DeviceKind k);   // "Keyboard", "Mouse", "Gamepad", "Touchscreen"
 // The device kind a binding path starts with (`<Gamepad>/…`), or false when the path has no angle-bracket device.
 bool deviceKindFromPath(const std::string& path, DeviceKind* out);
 
@@ -342,5 +344,6 @@ private:
 const std::vector<std::string>& keyboardControls();
 const std::vector<std::string>& mouseControls();
 const std::vector<std::string>& gamepadControls();
+const std::vector<std::string>& touchControls();
 
 } // namespace ukiyo::input

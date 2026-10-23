@@ -135,7 +135,7 @@ saves of the same state are byte-identical, which is what makes an asset reviewa
 FNV-1a over a seed (`"action/Viewer/Move"`), not random: an action added in code gets the same id on every machine.
 
 Rejected with a warning, not silently: unknown processors, unknown interactions, bindings to actions that do not exist,
-bindings whose path is not a device path, and control schemes with touch or XR devices.
+bindings whose path is not a device path, and control schemes with XR devices (touch devices are supported, §13).
 
 ## 4. Composites
 
@@ -410,13 +410,13 @@ Four bugs it caught before the system shipped, each now covered:
 
 ## 11. What is not here
 
-Touch and XR. A **split keyboard** — two players on one keyboard, WASD versus the arrow keys — needs Unity's
+XR. A **split keyboard** — two players on one keyboard, WASD versus the arrow keys — needs Unity's
 device-indexed control paths (`<Keyboard>/w` on device 1), which the asset parser does not speak; two players can share
 a keyboard today only with `allowDuplicates`, which hands both of them every key. Control path wildcards
 (`<Keyboard>/*`); per-binding press points; `press` interaction parameters; and `Dpad` as a non-composite control. The
 editor rebinds the player's actions in Project Settings, but there is no in-game rebinding overlay widget: a game gets
-`RebindOperation` (§7) and draws its own, which is what Unity ships too. A device is one keyboard, one mouse and up to
-four gamepads, which is the shape this engine's games use.
+`RebindOperation` (§7) and draws its own, which is what Unity ships too. A device is one keyboard, one mouse, up to
+four gamepads and one touchscreen (§13), which is the shape this engine's games use.
 
 ## 12. Rebuilding the viewer asset
 
@@ -424,3 +424,29 @@ The viewer's file is the source of truth for its bindings; if an action is renam
 rather than the viewer silently losing a key (§10.12). To regenerate it from code, build the state you want and call
 `saveAssetFile(state, "assets/input/viewer.inputactions", &error)`; the writer's output is stable, so the diff will be
 only the change.
+
+## 13. Touch
+
+A touchscreen is a device like the others: `<Touchscreen>` (with `<Touch>` accepted as an alias when reading), holding
+
+| Control | Type | Reads as |
+| --- | --- | --- |
+| `primaryTouch/press` | Button | the first finger down |
+| `primaryTouch/position` | Vector2 | where it is, in screen fractions (0..1, origin top-left) |
+| `primaryTouch/delta` | Vector2 | how far the latest event moved it, as a fraction of the screen |
+| `secondaryTouch/press` / `position` / `delta` | | the second finger — look and aim hands |
+| `touchCount` | Axis | how many of the two are down (0, 1, 2) |
+
+Positions are fractions where Unity's are pixels: every layout, camera and HUD value in this engine is already
+resolution-independent, and a binding carrying pixels would silently mean something else on a second device. Nothing
+else about the layout is adapted — the names are Unity's, so a `.inputactions` file that binds
+`<Touchscreen>/primaryTouch/press` works in either engine, and rebinding writes that spelling back.
+
+`World::setTouch` (a platform layer's `PlayerApp::setTouch`) writes the controls and evaluates the map immediately,
+the same way `setKeyHeld` does, so a script's `actionDown()` sees the finger before the next tick. The Android player
+feeds every finger through it (`android_main.cpp`), and the game's virtual stick keeps its own layer on top: the
+half-screen split is gameplay, not input, and stays in the platform code where Unity games put theirs too.
+
+A desktop machine with no glass tests all of it: `tests/input_test.cpp` §17 writes the controls by hand, and
+`tests/systems_test.cpp` drives `setTouch` through project settings — which is why CI proves this feature without a
+phone.

@@ -1207,6 +1207,77 @@ void testRebindOperation() {
 
 } // namespace
 
+// ---------------------------------------------------------------- 17. touch
+
+void testTouch() {
+    std::printf("\n17. touch: the Touchscreen device, its controls and a tap action\n");
+    Fixture f;
+    Device& touch = f.state.addDevice(DeviceKind::Touch, 0);
+    checkEq(touch.name(), "Touchscreen", "the touch device is named the way Unity names it");
+    checkTrue(touch.find("primaryTouch/press") != nullptr, "the primary touch has a press control");
+    checkTrue(touch.find("primaryTouch/press")->type == ControlType::Button, "press is a Button");
+    checkTrue(touch.find("primaryTouch/position") != nullptr &&
+                  touch.find("primaryTouch/position")->type == ControlType::Vector2,
+              "position is a Vector2");
+    checkTrue(touch.find("secondaryTouch/press") != nullptr, "the secondary touch exists too");
+    checkTrue(touch.find("touchCount") != nullptr && touch.find("touchCount")->type == ControlType::Axis,
+              "touchCount is an Axis");
+
+    DeviceKind kind;
+    checkTrue(deviceKindFromPath("<Touchscreen>/primaryTouch/press", &kind) && kind == DeviceKind::Touch,
+              "<Touchscreen>/... is a device path");
+    checkTrue(deviceKindFromPath("<Touch>/primaryTouch/position", &kind) && kind == DeviceKind::Touch,
+              "<Touch> is read as the same device");
+    checkEq(std::string(deviceName(DeviceKind::Touch)), "Touchscreen", "deviceName writes Touchscreen");
+
+    // An action bound to the touchscreen, driven exactly as a backend drives a keyboard.
+    ActionMap& map = f.state.addMap("Gameplay");
+    Action& interact = map.add("Interact", ActionType::Button);
+    interact.bindings.push_back(
+        Binding{"", "", "<Touchscreen>/primaryTouch/press", "Interact", "", "", "", false, false, -1});
+    Action& point = map.add("Point", ActionType::Value);
+    point.bindings.push_back(
+        Binding{"", "", "<Touchscreen>/primaryTouch/position", "Point", "", "", "", false, false, -1});
+    f.state.enableMap("Gameplay");
+
+    f.tick();
+    checkTrue(!interact.triggered(), "idle: a touch action is quiet");
+    touch.setButton("primaryTouch/press", true);
+    touch.setVector2("primaryTouch/position", glm::vec2(0.25f, 0.75f));
+    f.tick();
+    checkTrue(interact.triggered(), "a touch press fires the action bound to primaryTouch/press");
+    checkNear(interact.value, 1.0f, 1e-4f, "its value is 1");
+    checkNear2(point.readVector2(), glm::vec2(0.25f, 0.75f), 1e-4f, "position reads as a Vector2 action");
+    touch.setButton("primaryTouch/press", false);
+    f.tick();
+    checkTrue(interact.canceled(), "lifting the finger cancels the action");
+
+    glm::vec2 v(0.0f);
+    checkTrue(f.state.readPath("<Touchscreen>/primaryTouch/position", &v),
+              "readPath resolves a touchscreen path");
+    checkNear2(v, glm::vec2(0.25f, 0.75f), 1e-4f, "and returns the touch position");
+
+    // A control scheme may name the touchscreen - the reader rejected that before touch existed.
+    Fixture g;
+    const std::string json = R"({"name":"Touch","maps":[{"name":"Player","actions":[
+        {"name":"Tap","type":"Button","id":"11111111-1111-1111-1111-111111111111"}],
+        "bindings":[{"name":"","id":"22222222-2222-2222-2222-222222222222",
+                     "path":"<Touchscreen>/primaryTouch/press","action":"Tap",
+                     "isComposite":false,"isPartOfComposite":false}]}],
+        "controlSchemes":[{"name":"Touch","bindingGroup":"Touch",
+         "devices":[{"devicePath":"<Touchscreen>","isOptional":false,"isOR":false}]}]})";
+    AssetLoadResult r = loadAssetJson(g.state, json);
+    checkTrue(r.ok, "an asset whose scheme is a touchscreen loads");
+    checkTrue(r.warnings.empty(), "and needs no warning for it");
+    checkTrue(g.state.controlSchemes.size() == 1 &&
+                  g.state.controlSchemes[0].devices.size() == 1 &&
+                  g.state.controlSchemes[0].devices[0] == DeviceKind::Touch,
+              "the scheme's device set is the Touch device");
+    const std::string saved = saveAssetJson(g.state);
+    checkTrue(saved.find("<Touchscreen>/primaryTouch/press") != std::string::npos,
+              "saving the asset writes the touchscreen path back unchanged");
+}
+
 int main() {
     std::printf("input system (docs/INPUT.md)\n");
     testDevices();
@@ -1225,6 +1296,7 @@ int main() {
     testJoinRules();
     testAutoJoin();
     testRebindOperation();
+    testTouch();
     std::printf("\n%d checks, %d failure(s)\n", gChecks, gFailures);
     return gFailures == 0 ? 0 : 1;
 }

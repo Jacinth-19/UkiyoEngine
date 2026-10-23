@@ -125,6 +125,18 @@ struct Touch {
 Touch gStick;
 Touch gLook;
 
+// Every finger also feeds the input system itself, not only the keyboard emulation above: a project whose action is
+// bound to "<Touchscreen>/primaryTouch/press" (tap to light, tap to pick up) reads the same event a script's WASD
+// does. Positions are screen fractions so a binding survives any resolution.
+void feedTouch(android_app* state, ukiyo::PlayerApp* app, const Touch& t, bool down, float px, float py, float dx,
+               float dy) {
+    const float w = state->window ? float(ANativeWindow_getWidth(state->window)) : 0.0f;
+    const float h = state->window ? float(ANativeWindow_getHeight(state->window)) : 0.0f;
+    const glm::vec2 pos(w > 0.0f ? px / w : 0.0f, h > 0.0f ? py / h : 0.0f);
+    const glm::vec2 delta(w > 0.0f ? dx / w : 0.0f, h > 0.0f ? dy / h : 0.0f);
+    app->setTouch(t.stick ? 0 : 1, down, pos, delta);
+}
+
 void setMoveKeys(ukiyo::PlayerApp* app, float dx, float dy) {
     // A dead zone, so a thumb resting on the glass does not walk the hero off the court, and a 38 % cone per direction
     // so the four keys do not all fire at once.
@@ -160,6 +172,7 @@ int32_t onInput(android_app* state, AInputEvent* event) {
         t.originY = y;
         t.x = x;
         t.y = y;
+        feedTouch(state, app, t, true, x, y, 0.0f, 0.0f);
     } else if (masked == AMOTION_EVENT_ACTION_MOVE) {
         const size_t count = AMotionEvent_getPointerCount(event);
         for (size_t i = 0; i < count; ++i) {
@@ -167,21 +180,30 @@ int32_t onInput(android_app* state, AInputEvent* event) {
             const float px = AMotionEvent_getX(event, i);
             const float py = AMotionEvent_getY(event, i);
             if (gStick.active && pid == gStick.id) {
+                const float dx = px - gStick.x;
+                const float dy = py - gStick.y;
                 gStick.x = px;
                 gStick.y = py;
                 setMoveKeys(app, px - gStick.originX, py - gStick.originY);
+                feedTouch(state, app, gStick, true, px, py, dx, dy);
             } else if (gLook.active && pid == gLook.id) {
+                const float dx = px - gLook.x;
+                const float dy = py - gLook.y;
                 gLook.x = px;
                 gLook.y = py;
+                feedTouch(state, app, gLook, true, px, py, dx, dy);
             }
         }
     } else if (masked == AMOTION_EVENT_ACTION_UP || masked == AMOTION_EVENT_ACTION_POINTER_UP ||
                masked == AMOTION_EVENT_ACTION_CANCEL) {
         Touch& t = (gStick.active && id == gStick.id) ? gStick : gLook;
         if (t.active && t.id == id) {
+            const float lx = t.x;
+            const float ly = t.y;
             t.active = false;
             t.id = -1;
             if (t.stick) setMoveKeys(app, 0.0f, 0.0f);
+            feedTouch(state, app, t, false, lx, ly, 0.0f, 0.0f);
         }
     }
     return 1;
