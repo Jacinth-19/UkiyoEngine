@@ -407,6 +407,7 @@ void android_main(android_app* state) {
             ukiyo::updateModel(m, float(playTime), cam.eye());
             drawList.push_back(&m);
         }
+        session->renderer->setSceneLights(app.renderLights());
         session->renderer->render(cam, drawList, float(playTime), frameIndex++, settings);
         if (font.loaded()) {
             hud.setScreen(float(device.backbufferWidth()), float(device.backbufferHeight()));
@@ -414,6 +415,9 @@ void android_main(android_app* state) {
             const float scale = std::max(1.0f, float(device.backbufferHeight()) / 720.0f);
             ukiyo::drawPlayerHud(hud, app.hudText(session->renderer->lastDrawCalls(), session->renderer->lastTriangles()),
                                  scale);
+            if (const ukiyo::World* w = app.world())
+                for (const ukiyo::World::HudQuad& q : w->hudQuads())
+                    hud.rect({q.x, q.y, q.w, q.h}, ukiyo::HudColor(q.r, q.g, q.b, q.a));
             session->renderer->drawHud(hud.vertices(), device.backbufferWidth(), device.backbufferHeight());
         }
         device.endFrame(false);

@@ -142,7 +142,27 @@ list is saved as the scene's `lights` array — only when it is not empty, so a 
 its exact bytes. The project's own sun is still a separate page (**Directional Light**), because it always exists and its
 intensity is a project setting.
 
-## 6. What is still missing
+## 6. Names, and what a script may do with them
+
+A light can carry a `"name"` in the scene file:
+
+```json
+{ "type": "point", "name": "Stone Lantern A", "position": [5, 2.4, 0], "color": [1, 0.72, 0.42],
+  "intensity": 4.5, "radius": 7 }
+```
+
+Three script functions take that name: `ukiyo.setLightEnabled(name, on)`, `ukiyo.lightEnabled(name)` and
+`ukiyo.setLightIntensity(name, intensity)`. This is what a lantern being relit, a room's lights going out on a
+timer, or a flickering sign needs, and it is the whole surface — there is no script access to the ranking or the
+frame block, because those belong to the renderer. An unknown name is a **script error** naming what was asked
+for, the same contract as an unknown mix bus: a typo in a puzzle script fails in CI instead of leaving one lantern
+permanently dark on a player's machine.
+
+The world holds its own copy of the scene's lights and the player and the editor push that copy to the renderer
+every frame, so a change inside `onUpdate` is what the next frame shades with. A light with no name is still
+rendered; it just cannot be scripted.
+
+## 7. What is still missing
 
 - **No shadows from scene lights.** Only the sun casts; a point light shines through a wall. Shadow cubes and spot
   shadow maps are the next step, and they need an atlas per light.
@@ -153,7 +173,7 @@ intensity is a project setting.
 - **No emissive-to-light coupling.** An emissive material glows but does not light its surroundings.
 - **No gizmo.** A light is placed by numbers on the Inspector page; a drag handle in the viewport is not there yet.
 
-## 7. Where it lives
+## 8. Where it lives
 
 | File | What |
 | --- | --- |

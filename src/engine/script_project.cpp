@@ -186,6 +186,30 @@ const std::vector<ApiDoc>& apiDocs() {
         {"frameTiming", "ukiyo.frameTiming()",
          "The last tick's cost in milliseconds by stage: input, scripts, physics, characters, navigation, animation, "
          "particles, entities, total. All zero until a profiled tick has run."},
+        {"setLightEnabled", "ukiyo.setLightEnabled(name, enabled)",
+         "Turns one of the scene's named lights on or off; the next frame shades with the change. Errors when no "
+         "light in the scene carries that name."},
+        {"lightEnabled", "ukiyo.lightEnabled(name)",
+         "Whether the named scene light is on. Errors on an unknown name, as setLightEnabled does."},
+        {"setLightIntensity", "ukiyo.setLightIntensity(name, intensity)",
+         "Sets the named light's intensity — what a flicker or a warm-up animates. Errors on an unknown name."},
+        {"saveSet", "ukiyo.saveSet(key, value)",
+         "Stores a boolean, number or string in the run's save data. An integral number is stored as an integer."},
+        {"saveGet", "ukiyo.saveGet(key)",
+         "The value saveSet stored, typed: nil for a missing key or a value of another type."},
+        {"saveHas", "ukiyo.saveHas(key)", "True when the run's save data holds this key."},
+        {"saveWrite", "ukiyo.saveWrite(slot)",
+         "Writes the save data to a slot file (0..63) in the project's saves folder. Returns false if the file "
+         "could not be written."},
+        {"saveRead", "ukiyo.saveRead(slot)",
+         "Replaces the save data with slot n. A missing or corrupt file returns false and leaves the data as it "
+         "was."},
+        {"saveSlotExists", "ukiyo.saveSlotExists(slot)", "True when this slot has a file — a Continue row's test."},
+        {"saveDelete", "ukiyo.saveDelete(slot)",
+         "Removes a slot's file. Returns true when a file was removed, false when there was none."},
+        {"hudRect", "ukiyo.hudRect(x, y, w, h, r?, g?, b?, a?)",
+         "Draws a solid rectangle in this frame's HUD: pixels, origin top-left, colours 0..1 (default opaque "
+         "white). Cleared every tick — call it from onUpdate."},
         {"spawnEffect", "ukiyo.spawnEffect(x, y, z, count?)",
          "Draws a one-shot particle burst at a point. Returns the effect's handle."},
         {"raycast", "ukiyo.raycast(ox, oy, oz, dx, dy, dz, maxDistance)",

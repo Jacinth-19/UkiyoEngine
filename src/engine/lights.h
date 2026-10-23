@@ -13,6 +13,7 @@
 #pragma once
 
 #include <cstdint>
+#include <string>
 #include <vector>
 
 #include <glm/glm.hpp>
@@ -33,6 +34,9 @@ struct SceneLight {
     float spotAngleDeg = 50.0f;                 // full cone angle
     float spotSoftness = 0.25f;                 // fraction of the cone used for the soft edge
     bool enabled = true;
+    // Optional name from the scene's "name" field: how a script addresses this light (ukiyo.setLightEnabled). A
+    // light without one exists for the renderer but not to Lua. The packer does not read it.
+    std::string name;
 };
 
 // How many lights a scene may author. The frame block carries kFrameLights of them; the rest are ranked out.

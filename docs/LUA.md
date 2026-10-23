@@ -73,6 +73,10 @@ ukiyo.stopMusic(fade?)                 -- fade the music out (0 = now)
 ukiyo.setBusVolume(bus, volume)        -- music/sfx/ambient/master, 0..4
 ukiyo.setBusReverb(bus, wet)           -- 0 dry .. 1 fully through the insert
 ukiyo.frameTiming()                    -- last tick's ms by stage (profiler on)
+ukiyo.setLightEnabled(name, on) / lightEnabled(name) / setLightIntensity(name, v)
+ukiyo.saveSet(key, value) / saveGet(key) / saveHas(key)
+ukiyo.saveWrite(slot) / saveRead(slot) / saveSlotExists(slot) / saveDelete(slot)
+ukiyo.hudRect(x, y, w, h, r?, g?, b?, a?)  -- a solid HUD quad this frame (pixels, 0..1 colours)
 ukiyo.spawnEffect(x, y, z, count?)     -- a one-shot particle burst
 ukiyo.raycast(ox, oy, oz, dx, dy, dz, maxDistance)   -- false, or true and the hit point
 ukiyo.setContactFilter(a, b, enabled)  -- stop or allow contacts between two entities

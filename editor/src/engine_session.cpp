@@ -1082,6 +1082,7 @@ QImage EngineSession::render(const OrbitCamera& cam, float time, float dt, const
         }
     }
     renderer_->setGrass(grass);
+    renderer_->setSceneLights(world_ ? world_->sceneLights() : sceneLights_);
     renderer_->render(cam, models, time, frame_++, s);
     drawParticleOverlay(cam);
     if (playing() && hudVisible_) {
@@ -1103,6 +1104,9 @@ QImage EngineSession::render(const OrbitCamera& cam, float time, float dt, const
         text.hint = "WASD walk   Space jump   Esc stop";
         if (!playWarnings_.empty()) text.warning = playWarnings_.front();
         drawPlayerHud(hudCanvas_, text, 1.0f);
+        if (const ukiyo::World* w = world_.get())
+            for (const ukiyo::World::HudQuad& q : w->hudQuads())
+                hudCanvas_.rect({q.x, q.y, q.w, q.h}, ukiyo::HudColor(q.r, q.g, q.b, q.a));
         renderer_->drawHud(hudCanvas_.vertices(), device_->backbufferWidth(), device_->backbufferHeight());
     }
     device_->endFrame(true);
@@ -1299,6 +1303,8 @@ bool EngineSession::startPlay(QString* error) {
     world->audio.setMasterVolume(audioMuted_ ? 0.0f : masterVolume_);
     world->setProfiling(profiling_);
     world->setProjectRoot(projectRoot_.toStdString());
+    world->setSaveDir(projectRoot_.toStdString() + "/saves");
+    world->setSceneLights(sceneLights_);
     // The project's language, so ukiyo.tr in a script returns the same text the player would show.
     if (!projectRoot_.isEmpty()) {
         LocaleCatalog catalog;

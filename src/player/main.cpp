@@ -368,11 +368,16 @@ int main(int argc, char** argv) {
             }
 
             if (!device->beginFrame()) continue;
+            renderer.setSceneLights(app.renderLights());
             renderer.render(cam, drawList, float(app.playTime()), uint32_t(capturedSeconds * 60.0f), frameSettings);
             if (hudOn && font.loaded()) {
                 hud.setScreen(float(device->backbufferWidth()), float(device->backbufferHeight()));
                 drawPlayerHud(hud, app.hudText(renderer.lastDrawCalls(), renderer.lastTriangles()),
                               app.manifest().hudScale);
+                // The game's own quads (ukiyo.hudRect), after the player's HUD so they can sit over its band.
+                if (const ukiyo::World* w = app.world())
+                    for (const ukiyo::World::HudQuad& q : w->hudQuads())
+                        hud.rect({q.x, q.y, q.w, q.h}, ukiyo::HudColor(q.r, q.g, q.b, q.a));
                 renderer.drawHud(hud.vertices(), device->backbufferWidth(), device->backbufferHeight());
             }
             const bool capture = opt.headless && !opt.shot.empty() && capturedSeconds >= opt.seconds;

@@ -184,6 +184,7 @@ void readLights(const json& arr, std::vector<SceneLight>* out) {
         l.spotAngleDeg = std::clamp(j.value("angle", l.spotAngleDeg), 1.0f, 179.0f);
         l.spotSoftness = std::clamp(j.value("softness", l.spotSoftness), 0.0f, 0.95f);
         l.enabled = j.value("enabled", true);
+        l.name = j.value("name", std::string());
         out->push_back(l);
     }
 }

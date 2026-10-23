@@ -67,6 +67,9 @@ public:
     const std::vector<PlayerInstance>& instances() const { return instances_; }
     World* world() { return world_.get(); }
     const World* world() const { return world_.get(); }
+    // The lights to render with: the world's copy while it runs (ukiyo.setLightEnabled changes it), the scene's own
+    // before a world exists.
+    const std::vector<SceneLight>& renderLights() const { return world_ ? world_->sceneLights() : scene_.lights; }
 
     // Bumps when the scene is replaced (start, or a script's loadScene). The renderer reloads models on a change.
     uint32_t sceneGeneration() const { return generation_; }

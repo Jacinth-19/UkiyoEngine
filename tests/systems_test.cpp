@@ -652,6 +652,101 @@ static void testAudio() {
     check(!mix.musicPlaying(), "mixer: and stops immediately when asked");
 }
 
+// --- The bindings a game is built on: named lights, save slots, script HUD quads ---------------------------
+
+static void testGameBindings() {
+    ukiyo::World w(true);
+    ukiyo::SceneLight lamp;
+    lamp.name = "Lamp";
+    lamp.enabled = true;
+    lamp.intensity = 3.0f;
+    ukiyo::SceneLight unnamed;   // exists for the renderer, not to Lua
+    w.setSceneLights({lamp, unnamed});
+    check(w.findLight("Lamp") != nullptr, "lights: a named light is found by name");
+    check(w.findLight("Nope") == nullptr, "lights: an unknown name finds nothing");
+
+    namespace fs = std::filesystem;
+    const fs::path saves = fs::temp_directory_path() / ("ukiyo_save_test_" + std::to_string(::getpid()));
+    fs::remove_all(saves);
+    w.setSaveDir(saves.string());
+
+    std::string err;
+    const bool loaded = w.sceneScript().loadString(
+        R"(
+        setOn = ukiyo.setLightEnabled("Lamp", false)
+        offNow = not ukiyo.lightEnabled("Lamp")
+        ukiyo.setLightIntensity("Lamp", 1.25)
+        badLight = not pcall(function() ukiyo.lightEnabled("Nope") end)
+
+        ukiyo.saveSet("lanterns", 7)
+        ukiyo.saveSet("pi", 3.25)
+        ukiyo.saveSet("met", true)
+        ukiyo.saveSet("name", "afterglow")
+        gotN = ukiyo.saveGet("lanterns")
+        gotF = ukiyo.saveGet("pi")
+        gotB = ukiyo.saveGet("met")
+        gotS = ukiyo.saveGet("name")
+        missing = ukiyo.saveGet("nothing") == nil
+        wrote = ukiyo.saveWrite(1)
+        slot1 = ukiyo.saveSlotExists(1)
+        slot2 = ukiyo.saveSlotExists(2)
+        ukiyo.saveSet("lanterns", 9)
+        readBack = ukiyo.saveRead(1)
+        gotAfter = ukiyo.saveGet("lanterns")
+        badSlot = not pcall(function() ukiyo.saveWrite(999) end)
+        deleted = ukiyo.saveDelete(1)
+        gone = not ukiyo.saveSlotExists(1)
+
+        ukiyo.hudRect(10, 20, 30, 40, 0.5, 0.25, 0.125, 0.75)
+        ukiyo.hudRect(1, 2, 3, 4)
+    )",
+        "game", &err);
+    check(loaded, "game bindings: the script loads", err);
+    if (!loaded) return;
+
+    check(luaBool(w.sceneScript(), "setOn") && luaBool(w.sceneScript(), "offNow"),
+          "lights: setLightEnabled changes the light and reports true");
+    check(!w.findLight("Lamp")->enabled, "lights: the light itself is off now");
+    check(std::fabs(w.findLight("Lamp")->intensity - 1.25f) < 1e-6f,
+          "lights: setLightIntensity wrote the light", num(w.findLight("Lamp")->intensity));
+    check(luaBool(w.sceneScript(), "badLight"), "lights: an unknown name is an error, not a no-op");
+
+    check(luaNumber(w.sceneScript(), "gotN") == 7.0, "saves: an integral number round-trips as an integer");
+    check(std::fabs(luaNumber(w.sceneScript(), "gotF") - 3.25) < 1e-12, "saves: a fractional number round-trips");
+    check(luaBool(w.sceneScript(), "gotB"), "saves: a boolean round-trips");
+    {
+        lua_getglobal(w.sceneScript().state(), "gotS");
+        check(std::string(lua_tostring(w.sceneScript().state(), -1)) == "afterglow",
+              "saves: a string round-trips");
+        lua_pop(w.sceneScript().state(), 1);
+    }
+    check(luaBool(w.sceneScript(), "missing"), "saves: a missing key reads as nil");
+    check(luaBool(w.sceneScript(), "wrote") && luaBool(w.sceneScript(), "slot1"),
+          "saves: saveWrite creates the file and saveSlotExists sees it");
+    check(!luaBool(w.sceneScript(), "slot2"), "saves: an unwritten slot does not exist");
+    check(luaBool(w.sceneScript(), "readBack"), "saves: saveRead loads a slot");
+    check(luaNumber(w.sceneScript(), "gotAfter") == 7.0,
+          "saves: reading replaces the store, so the value written to the slot comes back, not the one after it");
+    check(luaBool(w.sceneScript(), "badSlot"), "saves: a slot outside 0..63 is an error");
+    check(luaBool(w.sceneScript(), "deleted") && luaBool(w.sceneScript(), "gone"),
+          "saves: saveDelete removes the file and saveSlotExists says so");
+
+    check(w.hudQuads().size() == 2, "hud: both hudRect calls produced a quad",
+          std::to_string(w.hudQuads().size()));
+    if (w.hudQuads().size() == 2) {
+        const ukiyo::World::HudQuad& a = w.hudQuads()[0];
+        const ukiyo::World::HudQuad& b = w.hudQuads()[1];
+        check(a.x == 10 && a.y == 20 && a.w == 30 && a.h == 40, "hud: the quad carries the rectangle it was given");
+        check(std::fabs(a.r - 0.5f) < 1e-6f && std::fabs(a.g - 0.25f) < 1e-6f && std::fabs(a.b - 0.125f) < 1e-6f
+                  && std::fabs(a.a - 0.75f) < 1e-6f,
+              "hud: the quad carries its colour");
+        check(b.r == 1.0f && b.g == 1.0f && b.b == 1.0f && b.a == 1.0f, "hud: omitted colours default to opaque white");
+    }
+    w.tick(0.016f);
+    check(w.hudQuads().empty(), "hud: the next tick clears the frame's quads");
+    fs::remove_all(saves);
+}
+
 // --- Animation state machine ---------------------------------------------------------------
 
 static void testAnimState() {
@@ -2053,6 +2148,7 @@ int main() {
     testWorldRebind();
     testNavigation();
     testAudio();
+    testGameBindings();
     testAnimState();
     testScript();
     testWorld();

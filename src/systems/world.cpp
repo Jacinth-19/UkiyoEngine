@@ -5,6 +5,7 @@
 #include <cmath>
 #include <cstdio>
 #include <cstring>
+#include <filesystem>
 #include <new>
 
 #include <glm/gtc/quaternion.hpp>
@@ -259,6 +260,186 @@ int l_playMusic(lua_State* L) {
     const float fade = float(luaL_optnumber(L, 3, 0.0));
     lua_pushboolean(L, w->audio.playMusic(w->resolveMediaPath(luaL_checkstring(L, 1)), loop, fade));
     return 1;
+}
+
+// The scene's lights, addressed by the name the scene gave them. An unknown name is a script error naming what was
+// asked for, the same contract as an unknown mix bus: a typo in a puzzle script should fail in CI, not silently
+// leave a lantern dark.
+SceneLight* lightOr(lua_State* L, World* w, int arg) {
+    const char* name = luaL_checkstring(L, arg);
+    SceneLight* l = w->findLight(name);
+    if (!l) luaL_error(L, "no scene light named \"%s\"", name);
+    return l;
+}
+
+// ukiyo.setLightEnabled(name, enabled) -> true. The renderer sees it on the next frame.
+int l_setLightEnabled(lua_State* L) {
+    World* w = worldOf(L);
+    SceneLight* l = lightOr(L, w, 1);
+    l->enabled = lua_toboolean(L, 2) != 0;
+    lua_pushboolean(L, 1);
+    return 1;
+}
+
+// ukiyo.lightEnabled(name) -> boolean.
+int l_lightEnabled(lua_State* L) {
+    SceneLight* l = lightOr(L, worldOf(L), 1);
+    lua_pushboolean(L, l->enabled ? 1 : 0);
+    return 1;
+}
+
+// ukiyo.setLightIntensity(name, intensity) -> true. What a warm-up or a flicker animates; the scene's own range
+// (0..64 after the scene reader's clamp) is not re-clamped here, so a script can dim a light to nothing.
+int l_setLightIntensity(lua_State* L) {
+    SceneLight* l = lightOr(L, worldOf(L), 1);
+    l->intensity = float(luaL_checknumber(L, 2));
+    lua_pushboolean(L, 1);
+    return 1;
+}
+
+// Save slots. The store lives in the world; the files live in the directory whoever owns the project set. A boolean,
+// an integral number, a fractional number and a string each take their own SaveGame type — a Lua number with no
+// fractional part is an Int, which is what a counter wants.
+int l_saveSet(lua_State* L) {
+    World* w = worldOf(L);
+    const char* key = luaL_checkstring(L, 1);
+    switch (lua_type(L, 2)) {
+    case LUA_TBOOLEAN:
+        w->saveStore().setBool(key, lua_toboolean(L, 2) != 0);
+        break;
+    case LUA_TNUMBER: {
+        const double v = lua_tonumber(L, 2);
+        if (v == std::floor(v) && v >= -9.2233720368547758e18 && v <= 9.2233720368547758e18)
+            w->saveStore().setInt(key, static_cast<int64_t>(v));
+        else
+            w->saveStore().setFloat(key, v);
+        break;
+    }
+    case LUA_TSTRING:
+        w->saveStore().setString(key, lua_tostring(L, 2));
+        break;
+    default:
+        return luaL_error(L, "saveSet: value must be a boolean, number or string, got %s", luaL_typename(L, 2));
+    }
+    lua_pushboolean(L, 1);
+    return 1;
+}
+
+// ukiyo.saveGet(key) -> value or nil. Nil covers missing keys and a different type than the one written, which is
+// the store's own getters' contract.
+int l_saveGet(lua_State* L) {
+    World* w = worldOf(L);
+    const char* key = luaL_checkstring(L, 1);
+    SaveGame& s = w->saveStore();
+    SaveGame::Type t;
+    if (!s.typeOf(key, &t)) {
+        lua_pushnil(L);
+        return 1;
+    }
+    switch (t) {
+    case SaveGame::Type::Int: {
+        int64_t v = 0;
+        s.getInt(key, &v);
+        lua_pushinteger(L, static_cast<lua_Integer>(v));
+        break;
+    }
+    case SaveGame::Type::Float: {
+        double v = 0.0;
+        s.getFloat(key, &v);
+        lua_pushnumber(L, v);
+        break;
+    }
+    case SaveGame::Type::Bool: {
+        bool v = false;
+        s.getBool(key, &v);
+        lua_pushboolean(L, v ? 1 : 0);
+        break;
+    }
+    case SaveGame::Type::String: {
+        std::string v;
+        s.getString(key, &v);
+        lua_pushlstring(L, v.data(), v.size());
+        break;
+    }
+    case SaveGame::Type::Vec3:
+        // A Vec3 is C++-side only; scripts store positions as three numbers or a string.
+        lua_pushnil(L);
+        break;
+    }
+    return 1;
+}
+
+// ukiyo.saveHas(key) -> boolean.
+int l_saveHas(lua_State* L) {
+    lua_pushboolean(L, worldOf(L)->saveStore().has(luaL_checkstring(L, 1)) ? 1 : 0);
+    return 1;
+}
+
+// The path of a slot file. Slots are 0..63 — enough for any menu, few enough that a script cannot walk the disk.
+std::string slotPath(const World* w, lua_State* L, int arg) {
+    const lua_Integer slot = luaL_checkinteger(L, arg);
+    if (slot < 0 || slot > 63) luaL_error(L, "save slot %lld is out of range (0..63)", static_cast<long long>(slot));
+    if (w->saveDir().empty()) luaL_error(L, "this world has no save directory");
+    return w->saveDir() + "/slot" + std::to_string(static_cast<long long>(slot)) + ".uksv";
+}
+
+// ukiyo.saveWrite(slot) -> boolean. Creates the directory on first use.
+int l_saveWrite(lua_State* L) {
+    World* w = worldOf(L);
+    const std::string path = slotPath(w, L, 1);
+    std::error_code ec;
+    std::filesystem::create_directories(std::filesystem::path(path).parent_path(), ec);
+    lua_pushboolean(L, w->saveStore().saveToFile(path) ? 1 : 0);
+    return 1;
+}
+
+// ukiyo.saveRead(slot) -> boolean. A failed read leaves the store exactly as it was (SaveGame's own contract), so a
+// corrupt file cannot half-load a run.
+int l_saveRead(lua_State* L) {
+    World* w = worldOf(L);
+    lua_pushboolean(L, w->saveStore().loadFromFile(slotPath(w, L, 1)) ? 1 : 0);
+    return 1;
+}
+
+// ukiyo.saveSlotExists(slot) -> boolean. For a title screen's Continue row: opens the file, never loads it.
+int l_saveSlotExists(lua_State* L) {
+    World* w = worldOf(L);
+    if (w->saveDir().empty()) luaL_error(L, "this world has no save directory");
+    const std::string path = slotPath(w, L, 1);
+    if (std::FILE* f = std::fopen(path.c_str(), "rb")) {
+        std::fclose(f);
+        lua_pushboolean(L, 1);
+    } else {
+        lua_pushboolean(L, 0);
+    }
+    return 1;
+}
+
+// ukiyo.saveDelete(slot) -> boolean: true when a file was removed, false when there was none.
+int l_saveDelete(lua_State* L) {
+    World* w = worldOf(L);
+    const std::string path = slotPath(w, L, 1);
+    std::error_code ec;
+    const bool existed = std::filesystem::exists(path, ec);
+    std::filesystem::remove(path, ec);
+    lua_pushboolean(L, existed && !ec ? 1 : 0);
+    return 1;
+}
+
+// ukiyo.hudRect(x, y, w, h, r?, g?, b?, a?) — one solid quad in this frame's HUD, pixels, origin top-left, colours
+// 0..1. The touch controls' ring, a prompt plate, a joystick under the thumb: drawn after the player's own HUD.
+int l_hudRect(lua_State* L) {
+    World::HudQuad q;
+    q.x = float(luaL_checknumber(L, 1));
+    q.y = float(luaL_checknumber(L, 2));
+    q.w = float(luaL_checknumber(L, 3));
+    q.h = float(luaL_checknumber(L, 4));
+    q.r = float(luaL_optnumber(L, 5, 1.0));
+    q.g = float(luaL_optnumber(L, 6, 1.0));
+    q.b = float(luaL_optnumber(L, 7, 1.0));
+    q.a = float(luaL_optnumber(L, 8, 1.0));
+    worldOf(L)->addHudQuad(q);
+    return 0;
 }
 
 // ukiyo.stopMusic([fadeOutSeconds])
@@ -647,6 +828,17 @@ const std::vector<ScriptApiBinding>& World::apiBindings() {
         {"preloadModel", l_preloadModel},
         {"setContactFilter", l_setContactFilter},
         {"frameTiming", l_frameTiming},
+        {"setLightEnabled", l_setLightEnabled},
+        {"lightEnabled", l_lightEnabled},
+        {"setLightIntensity", l_setLightIntensity},
+        {"saveSet", l_saveSet},
+        {"saveGet", l_saveGet},
+        {"saveHas", l_saveHas},
+        {"saveWrite", l_saveWrite},
+        {"saveRead", l_saveRead},
+        {"saveSlotExists", l_saveSlotExists},
+        {"saveDelete", l_saveDelete},
+        {"hudRect", l_hudRect},
         {"Entity", l_entityNew},
     };
     return list;
@@ -774,6 +966,12 @@ std::string World::resolveMediaPath(const std::string& path) const {
     // The project-root candidate wins only when it exists; otherwise the path as written is what load() will report,
     // which is the string the script author recognises.
     return fileExists(joined) ? joined : path;
+}
+
+SceneLight* World::findLight(const std::string& name) {
+    for (SceneLight& l : sceneLights_)
+        if (l.name == name) return &l;
+    return nullptr;
 }
 
 AudioEngine::SoundId World::soundFor(const std::string& path) {
@@ -1009,6 +1207,9 @@ float FrameTiming::share(const char* stage) const {
 }
 
 void World::tick(float dt) {
+    // Script HUD quads belong to the tick that drew them: cleared here, refilled by onUpdate, read when the frame is
+    // built after the tick. A script that stops drawing stops showing without a teardown call.
+    hudQuads_.clear();
     // The profiler costs four clock reads per stage and nothing when it is off, which is why it is a switch rather than
     // always-on bookkeeping.
     using Clock = std::chrono::steady_clock;

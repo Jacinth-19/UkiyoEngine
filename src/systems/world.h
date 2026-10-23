@@ -12,8 +12,10 @@
 #include <glm/glm.hpp>
 #include <glm/gtc/quaternion.hpp>
 
+#include "engine/lights.h"
 #include "engine/localisation.h"
 #include "engine/project_settings.h"
+#include "systems/save_game.h"
 #include "input/input.h"
 #include "input/input_users.h"
 #include "systems/anim_state.h"
@@ -128,6 +130,28 @@ public:
     void setScriptSearchPaths(std::vector<std::string> roots) { scripts.setSearchPaths(std::move(roots)); }
     // Loads a sound by file and caches it. Returns 0 when the file cannot be read.
     AudioEngine::SoundId soundFor(const std::string& path);
+
+    // The scene's lights while the world runs. The caller (player or editor) keeps pushing this copy to the
+    // renderer each frame, so ukiyo.setLightEnabled in a script is what the next frame shades with.
+    void setSceneLights(std::vector<SceneLight> lights) { sceneLights_ = std::move(lights); }
+    const std::vector<SceneLight>& sceneLights() const { return sceneLights_; }
+    SceneLight* findLight(const std::string& name);
+
+    // Game progress: a flat SaveGame store the script fills (ukiyo.saveSet) and persists per slot
+    // (ukiyo.saveWrite -> <saveDir>/slot<n>.uksv). The directory is set by whoever owns the project — the player
+    // points it at the project's saves folder, tests point it at a temp directory.
+    void setSaveDir(std::string dir) { saveDir_ = std::move(dir); }
+    const std::string& saveDir() const { return saveDir_; }
+    SaveGame& saveStore() { return saveStore_; }
+
+    // Script HUD quads for the frame that is being built: ukiyo.hudRect during this tick, drawn after
+    // drawPlayerHud, cleared at the start of the next tick. Pixels, origin top-left, colours 0..1.
+    struct HudQuad {
+        float x = 0, y = 0, w = 0, h = 0;
+        float r = 1, g = 1, b = 1, a = 1;
+    };
+    const std::vector<HudQuad>& hudQuads() const { return hudQuads_; }
+    void addHudQuad(const HudQuad& q) { hudQuads_.push_back(q); }
     // The project root the world runs inside. A media path from a script ("Sound/beep.wav") resolves against it
     // first and falls back to the path as written, so the same script works in the editor, in a packaged game whose
     // layout is the checkout's, and on Android where the staged tree is the working directory.
@@ -239,6 +263,10 @@ private:
     std::map<std::string, Entity> entities_;   // std::map keeps the update order deterministic
     std::map<std::string, AudioEngine::SoundId> sounds_;
     std::string projectRoot_;
+    std::vector<SceneLight> sceneLights_;
+    SaveGame saveStore_;
+    std::string saveDir_;
+    std::vector<HudQuad> hudQuads_;
     std::string hudText_;
     LocaleCatalog locale_;
     FrameTiming timing_;
