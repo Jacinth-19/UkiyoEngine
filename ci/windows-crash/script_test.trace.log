@@ -1,0 +1,53 @@
+== sandbox
+PASS  #1 sandbox: no io, os, package, debug or file loaders
+PASS  #2 sandbox: the pure libraries and require() are there
+== errors
+PASS  #3 errors: a script with a runtime fault loads
+PASS  #4 errors: the file is the chunk's
+PASS  #5 errors: the line is the line that failed
+PASS  #6 errors: the message says what went wrong
+PASS  #7 errors: a traceback comes with it
+PASS  #8 errors: lastError reads file:line
+== errors: budget
+== errors: budget, second host created
+== errors: budget, doomed script compiled
+PASS  #9 errors: the doomed script compiles
+== errors: budget, doomed script loaded
+PASS  #10 errors: the doomed script loads
+== errors: budget, one call
+== errors: budget, one call
+== errors: budget, one call
+PASS  #11 errors: three failures in a row stop the script
+PASS  #12 errors: and it counted them
+PASS  #13 errors: a stopped script is not called again
+== errors: alternating
+PASS  #14 errors: the alternating script loads
+PASS  #15 errors: a call that succeeds resets the budget
+== errors: compile
+PASS  #16 errors: a syntax error is reported
+PASS  #17 errors: the syntax error names the file and line
+PASS  #18 errors: a script that did not compile is not loaded
+== require
+PASS  #19 require: the test module is written
+PASS  #20 require: the nested module is written
+PASS  #21 require: the cycle's first half is written
+PASS  #22 require: the cycle's second half is written
+PASS  #23 require: a module loads once and a dotted name resolves
+PASS  #24 require: a cycle is answered with the half-built module, not a hang
+CRASH exception 0xc0000005 at script_test.exe+0x6b51 (reading ?+0xfffffffffffffff8) in section 'require'
+CRASH frame 1: VCRUNTIME140_1.dll+0x3701 in section 'require'
+CRASH frame 7: VCRUNTIME140_1.dll+0x45ca in section 'require'
+CRASH frame 8: script_test.exe+0x48a0 in section 'require'
+CRASH frame 13: VCRUNTIME140_1.dll+0x2c2c in section 'require'
+CRASH frame 14: script_test.exe+0x48a0 in section 'require'
+CRASH frame 21: ntdll.dll+0x2eb2f in section 'require'
+CRASH frame 53: VCRUNTIME140_1.dll+0x3cff in section 'require'
+CRASH frame 59: VCRUNTIME140_1.dll+0x20cd in section 'require'
+CRASH frame 61: ntdll.dll+0x52540 in section 'require'
+CRASH frame 65: KERNELBASE.dll+0x53ddb in section 'require'
+CRASH frame 71: VCRUNTIME140.dll+0x5972 in section 'require'
+CRASH frame 83: VCRUNTIME140_1.dll+0x21f6 in section 'require'
+CRASH frame 93: VCRUNTIME140_1.dll+0x43f5 in section 'require'
+CRASH frame 105: ntdll.dll+0x2f99a in section 'require'
+CRASH frame 109: script_test.exe+0xb6e38 in section 'require'
+CRASH frame 115: ntdll.dll+0xa49ff in section 'require'
