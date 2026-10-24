@@ -1084,6 +1084,8 @@ jobs:
           try {
             if (-not (Test-Path windows-diagnosis.txt)) { Write-Host "no diagnosis to commit"; exit 0 }
             New-Item -ItemType Directory -Force -Path "ci/windows-crash" | Out-Null
+            # The diagnosis itself is the point; everything else is context. (Its absence here cost a run.)
+            Copy-Item windows-diagnosis.txt ci/windows-crash/ -Force
             if (Test-Path "*.trace.log") { Copy-Item "*.trace.log" ci/windows-crash/ -Force }
             if (Test-Path "script_test.stdout.log") { Copy-Item "script_test.stdout.log" ci/windows-crash/ -Force }
             if (Test-Path "build/script_test.map") { Copy-Item "build/script_test.map" ci/windows-crash/ -Force }
