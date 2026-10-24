@@ -85,7 +85,19 @@ static void crashAccessViolation(EXCEPTION_POINTERS* info) {
     char where[320];
     describeAddress(where, sizeof where, record->ExceptionAddress);
     char what[512];
-    std::snprintf(what, sizeof what, "exception 0x%08lx at %s", static_cast<unsigned long>(record->ExceptionCode), where);
+    if (record->ExceptionCode == 0xC0000005L && record->NumberParameters >= 2) {
+        // An access violation says which address it tried to reach and whether the reach was a read or a write:
+        // a destructor touching a freed block, a stale pointer into the heap's own bookkeeping, the difference
+        // between all of those is this one address, resolved like any other.
+        char target[320];
+        describeAddress(target, sizeof target, reinterpret_cast<void*>(record->ExceptionInformation[1]));
+        std::snprintf(what, sizeof what, "exception 0x%08lx at %s (%s %s)",
+                      static_cast<unsigned long>(record->ExceptionCode), where,
+                      record->ExceptionInformation[0] ? "writing" : "reading", target);
+    } else {
+        std::snprintf(what, sizeof what, "exception 0x%08lx at %s",
+                      static_cast<unsigned long>(record->ExceptionCode), where);
+    }
     crashLine(what);
 #if defined(_M_X64)
     // Return addresses off the faulting stack, each read only after the page it lives on has said it is readable, and
