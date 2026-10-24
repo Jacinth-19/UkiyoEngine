@@ -132,18 +132,37 @@ int l_require(lua_State* L) {
     lua_pop(L, 1);
 
     if (!safeModuleName(name)) return luaL_error(L, "require: '%s' is not a module name", name);
-    std::string path, error;
-    if (!host || !host->resolveModule(name, &path, &error)) return luaL_error(L, "%s", error.c_str());
-    std::vector<uint8_t> bytes;
-    if (!vfs::readBytes(path, bytes)) return luaL_error(L, "require: could not read %s", path.c_str());
-    const std::string code(bytes.begin(), bytes.end());
 
-    // Compiled under the module's own name, so an error inside it points at the module.
-    if (luaL_loadbufferx(L, code.data(), code.size(), ("@" + path).c_str(), "t") != LUA_OK) {
-        lua_pushnil(L);      // no cache entry for a module that did not compile
+    // Everything C++ in this frame lives inside this scope, and the scope RETURNS instead of throwing. lua_error is
+    // a longjmp, and a C++ object alive across that longjmp is undefined behaviour: the frame's unwinding is the
+    // implementation's guess, and MSVC's guess was a crash inside ~vector, checks after the throw, with the heap
+    // fine -- glibc had been shrugging at the same code since the section was written. Every refused or broken
+    // require goes through here (a missing module, an unreadable file, a compile error), which is why the Windows
+    // crashes kept surfacing around the require section's checks and nowhere else. The scope leaves the error text
+    // on Lua's stack and reports through `loaded`, so by the time lua_error runs, the frame holds pointers and
+    // ints only.
+    bool loaded = false;
+    {
+        std::string path;
+        std::string error;
+        if (host && host->resolveModule(name, &path, &error)) {
+            std::vector<uint8_t> bytes;
+            if (vfs::readBytes(path, bytes)) {
+                // Compiled under the module's own name, so an error inside it points at the module.
+                const std::string chunk = "@" + path;
+                loaded = luaL_loadbufferx(L, reinterpret_cast<const char*>(bytes.data()), bytes.size(),
+                                          chunk.c_str(), "t") == LUA_OK;
+            } else {
+                lua_pushfstring(L, "require: could not read %s", path.c_str());
+            }
+        } else {
+            lua_pushlstring(L, error.data(), error.size());   // resolveModule's "no module ..." text
+        }
+    }
+    if (!loaded) {
+        lua_pushnil(L);      // no cache entry for a module that did not compile or was refused
         lua_setfield(L, 2, name);
-        lua_error(L);        // the compile error is on the stack
-        return 0;
+        return lua_error(L); // the message is on the stack; nothing with a destructor is alive in this frame
     }
     // A placeholder first: a cycle sees "true" rather than re-entering the file.
     lua_pushboolean(L, 1);
