@@ -13,16 +13,25 @@
 #include <string>
 #include <vector>
 
+// The pak test needs a unique temporary directory name, which is the process id. MSVC spells the call with a leading
+// underscore and declares it in <process.h>.
+#ifdef _WIN32
+#include <process.h>
+#define getpid _getpid
+#else
 #include <unistd.h>
+#endif
 
 #include "engine/cull.h"
 #include "engine/foliage.h"
+#include "engine/grass.h"
 #include "engine/terrain_edit.h"
 #include "engine/vfs.h"
 #include "engine/vfs_cgltf.h"
 #include "engine/terrain.h"
 #include "engine/terrain_layers.h"
 #include "engine/water.h"
+#include "input/rebind.h"
 
 #include "meshoptimizer.h"
 #include "systems/anim_state.h"
@@ -38,9 +47,8 @@
 
 #include <glm/gtc/matrix_transform.hpp>
 
-extern "C" {
 #include "lua.h"
-}
+
 
 using namespace ukiyo;
 
@@ -126,7 +134,7 @@ static double luaNumber(ScriptHost& sh, const char* name) {
 static void testLuaMath() {
     World w(true);
     std::string err;
-    const bool loaded = w.script.loadString(
+    const bool loaded = w.sceneScript().loadString(
         "local a = ukiyo.Vector3(1, 2, 3)\n"
         "local b = a + ukiyo.Vector3(1, 1, 1) - ukiyo.Vector3(0, 0, 1)\n"
         "sumX, sumY, sumZ = b.x, b.y, b.z\n"
@@ -146,27 +154,27 @@ static void testLuaMath() {
         "badAdd = not pcall(function() return a + 1 end)\n",
         "math", &err);
     check(loaded, "lua math: the value-type script loads", err);
-    check(std::fabs(luaNumber(w.script, "sumX") - 2.0) < 1e-6 && std::fabs(luaNumber(w.script, "sumZ") - 3.0) < 1e-6,
-          "lua math: Vector3 adds and subtracts", num(luaNumber(w.script, "sumZ")));
-    check(std::fabs(luaNumber(w.script, "scaled") - 6.0) < 1e-6, "lua math: Vector3 scales by a number");
-    lua_getglobal(w.script.state(), "text");
-    check(std::string(lua_tostring(w.script.state(), -1)) == "(1, 2, 3)", "lua math: tostring prints the vector");
-    lua_pop(w.script.state(), 1);
-    check(std::fabs(luaNumber(w.script, "fx") - 0.5) < 1e-4 && std::fabs(luaNumber(w.script, "fz") - 0.8660) < 1e-4,
+    check(std::fabs(luaNumber(w.sceneScript(), "sumX") - 2.0) < 1e-6 && std::fabs(luaNumber(w.sceneScript(), "sumZ") - 3.0) < 1e-6,
+          "lua math: Vector3 adds and subtracts", num(luaNumber(w.sceneScript(), "sumZ")));
+    check(std::fabs(luaNumber(w.sceneScript(), "scaled") - 6.0) < 1e-6, "lua math: Vector3 scales by a number");
+    lua_getglobal(w.sceneScript().state(), "text");
+    check(std::string(lua_tostring(w.sceneScript().state(), -1)) == "(1, 2, 3)", "lua math: tostring prints the vector");
+    lua_pop(w.sceneScript().state(), 1);
+    check(std::fabs(luaNumber(w.sceneScript(), "fx") - 0.5) < 1e-4 && std::fabs(luaNumber(w.sceneScript(), "fz") - 0.8660) < 1e-4,
           "lua math: lookRotation with a 30 degree yaw matches the engine's yaw direction",
-          num(luaNumber(w.script, "fx")) + " " + num(luaNumber(w.script, "fz")));
-    check(std::fabs(luaNumber(w.script, "rx") - 1.0) < 1e-4 && std::fabs(luaNumber(w.script, "rz")) < 1e-4,
-          "lua math: lookRotation toward +X turns +Z to +X", num(luaNumber(w.script, "rx")));
-    check(std::fabs(luaNumber(w.script, "tz") + 1.0) < 1e-4 && std::fabs(luaNumber(w.script, "tx")) < 1e-4,
+          num(luaNumber(w.sceneScript(), "fx")) + " " + num(luaNumber(w.sceneScript(), "fz")));
+    check(std::fabs(luaNumber(w.sceneScript(), "rx") - 1.0) < 1e-4 && std::fabs(luaNumber(w.sceneScript(), "rz")) < 1e-4,
+          "lua math: lookRotation toward +X turns +Z to +X", num(luaNumber(w.sceneScript(), "rx")));
+    check(std::fabs(luaNumber(w.sceneScript(), "tz") + 1.0) < 1e-4 && std::fabs(luaNumber(w.sceneScript(), "tx")) < 1e-4,
           "lua math: two quaternions multiply, 180 degrees turns +Z to -Z");
-    check(std::fabs(luaNumber(w.script, "gx") - 1.0) < 1e-4 && std::fabs(luaNumber(w.script, "gz")) < 1e-4,
+    check(std::fabs(luaNumber(w.sceneScript(), "gx") - 1.0) < 1e-4 && std::fabs(luaNumber(w.sceneScript(), "gz")) < 1e-4,
           "lua math: angleAxis 90 degrees about +Y turns +Z to +X");
-    lua_getglobal(w.script.state(), "badMul");
-    const bool badMul = lua_toboolean(w.script.state(), -1) != 0;
-    lua_pop(w.script.state(), 1);
-    lua_getglobal(w.script.state(), "badAdd");
-    const bool badAdd = lua_toboolean(w.script.state(), -1) != 0;
-    lua_pop(w.script.state(), 1);
+    lua_getglobal(w.sceneScript().state(), "badMul");
+    const bool badMul = lua_toboolean(w.sceneScript().state(), -1) != 0;
+    lua_pop(w.sceneScript().state(), 1);
+    lua_getglobal(w.sceneScript().state(), "badAdd");
+    const bool badAdd = lua_toboolean(w.sceneScript().state(), -1) != 0;
+    lua_pop(w.sceneScript().state(), 1);
     check(badMul && badAdd,
           "lua math: unsupported operands raise an error");
 }
@@ -197,7 +205,7 @@ static void testContacts() {
     w.attachDynamicSphere("b", 0.5f, 1.0f);
     w.physics.addImpulse(w.entity("a").body, glm::vec3(20, 0, 0));
     std::string err;
-    const bool loaded = w.script.loadString(R"(
+    const bool loaded = w.sceneScript().loadString(R"(
         added = 0
         lastKind = ""
         lastNames = ""
@@ -214,13 +222,13 @@ static void testContacts() {
     while (ticks < 300) {
         w.tick(1.0f / 60.0f);
         ++ticks;
-        lua_State* L = w.script.state();
+        lua_State* L = w.sceneScript().state();
         lua_getglobal(L, "added");
         const bool any = lua_tointeger(L, -1) > 0;
         lua_pop(L, 1);
         if (any) break;
     }
-    lua_State* L = w.script.state();
+    lua_State* L = w.sceneScript().state();
     lua_getglobal(L, "added");
     const int added = static_cast<int>(lua_tointeger(L, -1));
     lua_pop(L, 1);
@@ -230,7 +238,7 @@ static void testContacts() {
     const std::string names = namesC ? namesC : "";
     lua_pop(L, 1);
     check(names == "a,b" || names == "b,a", "contacts: the event names the two entities", names);
-    check(!w.script.hasFailed(), "contacts: handler runs without error", w.script.lastError());
+    check(!w.sceneScript().hasFailed(), "contacts: handler runs without error", w.sceneScript().lastError());
 }
 
 // --- Resource pack: build, mount, read through the hook, cgltf ----------------------------
@@ -311,7 +319,7 @@ static std::string luaText(ScriptHost& sh, const char* name) {
 static void testEntityHandles() {
     World w;
     std::string err;
-    const bool loaded = w.script.loadString(R"(
+    const bool loaded = w.sceneScript().loadString(R"(
         e = ukiyo.Entity("hero")
         e.position = ukiyo.Vector3(1, 2, 3)
         e.yaw = 45
@@ -326,15 +334,15 @@ static void testEntityHandles() {
         text = tostring(e)
     )", "entity_test", &err);
     check(loaded, "entity: handle script loads", err);
-    check(std::fabs(luaNumber(w.script, "posX") - 1.0) < 1e-6 && std::fabs(luaNumber(w.script, "posY") - 2.0) < 1e-6,
+    check(std::fabs(luaNumber(w.sceneScript(), "posX") - 1.0) < 1e-6 && std::fabs(luaNumber(w.sceneScript(), "posY") - 2.0) < 1e-6,
           "entity: writable position is read back");
-    check(std::fabs(luaNumber(w.script, "yawBack") - 45.0) < 1e-6, "entity: writable yaw is read back");
-    check(luaText(w.script, "nameBack") == "hero", "entity: name reads back");
-    check(luaBool(w.script, "readonlyBlocked"), "entity: name is read-only");
-    check(luaBool(w.script, "unknownBlocked"), "entity: an unknown field is an error");
-    check(luaBool(w.script, "same") && !luaBool(w.script, "other"), "entity: handles compare by name");
-    check(luaText(w.script, "text") == "Entity(hero)", "entity: tostring names the entity");
-    check(w.findEntity("hero") != nullptr && w.findEntity("hero")->yawDeg == 45.0f,
+    check(std::fabs(luaNumber(w.sceneScript(), "yawBack") - 45.0) < 1e-6, "entity: writable yaw is read back");
+    check(luaText(w.sceneScript(), "nameBack") == "hero", "entity: name reads back");
+    check(luaBool(w.sceneScript(), "readonlyBlocked"), "entity: name is read-only");
+    check(luaBool(w.sceneScript(), "unknownBlocked"), "entity: an unknown field is an error");
+    check(luaBool(w.sceneScript(), "same") && !luaBool(w.sceneScript(), "other"), "entity: handles compare by name");
+    check(luaText(w.sceneScript(), "text") == "Entity(hero)", "entity: tostring names the entity");
+    check(w.findEntity("hero") != nullptr && w.findEntity("hero")->rotationDeg.y == 45.0f,
           "entity: writes go to the world entity");
 }
 
@@ -347,17 +355,17 @@ static void testContactFilter() {
     w.attachDynamicSphere("b", 0.5f, 1.0f);
     w.physics.addImpulse(w.entity("a").body, glm::vec3(20, 0, 0));
     std::string err;
-    const bool loaded = w.script.loadString(R"(
+    const bool loaded = w.sceneScript().loadString(R"(
         added = 0
         function onContact(ev)
             if ev.kind == "added" then added = added + 1 end
         end
         ukiyo.setContactFilter("a", "b", false)
     )", "filter_test", &err);
-    check(loaded && !w.script.hasFailed(), "filter: filter script loads", err);
+    check(loaded && !w.sceneScript().hasFailed(), "filter: filter script loads", err);
     for (int i = 0; i < 300; ++i) w.tick(1.0f / 60.0f);
-    check(std::fabs(luaNumber(w.script, "added")) < 1e-6, "filter: a filtered pair makes no contact",
-          num(luaNumber(w.script, "added")));
+    check(std::fabs(luaNumber(w.sceneScript(), "added")) < 1e-6, "filter: a filtered pair makes no contact",
+          num(luaNumber(w.sceneScript(), "added")));
 }
 
 // --- Visibility: frustum test and distance cull and fade ----------------------------------
@@ -432,7 +440,9 @@ static void testNavigation() {
 
 // Writes a mono 16-bit WAV: a sine tone of the given frequency, amplitude, and length.
 static std::string writeToneWav(const char* name, double seconds, double freq, double amp) {
-    const std::string path = std::string("/tmp/") + name;
+    // The system temporary directory, not /tmp: Windows has no /tmp, and a path that cannot be opened would leave the
+    // audio checks failing on a platform that is fine.
+    const std::string path = (std::filesystem::temp_directory_path() / name).string();
     const uint32_t rate = 48000;
     const uint32_t n = uint32_t(seconds * rate);
     std::vector<int16_t> samples(n);
@@ -465,6 +475,96 @@ static double pumpRms(AudioEngine& a, uint32_t frames) {
     return std::sqrt(sum / double(buf.size()));
 }
 
+// A touch event on Android reaches a script through the same path a key does: project settings bind
+// "<Touchscreen>/primaryTouch/press" into the Gameplay map, and setTouch writes the control the binding resolved to.
+static void testWorldTouch() {
+    ukiyo::World w;
+    w.setInputActions({{"Jump", "Space"}, {"Light", "<Touchscreen>/primaryTouch/press"}});
+    ukiyo::input::ActionMap* gameplay = w.input().map("Gameplay");
+    check(gameplay != nullptr && gameplay->find("Light") != nullptr, "touch: the action exists");
+    ukiyo::input::Action* light = gameplay ? gameplay->find("Light") : nullptr;
+    check(light && light->bindings.size() == 1 && light->bindings[0].path == "<Touchscreen>/primaryTouch/press",
+          "touch: a <Touchscreen> path from project settings reaches the world");
+    check(!w.actionDown("Light"), "touch: it starts released");
+
+    w.setTouch(0, true, glm::vec2(0.25f, 0.5f), glm::vec2(0.0f));
+    check(w.actionDown("Light"), "touch: a finger down fires the action");
+    glm::vec2 pos(0.0f);
+    check(w.input().readPath("<Touchscreen>/primaryTouch/position", &pos) && std::fabs(pos.x - 0.25f) < 1e-5f,
+          "touch: the position is readable as a screen fraction");
+    check(w.input().readPath("<Touchscreen>/touchCount", &pos) && std::fabs(pos.x - 1.0f) < 1e-5f,
+          "touch: touchCount reads one finger down");
+    check(!w.actionDown("Jump"), "touch: the keyboard action does not fire from a touch");
+    w.setTouch(0, false, glm::vec2(0.25f, 0.5f), glm::vec2(0.0f));
+    check(!w.actionDown("Light"), "touch: lifting the finger releases it");
+
+    // The second finger is a different control, so a look-drag never fires an action bound to the primary touch.
+    w.setTouch(1, true, glm::vec2(0.8f, 0.2f), glm::vec2(0.1f, 0.0f));
+    check(!w.actionDown("Light"), "touch: the secondary touch does not fire a primary-touch action");
+    w.setTouch(1, false, glm::vec2(0.8f, 0.2f), glm::vec2(0.0f));
+}
+
+// Rebinding from the top of the stack (docs/INPUT.md §7, §9a): an action map built from project settings, a rebind
+// that writes a gamepad path into it, and the value a script reads afterwards.
+static void testWorldRebind() {
+    ukiyo::World w;
+    w.setInputActions({{"Jump", "Space"}, {"Fire", "<Mouse>/leftButton"}, {"Dash", "<Gamepad>/buttonSouth"}});
+    check(w.actionDown("Jump") == false, "rebind: Jump starts released");
+    // The settings page stores paths, so the world has to read them: the pad binding is live, not a comment in a file.
+    ukiyo::input::Action* dash = w.input().map("Gameplay") ? w.input().map("Gameplay")->find("Dash") : nullptr;
+    check(dash && dash->bindings.size() == 1 && dash->bindings[0].path == "<Gamepad>/buttonSouth",
+          "rebind: a gamepad path from project settings reaches the world");
+    check(!w.input().map("Gameplay")->find("Nonsense"), "rebind: an action that was not asked for does not exist");
+
+    ukiyo::input::State& state = w.input();
+    ukiyo::input::ActionMap* gameplay = state.map("Gameplay");
+    check(gameplay != nullptr, "rebind: the Gameplay map exists");
+    if (!gameplay) return;
+    ukiyo::input::Action* jump = gameplay->find("Jump");
+    check(jump && jump->bindings.size() == 1 && jump->bindings[0].path == "<Keyboard>/space",
+          "rebind: a project key becomes a keyboard control path");
+
+    // The capture runs on the world's own state, and the editor delivers a key the moment Qt sees it: the world's
+    // update is what turns that into a capture. setKeyHeld updates the world itself, so the press is seen there.
+    std::string captured;
+    state.onRebind = [&](const std::string& path) { captured = path; };
+    state.startRebind(*gameplay, *jump, 0, true);
+    check(state.rebinding(), "rebind: a capture starts on the live map");
+    w.setKeyHeld("J", true);   // the editor's own path: a key event becomes a held control, then one update
+    check(captured == "<Keyboard>/j", "rebind: a press between updates is captured", captured);
+    check(jump->bindings[0].path == "<Keyboard>/j", "rebind: the action reads J once the write lands");
+    check(w.actionDown("Jump"), "rebind: a script sees the new key as held");
+    w.setKeyHeld("J", false);
+    w.setKeyHeld("Space", true);
+    check(!w.actionDown("Jump"), "rebind: the old key no longer fires");
+    w.setKeyHeld("Space", false);
+
+    // A capture that started after the key went down never sees an edge: that is the honest answer, and the editor's
+    // dialog avoids it by starting the capture on the frame the row is armed, not after the press.
+    state.onRebind = [&](const std::string& path) { captured = path; };
+    captured.clear();
+    w.setKeyHeld("H", true);
+    state.startRebind(*gameplay, *jump, 0, true);   // the snapshot now has H held, so it is not a new press
+    check(state.rebinding(), "rebind: a second capture starts");
+    w.input().update(1.0f / 60.0f);
+    check(captured.empty() && jump->bindings[0].path == "<Keyboard>/j",
+          "rebind: a key already held when the capture starts is not captured");
+    state.cancelRebind();
+    w.setKeyHeld("H", false);
+
+    // The same through the operation, with the conflict list the editor's dialog shows.
+    ukiyo::input::RebindOperation op;
+    check(op.start(state, "Gameplay", "Jump"), "rebind: the operation starts on the live map");
+    w.setKeyHeld("K", true);
+    check(op.status() == ukiyo::input::RebindOperation::Status::Applied, "rebind: the operation reports the capture");
+    check(op.path() == "<Keyboard>/k", "rebind: and holds the path", op.path());
+    check(ukiyo::input::controlDisplayName(op.path()) == "K", "rebind: which reads as the key");
+    check(op.conflicts().empty(), "rebind: K is free");
+    op.revert();
+    check(jump->bindings[0].path == "<Keyboard>/j", "rebind: revert puts the previous key back");
+    w.setKeyHeld("K", false);
+}
+
 static void testAudio() {
     const std::string wav = writeToneWav("ukiyo_systems_test_tone.wav", 1.0, 440.0, 0.5);
     AudioEngine audio(true);
@@ -490,6 +590,160 @@ static void testAudio() {
     audio.stop(id);
     check(near > 0.0 && far * 3.0 < near, "audio: a sound 20 m away is much quieter than at 1 m",
           "near " + num(near) + ", far " + num(far));
+
+    // ---- the mixer: voices, the voice limit, buses, the reverb insert, streaming music ----
+    AudioEngine mix(true);
+    check(mix.ok(), "mixer: the engine starts", mix.lastError());
+    const AudioEngine::SoundId tone = mix.load(wav);
+    check(tone != 0, "mixer: the WAV registers");
+
+    // A sound overlaps itself: two play calls are two voices, which is what audio.h has always promised.
+    mix.play(tone);
+    mix.play(tone);
+    check(mix.activeVoices() == 2, "mixer: the same sound overlaps itself", std::to_string(mix.activeVoices()));
+
+    // The voice limit steals the oldest voice rather than refusing the newest sound.
+    mix.setVoiceLimit(4);
+    for (int i = 0; i < 10; ++i) mix.play(tone);
+    check(mix.activeVoices() == 4, "mixer: the voice limit holds", std::to_string(mix.activeVoices()));
+    mix.stop(tone);
+    check(mix.activeVoices() == 0, "mixer: stop clears every voice of that sound");
+
+    // Bus volume: a muted bus makes the same voice silent.
+    mix.setBusVolume(AudioEngine::Bus::Sfx, 0.0f);
+    mix.play(tone);
+    const double muted = pumpRms(mix, 2400);
+    mix.stop(tone);
+    check(muted < 1e-4, "mixer: a muted bus is silent", num(muted));
+    mix.setBusVolume(AudioEngine::Bus::Sfx, 1.0f);
+    check(mix.busVolume(AudioEngine::Bus::Sfx) == 1.0f, "mixer: the bus volume reads back");
+
+    // The reverb insert: on a short click, the tail rings after the source has ended; off, it is silence.
+    const std::string click = writeToneWav("ukiyo_systems_test_click.wav", 0.03, 880.0, 0.9);
+    const AudioEngine::SoundId tick = mix.load(click);
+    check(tick != 0, "mixer: a second file registers");
+    mix.setBusReverb(AudioEngine::Bus::Ambient, 1.0f);
+    mix.playOn(tick, AudioEngine::Bus::Ambient);
+    pumpRms(mix, 2400);                                  // the source is 1440 frames; the rest is its own tail
+    const double wetTail = pumpRms(mix, 9600);           // 0.2 s after the source has ended
+    mix.stop(tick);
+    check(wetTail > 1e-4, "mixer: the reverb tail keeps ringing after the source stops", num(wetTail));
+    mix.setBusReverb(AudioEngine::Bus::Ambient, 0.0f);
+    mix.playOn(tick, AudioEngine::Bus::Ambient);
+    pumpRms(mix, 2400);
+    const double dryTail = pumpRms(mix, 9600);
+    mix.stop(tick);
+    check(dryTail < 1e-4, "mixer: with the insert off the tail is silent", num(dryTail));
+
+    // Streaming music: its own voice on the Music bus, fading in, and a stop that completes on the audio thread.
+    check(mix.playMusic(wav, true, 0.1f), "mixer: music starts", mix.lastError());
+    check(mix.musicPlaying(), "mixer: and reports itself as playing");
+    const double fadeEarly = pumpRms(mix, 960);          // the first tenth of a 0.1 s fade
+    const double fadeLate = pumpRms(mix, 3840);          // the fade's second half
+    check(fadeEarly > 0.0 && fadeEarly < fadeLate * 0.5, "mixer: music fades in",
+          num(fadeEarly) + " early vs " + num(fadeLate) + " late");
+    mix.stopMusic(0.05f);
+    pumpRms(mix, 4800);                                  // 0.1 s of device time: the scheduled stop lands
+    check(!mix.musicPlaying(), "mixer: a faded stop finishes without anyone telling it to");
+    mix.playMusic(wav, false, 0.0f);
+    check(mix.musicPlaying(), "mixer: it starts again");
+    mix.stopMusic(0.0f);
+    check(!mix.musicPlaying(), "mixer: and stops immediately when asked");
+}
+
+// --- The bindings a game is built on: named lights, save slots, script HUD quads ---------------------------
+
+static void testGameBindings() {
+    ukiyo::World w(true);
+    ukiyo::SceneLight lamp;
+    lamp.name = "Lamp";
+    lamp.enabled = true;
+    lamp.intensity = 3.0f;
+    ukiyo::SceneLight unnamed;   // exists for the renderer, not to Lua
+    w.setSceneLights({lamp, unnamed});
+    check(w.findLight("Lamp") != nullptr, "lights: a named light is found by name");
+    check(w.findLight("Nope") == nullptr, "lights: an unknown name finds nothing");
+
+    namespace fs = std::filesystem;
+    const fs::path saves = fs::temp_directory_path() / ("ukiyo_save_test_" + std::to_string(::getpid()));
+    fs::remove_all(saves);
+    w.setSaveDir(saves.string());
+
+    std::string err;
+    const bool loaded = w.sceneScript().loadString(
+        R"(
+        setOn = ukiyo.setLightEnabled("Lamp", false)
+        offNow = not ukiyo.lightEnabled("Lamp")
+        ukiyo.setLightIntensity("Lamp", 1.25)
+        badLight = not pcall(function() ukiyo.lightEnabled("Nope") end)
+
+        ukiyo.saveSet("lanterns", 7)
+        ukiyo.saveSet("pi", 3.25)
+        ukiyo.saveSet("met", true)
+        ukiyo.saveSet("name", "afterglow")
+        gotN = ukiyo.saveGet("lanterns")
+        gotF = ukiyo.saveGet("pi")
+        gotB = ukiyo.saveGet("met")
+        gotS = ukiyo.saveGet("name")
+        missing = ukiyo.saveGet("nothing") == nil
+        wrote = ukiyo.saveWrite(1)
+        slot1 = ukiyo.saveSlotExists(1)
+        slot2 = ukiyo.saveSlotExists(2)
+        ukiyo.saveSet("lanterns", 9)
+        readBack = ukiyo.saveRead(1)
+        gotAfter = ukiyo.saveGet("lanterns")
+        badSlot = not pcall(function() ukiyo.saveWrite(999) end)
+        deleted = ukiyo.saveDelete(1)
+        gone = not ukiyo.saveSlotExists(1)
+
+        ukiyo.hudRect(10, 20, 30, 40, 0.5, 0.25, 0.125, 0.75)
+        ukiyo.hudRect(1, 2, 3, 4)
+    )",
+        "game", &err);
+    check(loaded, "game bindings: the script loads", err);
+    if (!loaded) return;
+
+    check(luaBool(w.sceneScript(), "setOn") && luaBool(w.sceneScript(), "offNow"),
+          "lights: setLightEnabled changes the light and reports true");
+    check(!w.findLight("Lamp")->enabled, "lights: the light itself is off now");
+    check(std::fabs(w.findLight("Lamp")->intensity - 1.25f) < 1e-6f,
+          "lights: setLightIntensity wrote the light", num(w.findLight("Lamp")->intensity));
+    check(luaBool(w.sceneScript(), "badLight"), "lights: an unknown name is an error, not a no-op");
+
+    check(luaNumber(w.sceneScript(), "gotN") == 7.0, "saves: an integral number round-trips as an integer");
+    check(std::fabs(luaNumber(w.sceneScript(), "gotF") - 3.25) < 1e-12, "saves: a fractional number round-trips");
+    check(luaBool(w.sceneScript(), "gotB"), "saves: a boolean round-trips");
+    {
+        lua_getglobal(w.sceneScript().state(), "gotS");
+        check(std::string(lua_tostring(w.sceneScript().state(), -1)) == "afterglow",
+              "saves: a string round-trips");
+        lua_pop(w.sceneScript().state(), 1);
+    }
+    check(luaBool(w.sceneScript(), "missing"), "saves: a missing key reads as nil");
+    check(luaBool(w.sceneScript(), "wrote") && luaBool(w.sceneScript(), "slot1"),
+          "saves: saveWrite creates the file and saveSlotExists sees it");
+    check(!luaBool(w.sceneScript(), "slot2"), "saves: an unwritten slot does not exist");
+    check(luaBool(w.sceneScript(), "readBack"), "saves: saveRead loads a slot");
+    check(luaNumber(w.sceneScript(), "gotAfter") == 7.0,
+          "saves: reading replaces the store, so the value written to the slot comes back, not the one after it");
+    check(luaBool(w.sceneScript(), "badSlot"), "saves: a slot outside 0..63 is an error");
+    check(luaBool(w.sceneScript(), "deleted") && luaBool(w.sceneScript(), "gone"),
+          "saves: saveDelete removes the file and saveSlotExists says so");
+
+    check(w.hudQuads().size() == 2, "hud: both hudRect calls produced a quad",
+          std::to_string(w.hudQuads().size()));
+    if (w.hudQuads().size() == 2) {
+        const ukiyo::World::HudQuad& a = w.hudQuads()[0];
+        const ukiyo::World::HudQuad& b = w.hudQuads()[1];
+        check(a.x == 10 && a.y == 20 && a.w == 30 && a.h == 40, "hud: the quad carries the rectangle it was given");
+        check(std::fabs(a.r - 0.5f) < 1e-6f && std::fabs(a.g - 0.25f) < 1e-6f && std::fabs(a.b - 0.125f) < 1e-6f
+                  && std::fabs(a.a - 0.75f) < 1e-6f,
+              "hud: the quad carries its colour");
+        check(b.r == 1.0f && b.g == 1.0f && b.b == 1.0f && b.a == 1.0f, "hud: omitted colours default to opaque white");
+    }
+    w.tick(0.016f);
+    check(w.hudQuads().empty(), "hud: the next tick clears the frame's quads");
+    fs::remove_all(saves);
 }
 
 // --- Animation state machine ---------------------------------------------------------------
@@ -552,11 +806,14 @@ static void testScript() {
     lua_pop(sh.state(), 1);
 
     ScriptHost box;
+    // require() is the host's own loader, restricted to the script folders; everything a script could use to read or
+    // write the machine is gone.
     box.loadString("sandboxed = (io == nil) and (os == nil) and (package == nil) and (dofile == nil) and "
-                   "(loadfile == nil) and (require == nil)",
+                   "(loadfile == nil) and (debug == nil) and (type(require) == \"function\")",
                    "sandbox", &err);
     lua_getglobal(box.state(), "sandboxed");
-    check(lua_toboolean(box.state(), -1) == 1, "script: io, os, package, and file loaders are not available");
+    check(lua_toboolean(box.state(), -1) == 1,
+          "script: io, os, package, debug and the file loaders are not available, and require is the host's");
     lua_pop(box.state(), 1);
 
     ScriptHost bad;
@@ -566,6 +823,73 @@ static void testScript() {
 
 // --- World: scripts drive the systems ---------------------------------------------------
 
+// A collider turned the way the gizmo drew its object. The editor can turn an instance about X and Z; if the body
+// stayed axis-aligned, a plank tilted into a ramp would still be a shelf to everything that walks on it, and a box
+// that tumbles would be drawn the way it was authored.
+static void testRotatedColliders() {
+    // The same plank, flat and tilted 20 degrees about Z, and the same sphere dropped on each.
+    PhysicsWorld flat;
+    flat.addStaticBox(glm::vec3(0, 0, 0), glm::vec3(6, 0.1f, 6));
+    const PhysicsWorld::Handle still = flat.addDynamicSphere(glm::vec3(0, 2, 0), 0.3f, 1.0f);
+
+    PhysicsWorld tilted;
+    // A positive turn about Z lifts the plank's +x end (R = Ry * Rx * Rz, and Rz sends +x towards +y), so downhill
+    // is -x. A floor catches the sphere once it rolls off the end.
+    const PhysicsWorld::Handle plank = tilted.addStaticBox(glm::vec3(0, 0, 0), glm::vec3(6, 0.1f, 6), glm::vec3(0, 0, 20));
+    tilted.addStaticBox(glm::vec3(0, -4, 0), glm::vec3(20, 0.5f, 20));
+    const PhysicsWorld::Handle rolling = tilted.addDynamicSphere(glm::vec3(0, 2, 0), 0.3f, 1.0f);
+    check(std::fabs(tilted.rotationDeg(plank).z - 20.0f) < 0.01f, "physics: a body made with a rotation reports it in degrees",
+          num(tilted.rotationDeg(plank).z));
+
+    for (int i = 0; i < 240; ++i) {
+        flat.step(1.0f / 60.0f);
+        tilted.step(1.0f / 60.0f);
+    }
+    check(std::fabs(flat.position(still).x) < 0.2f, "physics: a sphere dropped on a flat plank stays put",
+          num(flat.position(still).x));
+    check(tilted.position(rolling).x < -1.0f, "physics: a sphere on a plank tilted about Z rolls down it",
+          num(tilted.position(rolling).x));
+    check(tilted.position(rolling).y < flat.position(still).y, "physics: rolling down the plank leaves the sphere lower",
+          num(tilted.position(rolling).y));
+
+    // A dynamic box keeps the rotation it was made with, and setRotation turns one that already exists.
+    PhysicsWorld spun;
+    const PhysicsWorld::Handle box = spun.addDynamicBox(glm::vec3(0, 5, 0), glm::vec3(0.5f), 1.0f, glm::vec3(0, 0, 45));
+    check(std::fabs(spun.rotationDeg(box).z - 45.0f) < 0.01f, "physics: a box made tilted is tilted", num(spun.rotationDeg(box).z));
+    spun.setRotation(box, glm::vec3(0, 90, 0));
+    check(std::fabs(spun.rotationDeg(box).y - 90.0f) < 0.01f, "physics: setRotation turns a body that exists",
+          num(spun.rotationDeg(box).y));
+
+    // The entity carries the whole rotation, not a yaw: a crate spawned lying along a ramp is drawn lying along it.
+    World w(true);
+    w.entity("crate").position = glm::vec3(0, 5, 0);
+    w.attachDynamicBox("crate", glm::vec3(0.4f), 4.0f, glm::vec3(0, 0, 30));
+    w.tick(1.0f / 60.0f);
+    const Entity* crate = w.findEntity("crate");
+    check(crate && std::fabs(crate->rotationDeg.z - 30.0f) < 0.5f,
+          "world: an entity made tilted is drawn tilted", crate ? num(crate->rotationDeg.z) : "missing");
+
+    // A script writes the whole rotation, and reads a yaw that agrees with it.
+    World s(true);
+    std::string err;
+    const bool loaded = s.sceneScript().loadString(
+        "function onStart()\n"
+        "  local e = ukiyo.Entity('prop')\n"
+        "  e.rotation = ukiyo.Vector3(10, 20, 30)\n"
+        "  seen = e.yaw\n"
+        "end\n", "rotation", &err);
+    check(loaded, "script: a script that writes an entity rotation loads", err);
+    s.sceneScript().callStart();
+    s.notifySceneLoaded();
+    const Entity* prop = s.findEntity("prop");
+    check(prop && std::fabs(prop->rotationDeg.x - 10.0f) < 1e-3f && std::fabs(prop->rotationDeg.z - 30.0f) < 1e-3f,
+          "script: a script can turn an entity about X and Z, not only about Y", prop ? num(prop->rotationDeg.z) : "missing");
+    lua_getglobal(s.sceneScript().state(), "seen");
+    const double seen = lua_tonumber(s.sceneScript().state(), -1);
+    lua_pop(s.sceneScript().state(), 1);
+    check(std::fabs(seen - 20.0) < 1e-6, "script: .yaw is the y of .rotation", num(seen));
+}
+
 static void testWorld() {
     World w(true);
     w.physics.addStaticBox(glm::vec3(0, -0.5f, 0), glm::vec3(20, 0.5f, 20));
@@ -573,7 +897,7 @@ static void testWorld() {
     w.attachDynamicSphere("ball", 0.5f, 1.0f);
 
     std::string err;
-    const bool loaded = w.script.loadString(
+    const bool loaded = w.sceneScript().loadString(
         "function onStart() ukiyo.log('started') ukiyo.setPosition('probe', 1, 2, 3) end\n"
         "function onUpdate(dt)\n"
         "  local hit, x, y, z = ukiyo.raycast(8, 10, 0, 0, -1, 0, 20)\n"
@@ -582,20 +906,20 @@ static void testWorld() {
         "end\n",
         "world", &err);
     check(loaded, "world: a script with onStart and onUpdate loads", err);
-    w.script.callStart();
+    w.sceneScript().callStart();
     check(w.logs.size() == 1 && w.logs[0] == "started", "world: ukiyo.log reaches the host");
     const glm::vec3 probe = w.entity("probe").position;
     check(std::fabs(probe.x - 1.0f) < 1e-4f && std::fabs(probe.y - 2.0f) < 1e-4f,
           "world: ukiyo.setPosition moves a named entity", num(probe.y));
 
     for (int i = 0; i < 180; ++i) w.tick(1.0f / 60.0f);
-    lua_getglobal(w.script.state(), "floorY");
-    const double floorY = lua_tonumber(w.script.state(), -1);
-    lua_pop(w.script.state(), 1);
+    lua_getglobal(w.sceneScript().state(), "floorY");
+    const double floorY = lua_tonumber(w.sceneScript().state(), -1);
+    lua_pop(w.sceneScript().state(), 1);
     check(std::fabs(floorY) < 0.05, "world: ukiyo.raycast from a script hits the floor", num(floorY));
     check(std::fabs(w.entity("ball").position.y - 0.5f) < 0.05f,
           "world: a physics entity follows its body each tick", num(w.entity("ball").position.y));
-    check(!w.script.hasFailed(), "world: scripts ran without error", w.script.lastError());
+    check(!w.sceneScript().hasFailed(), "world: scripts ran without error", w.sceneScript().lastError());
 }
 
 static void testWorldAnimation() {
@@ -671,6 +995,42 @@ static void testVfx() {
     check(vfx.find(h) == nullptr, "vfx: remove deletes an emitter");
 }
 
+// The project's input actions (a name and portable key text) are compiled into an engine input-system action map, and
+// scripts read them through actionDown(). docs/INPUT.md.
+static void testWorldInput() {
+    World w(true);
+    w.setInputActions({{"Jump", "Space"}, {"Run", "Shift"}, {"Typo", "Hyper"}});
+    check(w.input().action("Gameplay", "Jump") != nullptr, "input: a project action becomes an action in the Gameplay map");
+    check(w.input().map("Gameplay") && w.input().map("Gameplay")->enabled, "input: the Gameplay map is enabled");
+    check(!w.actionDown("Jump"), "input: an action nobody is pressing is false");
+    check(w.input().action("Gameplay", "Typo") != nullptr, "input: a key the engine cannot name keeps its action");
+
+    w.setKeyHeld("Space", true);
+    check(w.actionDown("Jump"), "input: a key press reaches actionDown before the next tick");
+    w.tick(0.1f);
+    check(w.actionDown("Jump"), "input: and it is still held after a tick");
+    w.setKeyHeld("Space", false);
+    check(!w.actionDown("Jump"), "input: releasing the key ends the action");
+
+    // A modifier is a normal control name here, not a chord; the key text is the one Qt's QKeySequence writes.
+    w.setKeyHeld("Shift", true);
+    check(w.actionDown("Run"), "input: Qt's Shift maps to leftShift and drives its action");
+
+    // An unknown key is ignored on both sides, so a typo in the project settings cannot half-work.
+    w.setKeyHeld("Hyper", true);
+    check(!w.actionDown("Typo"), "input: an action with an unknown key never fires");
+    w.setKeyHeld("Shift", false);
+    check(!w.actionDown("Run"), "input: the modifier releases too");
+
+    // A project file may spell the control the way Unity does, and setting the actions again mid-session replaces the
+    // map instead of growing it.
+    w.setInputActions({{"Run", "LeftShift"}});
+    w.setKeyHeld("Shift", false);
+    w.setKeyHeld("LeftShift", true);
+    check(w.actionDown("Run"), "input: LeftShift is accepted as an alias for leftShift");
+    check(w.input().action("Gameplay", "Jump") == nullptr, "input: replacing the actions drops the old ones");
+}
+
 static void testActions() {
     check(std::fabs(ukiyo::pingPongWeight(0.0f, false)) < 1e-5f, "actions: a linear ping-pong starts at rest");
     check(std::fabs(ukiyo::pingPongWeight(0.25f, false) - 0.5f) < 1e-5f, "actions: a linear ping-pong is halfway at a quarter cycle");
@@ -686,7 +1046,7 @@ static void testActions() {
     w.setAction("spinner", spin, glm::vec3(0.0f), 10.0f);
     w.tick(0.5f);
     const ukiyo::Entity* s = w.findEntity("spinner");
-    check(s && std::fabs(s->yawDeg - 55.0f) < 1e-3f, "actions: a spin at 90 deg/s turns 45 degrees in half a second", s ? num(s->yawDeg) : "missing");
+    check(s && std::fabs(s->rotationDeg.y - 55.0f) < 1e-3f, "actions: a spin at 90 deg/s turns 45 degrees in half a second", s ? num(s->rotationDeg.y) : "missing");
 
     ukiyo::EntityAction pp;
     pp.on = true;
@@ -708,12 +1068,12 @@ static void testActions() {
     w.setAction("late", late, glm::vec3(0.0f), 0.0f);
     w.tick(0.5f);
     const ukiyo::Entity* l1 = w.findEntity("late");
-    check(l1 && std::fabs(l1->yawDeg) < 1e-3f, "actions: a spin waits at rest during its start offset",
-          l1 ? num(l1->yawDeg) : "missing");
+    check(l1 && std::fabs(l1->rotationDeg.y) < 1e-3f, "actions: a spin waits at rest during its start offset",
+          l1 ? num(l1->rotationDeg.y) : "missing");
     w.tick(1.0f);
     const ukiyo::Entity* l2 = w.findEntity("late");
-    check(l2 && std::fabs(l2->yawDeg - 45.0f) < 1e-3f, "actions: a spin runs for its time after the offset ends",
-          l2 ? num(l2->yawDeg) : "missing");
+    check(l2 && std::fabs(l2->rotationDeg.y - 45.0f) < 1e-3f, "actions: a spin runs for its time after the offset ends",
+          l2 ? num(l2->rotationDeg.y) : "missing");
 }
 
 static void testSceneSwitch() {
@@ -759,14 +1119,14 @@ static void testSceneSwitch() {
         "ukiyo.loadScene(\"levels/next.ukscene\")\n"
         "ukiyo.preloadModel(\"assets/next.vrm\")\n"
         "HOLD = h\n";
-    check(s.script.loadString(code, "scene-test", &err), "scene: the script with the scene calls loads", err);
+    check(s.sceneScript().loadString(code, "scene-test", &err), "scene: the script with the scene calls loads", err);
     check(s.sceneRequested() && !s.sceneSwitchReady(), "scene: ukiyo.loadScene waits behind ukiyo.holdLoad");
     s.notifySceneLoaded();
     check(s.logs.size() == 1 && s.logs[0] == "loaded", "scene: onSceneLoaded runs once the scene starts");
-    lua_getglobal(s.script.state(), "HOLD");
-    const int token = static_cast<int>(lua_tointeger(s.script.state(), -1));
-    lua_pop(s.script.state(), 1);
-    check(token > 0 && s.script.loadString("ukiyo.releaseLoad(HOLD)", "release", &err) && s.sceneSwitchReady(),
+    lua_getglobal(s.sceneScript().state(), "HOLD");
+    const int token = static_cast<int>(lua_tointeger(s.sceneScript().state(), -1));
+    lua_pop(s.sceneScript().state(), 1);
+    check(token > 0 && s.sceneScript().loadString("ukiyo.releaseLoad(HOLD)", "release", &err) && s.sceneSwitchReady(),
           "scene: ukiyo.releaseLoad lets the requested switch run", err);
     check(s.takeSceneRequest() == "levels/next.ukscene" && s.takePreloads().size() == 1,
           "scene: the Lua request and preload reach the host");
@@ -1062,14 +1422,15 @@ static void testTerrainAtlases() {
     TerrainAtlases plain;
     std::string err;
     const bool okPlain = buildTerrainAtlases(defaultTerrainLayers(), &plain, &err);
-    check(okPlain && plain.width == 1024 && plain.height == 512 && plain.diffuse.size() == size_t(1024) * 512 * 4,
-          "terrain atlas: the atlases are 4 by 2 cells of 256 texels", err);
+    check(okPlain && plain.width == 2048 && plain.height == 1024 && plain.diffuse.size() == size_t(2048) * 1024 * 4,
+          "terrain atlas: the atlases are 4 by 2 cells of 512 texels", err);
     auto d0 = texel(plain, plain.diffuse, 0, 0, 10, 10);
     check(okPlain && d0[0] == 255 && d0[1] == 255 && d0[2] == 255 && std::abs(int(d0[3]) - 230) <= 1,
           "terrain atlas: a layer with no diffuse map is white, with its roughness in alpha (grass 0.9)",
           std::to_string(int(d0[3])));
     auto n0 = texel(plain, plain.normal, 0, 0, 10, 10);
     check(okPlain && n0[0] == 128 && n0[1] == 128 && n0[2] == 255, "terrain atlas: no normal map is a flat normal");
+    check(okPlain && n0[3] == 255, "terrain atlas: no occlusion map means full ambient light");
     auto d7 = texel(plain, plain.diffuse, 3, 1, 5, 5);   // cell 7 is unused by the defaults
     check(okPlain && std::abs(int(d7[3]) - 204) <= 1 && d7[0] == 255, "terrain atlas: an unused cell is white with roughness 0.8");
 
@@ -1077,6 +1438,7 @@ static void testTerrainAtlases() {
     std::vector<TerrainLayer> textured = defaultTerrainLayers();
     textured[0].diffuseFile = std::string(UKIYO_ROOT) + "/tests/data/terrain_checker_64.png";
     textured[0].roughnessFile = std::string(UKIYO_ROOT) + "/tests/data/terrain_grey_64.png";
+    textured[0].aoFile = std::string(UKIYO_ROOT) + "/tests/data/terrain_grey_64.png";
     TerrainAtlases withFiles;
     err.clear();
     const bool okFiles = buildTerrainAtlases(textured, &withFiles, &err);
@@ -1096,6 +1458,11 @@ static void testTerrainAtlases() {
         check(roughOk, "terrain atlas: the roughness file's red channel becomes the alpha");
         auto d1 = texel(withFiles, withFiles.diffuse, 1, 0, 5, 5);   // layer 1 keeps its own white diffuse
         check(d1[0] == 255 && std::abs(int(d1[3]) - 178) <= 1, "terrain atlas: other layers keep their own maps");
+        auto ao0 = texel(withFiles, withFiles.normal, 0, 0, 5, 5);
+        check(std::abs(int(ao0[3]) - 128) <= 2, "terrain atlas: the occlusion file's red channel becomes the normal alpha",
+              std::to_string(int(ao0[3])));
+        auto ao1 = texel(withFiles, withFiles.normal, 1, 0, 5, 5);
+        check(ao1[3] == 255, "terrain atlas: a layer without occlusion stays unoccluded");
     }
 
     // A named file that does not exist is an error, not a silent white.
@@ -1250,6 +1617,245 @@ static void testFoliage() {
     err.clear();
     check(!loadDensityField(std::string(UKIYO_ROOT) + "/tests/data/no_such_density.png", 65, &field, &err) && !err.empty(),
           "foliage: a missing density map is an error", err);
+}
+
+// Grass (item 19): the tuft mesh, the scatter's masks, the distance bands and the packed rows. The scatter is CPU work
+// and the bands are a CPU-side rule the shader repeats, so both can be tested without a device.
+static void testGrass() {
+    // A flat tile at normalised height 0.3: 65 samples, so 64 by 64 one-metre cells, and 64 m of ground per side.
+    Heightmap flat;
+    flat.size = 65;
+    flat.cellSize = 1.0f;
+    flat.heightScale = 10.0f;
+    flat.samples.assign(size_t(65) * 65, 0.3f);
+    const std::vector<uint8_t> noField;
+
+    // Two layers that split the tile cleanly by height: the low one covers the flat ground, the high one nothing.
+    std::vector<TerrainLayer> layers(2);
+    layers[0].name = "low";
+    layers[0].heightMin = 0.0f;
+    layers[0].heightMax = 0.5f;
+    layers[0].heightFade = 0.0f;
+    layers[0].slopeMin = 0.0f;
+    layers[0].slopeMax = 90.0f;
+    layers[0].slopeFade = 0.0f;
+    layers[1] = layers[0];
+    layers[1].name = "high";
+    layers[1].heightMin = 0.6f;
+    layers[1].heightMax = 1.0f;
+
+    GrassSettings g;
+    g.enabled = true;
+    g.density = 0.5f;      // 64 m of ground, so about 2048 candidates at full density
+    g.includeLayers = 0u;  // no layer test until one is asked for
+    g.excludeLayers = 0u;
+    const std::vector<uint8_t> noPaint;
+
+    const auto full = scatterGrass(flat, layers, noPaint, g, noField);
+    check(!full.empty() && full.size() > 1800 && full.size() < 2300,
+          "grass: a half-density scatter fills the tile with about 2000 tufts", std::to_string(full.size()));
+    bool inside = true;
+    for (const GrassInstance& b : full)
+        if (b.pos.x < 0.0f || b.pos.x > 64.0f || b.pos.z < 0.0f || b.pos.z > 64.0f ||
+            std::fabs(b.pos.y - 3.0f) > 1e-4f)
+            inside = false;
+    check(inside, "grass: every tuft stands on the ground inside the tile");
+
+    g.density = 0.0f;
+    check(scatterGrass(flat, layers, noPaint, g, noField).empty(), "grass: density 0 places nothing");
+    g.density = 0.5f;
+
+    // Determinism, and a second seed moving the tufts.
+    const auto again = scatterGrass(flat, layers, noPaint, g, noField);
+    bool same = again.size() == full.size();
+    for (size_t i = 0; same && i < full.size(); ++i)
+        same = again[i].pos == full[i].pos && again[i].yaw == full[i].yaw && again[i].scale == full[i].scale;
+    check(same, "grass: the same seed gives the same tufts");
+    g.seed = 11;
+    const auto other = scatterGrass(flat, layers, noPaint, g, noField);
+    bool differs = other.size() != full.size();
+    for (size_t i = 0; !differs && i < full.size(); ++i) differs = !(other[i].pos == full[i].pos);
+    check(differs, "grass: another seed gives other tufts");
+    g.seed = 3;
+
+    // The detail map scales the density: zero clears the tile, full changes nothing.
+    check(scatterGrass(flat, layers, noPaint, g, std::vector<uint8_t>(size_t(65) * 65, 0)).empty(),
+          "grass: a zero detail map places nothing");
+    check(scatterGrass(flat, layers, noPaint, g, std::vector<uint8_t>(size_t(65) * 65, 255)).size() == full.size(),
+          "grass: a full detail map changes nothing");
+    check(scatterGrass(flat, layers, noPaint, g, std::vector<uint8_t>(10, 255)).empty(),
+          "grass: a detail map of the wrong size is refused");
+
+    // Layer masks: layer 0 covers the flat ground, layer 1 does not. Including one grows grass, the other clears it.
+    g.includeLayers = 1u << 0;
+    check(scatterGrass(flat, layers, noPaint, g, noField).size() == full.size(),
+          "grass: including the layer under the tufts changes nothing");
+    g.includeLayers = 1u << 1;
+    check(scatterGrass(flat, layers, noPaint, g, noField).empty(),
+          "grass: including only a layer that is not there clears the tile");
+    g.includeLayers = 0u;
+    g.excludeLayers = 1u << 0;
+    check(scatterGrass(flat, layers, noPaint, g, noField).empty(),
+          "grass: excluding the layer under the tufts clears the tile");
+    g.excludeLayers = 1u << 1;
+    check(scatterGrass(flat, layers, noPaint, g, noField).size() == full.size(),
+          "grass: excluding an absent layer changes nothing");
+    g.excludeLayers = 0u;
+
+    // A paint map a brush writes: with both layers matching the ground, painting layer 0 off moves every sample's
+    // whole weight to layer 1, so including layer 0 clears the tile and including layer 1 plants all of it.
+    std::vector<TerrainLayer> bothLayers = layers;
+    bothLayers[1].heightMin = 0.0f;
+    bothLayers[1].heightMax = 1.0f;
+    std::vector<uint8_t> paint = std::vector<uint8_t>(size_t(65) * 65 * kTerrainMaxLayers, 0);
+    for (size_t s = 0; s < size_t(65) * 65; ++s) paint[s * kTerrainMaxLayers + 1] = 255;
+    g.includeLayers = 1u << 0;
+    check(scatterGrass(flat, bothLayers, paint, g, noField).empty(),
+          "grass: the layer paint a brush writes clears the grass where layer 0 is painted off");
+    g.includeLayers = 1u << 1;
+    check(scatterGrass(flat, bothLayers, paint, g, noField).size() == full.size(),
+          "grass: the same paint plants every tuft once the layer that took the weight is included");
+    g.includeLayers = 0u;
+
+    // Height and slope limits. The ramp rises 1 m per metre, so it is 45 degrees everywhere.
+    g.heightMax = 0.2f;
+    check(scatterGrass(flat, layers, noPaint, g, noField).empty(), "grass: nothing above the height band");
+    g.heightMax = 1.0f;
+    Heightmap ramp = flat;
+    ramp.heightScale = 64.0f;   // one metre of rise per metre of ground, so 45 degrees everywhere
+    for (uint32_t z = 0; z < 65; ++z)
+        for (uint32_t x = 0; x < 65; ++x) ramp.samples[size_t(z) * 65 + x] = float(x) / 64.0f;
+    g.slopeMax = 30.0f;
+    check(scatterGrass(ramp, layers, noPaint, g, noField).empty(), "grass: nothing on a 45 degree ramp past slopeMax");
+    g.slopeMax = 60.0f;
+    check(scatterGrass(ramp, layers, noPaint, g, noField).size() > 1800, "grass: the same ramp is planted past slopeMax");
+    g.slopeMax = 35.0f;
+
+    // Scale and ground alignment stay in their ranges.
+    bool ranges = true;
+    for (const GrassInstance& b : full) {
+        if (b.yaw < 0.0f || b.yaw >= 6.2831853f) ranges = false;
+        if (b.scale < g.scaleMin || b.scale > g.scaleMax) ranges = false;
+        if (std::fabs(glm::length(b.up) - 1.0f) > 1e-4f) ranges = false;
+        if (b.up.y < 0.0f) ranges = false;
+    }
+    check(ranges, "grass: scale, yaw and the up vector stay in their ranges");
+
+    // The bands: full inside bandNear, half at bandMid, gone at cullDistance, and never rising with distance.
+    g.bandNear = 20.0f;
+    g.bandMid = 50.0f;
+    g.cullDistance = 100.0f;
+    check(std::fabs(grassDensityAt(0.0f, g) - 1.0f) < 1e-6f && std::fabs(grassDensityAt(20.0f, g) - 1.0f) < 1e-6f,
+          "grass: the near band keeps every blade");
+    check(std::fabs(grassDensityAt(50.0f, g) - 0.5f) < 1e-4f, "grass: the mid band keeps half");
+    check(grassDensityAt(100.0f, g) < 1e-5f && grassDensityAt(160.0f, g) < 1e-5f, "grass: past the cull distance nothing is kept");
+    bool monotone = true;
+    float last = 1.0f;
+    for (float d = 0.0f; d <= 120.0f; d += 0.5f) {
+        const float v = grassDensityAt(d, g);
+        if (v > last + 1e-6f) monotone = false;
+        last = v;
+    }
+    check(monotone, "grass: density never rises with distance, so a near view keeps every far blade");
+
+    // The shader's rule, applied on the CPU: the blades kept at 90 m are a subset of the ones kept at 45 m.
+    g.cullDistance = 200.0f;
+    g.bandMid = 120.0f;
+    size_t keptNear = 0, keptFar = 0, keptFarInsideNear = 0;
+    for (int i = 0; i < 4000; ++i) {
+        const glm::vec2 p(float(i % 61) * 1.7f, float(i / 61) * 2.3f);
+        const float h = grassBladeHash(p);
+        const bool near = h < grassDensityAt(45.0f, g);
+        const bool far = h < grassDensityAt(90.0f, g);
+        keptNear += near ? 1 : 0;
+        keptFar += far ? 1 : 0;
+        keptFarInsideNear += (far && !near) ? 1 : 0;
+    }
+    check(keptNear > keptFar && keptFar > 0 && keptFarInsideNear == 0,
+          "grass: the far band draws a subset of the near band, never the other way round",
+          std::to_string(keptNear) + " then " + std::to_string(keptFar));
+
+    // Grouping by chunk, on a 129-sample tile with 64-cell chunks.
+    Heightmap big = flat;
+    big.size = 129;
+    big.samples.assign(size_t(129) * 129, 0.3f);
+    const auto bigList = scatterGrass(big, layers, noPaint, g, noField);
+    const auto groups = groupGrassByChunk(bigList, 1.0f, 64, 2);
+    size_t total = 0;
+    for (const auto& grp : groups) total += grp.size();
+    check(groups.size() == 4 && total == bigList.size(), "grass: grouping by chunk keeps every tuft",
+          std::to_string(total));
+
+    // The instance budget: a dense tile is thinned, and the result is still deterministic.
+    GrassSettings dense = g;
+    dense.density = 64.0f;   // 512 by 512 candidates on this tile, three and a half times the budget
+    dense.bandNear = 0.0f;
+    dense.bandMid = 0.0f;
+    dense.cullDistance = 1.0f;   // the bands are the shader's business; the scatter must not care
+    const auto capped = scatterGrass(flat, layers, noPaint, dense, noField);
+    const auto cappedAgain = scatterGrass(flat, layers, noPaint, dense, noField);
+    check(capped.size() <= kGrassMaxInstances && capped.size() > kGrassMaxInstances / 4,
+          "grass: a tile past the instance budget is thinned to it", std::to_string(capped.size()));
+    bool cappedSame = capped.size() == cappedAgain.size();
+    for (size_t i = 0; cappedSame && i < capped.size(); ++i) cappedSame = capped[i].pos == cappedAgain[i].pos;
+    check(cappedSame, "grass: the budget's subset is the same every build");
+
+    // The mesh: 3 blades of 4 segments, uv.y from root to tip, one normal per vertex, indices in range.
+    GrassSettings meshSettings;   // three blades of four quads, so the counts below are easy to read
+    meshSettings.blades = 3;
+    meshSettings.segments = 4;
+    const GrassMesh mesh = buildGrassMesh(meshSettings);
+    check(mesh.positions.size() == 3 * 5 * 2 && mesh.indices.size() == 3 * 4 * 6,
+          "grass: the tuft mesh is three blades of four quads", std::to_string(mesh.positions.size()));
+    bool meshOk = mesh.normals.size() == mesh.positions.size() && mesh.uvs.size() == mesh.positions.size();
+    float rootWidth = 0.0f;
+    for (size_t i = 0; i < mesh.positions.size(); ++i) {
+        meshOk = meshOk && std::fabs(glm::length(mesh.normals[i]) - 1.0f) < 1e-4f;
+        meshOk = meshOk && mesh.uvs[i].y >= 0.0f && mesh.uvs[i].y <= 1.0f;
+        if (mesh.uvs[i].y < 1e-4f) rootWidth = std::max(rootWidth, mesh.positions[i].y);
+    }
+    for (uint32_t i : mesh.indices) meshOk = meshOk && i < mesh.positions.size();
+    check(meshOk && rootWidth < 1e-4f, "grass: the tuft mesh has unit normals, tips at uv.y 1 and roots at 0");
+    // Vertices come in pairs (one across the blade) per row, so a pair's distance is the blade's width at that height.
+    bool taper = true;
+    for (uint32_t b = 0; b < 3; ++b) {
+        const size_t base = size_t(b) * 5 * 2;
+        const float root = glm::distance(mesh.positions[base], mesh.positions[base + 1]);
+        const float tip = glm::distance(mesh.positions[base + 8], mesh.positions[base + 9]);
+        taper = taper && root > meshSettings.width * 0.9f && tip < root * 0.25f;
+    }
+    check(taper, "grass: a blade starts at its full width and tapers to a point");
+
+    // Packed rows: with no yaw and no ground alignment the basis is a swap of two axes, so a local point maps to a
+    // known world point. Checked through the same dots the shader does, which is the part that can actually be wrong.
+    GrassInstance one;
+    one.pos = glm::vec3(2.0f, 5.0f, 7.0f);
+    one.up = glm::vec3(0.0f, 1.0f, 0.0f);
+    one.yaw = 0.0f;
+    one.scale = 2.0f;
+    std::vector<glm::vec4> rows(3 * kGrassBatch);
+    packGrassRows(&one, 1, rows.data());
+    auto transform = [&rows](glm::vec3 local) {
+        return glm::vec3(glm::dot(rows[0], glm::vec4(local, 1.0f)), glm::dot(rows[1], glm::vec4(local, 1.0f)),
+                         glm::dot(rows[2], glm::vec4(local, 1.0f)));
+    };
+    const glm::vec3 root = transform(glm::vec3(0.0f));
+    const glm::vec3 tip = transform(glm::vec3(0.0f, 1.0f, 0.0f));
+    check(glm::length(root - one.pos) < 1e-5f && glm::length(tip - (one.pos + glm::vec3(0.0f, 2.0f, 0.0f))) < 1e-5f,
+          "grass: the packed rows put the root at the tuft and the tip two metres up");
+    check(glm::length(transform(glm::vec3(1.0f, 0.0f, 0.0f)) - one.pos) > 1.9f &&
+              rows[3] == glm::vec4(0.0f),
+          "grass: a local side point is scaled by the tuft, and unused rows are zero");
+
+    // A tilted tuft keeps its up vector: the shader's normal is the basis applied to the mesh normal.
+    GrassInstance tilted = one;
+    tilted.up = glm::normalize(glm::vec3(0.6f, 0.8f, 0.0f));
+    packGrassRows(&tilted, 1, rows.data());
+    const glm::vec3 upAxis(glm::dot(glm::vec3(rows[0]), glm::vec3(0.0f, 1.0f, 0.0f)),
+                           glm::dot(glm::vec3(rows[1]), glm::vec3(0.0f, 1.0f, 0.0f)),
+                           glm::dot(glm::vec3(rows[2]), glm::vec3(0.0f, 1.0f, 0.0f)));
+    check(glm::length(upAxis - tilted.up * 2.0f) < 1e-4f,
+          "grass: a tuft on a slope leans with the ground normal it was given");
 }
 
 // Terrain editing (item 18, steps 4 and 5): brush weights and edits (with exact undo), noise, terrace, stamps, erosion,
@@ -1467,8 +2073,47 @@ static void testTerrain() {
     check(std::fabs(ramp.heightAtMetres(32.0f, 16.0f) - ramp.heightAt(64, 32)) < 1e-4f,
           "terrain: a point on a sample reads that sample's height");
 
+    // The navmesh bake takes the tile as one triangle soup. It has to carry every chunk, keep the heights the map
+    // gives, and move with the tile's origin -- a bake that skipped the terrain is the flat floor under the hills.
+    {
+        std::vector<glm::vec3> soup;
+        std::vector<uint32_t> soupIdx;
+        // Half a soup first: the appended indices must be renumbered past it, not start at zero again.
+        soup.push_back(glm::vec3(-9.0f, -9.0f, -9.0f));
+        soupIdx.push_back(0);
+        const glm::vec3 origin(100.0f, 3.0f, -50.0f);
+        appendTerrainTriangles(ramp, origin, 64, &soup, &soupIdx);
+        const size_t perChunk = size_t(65) * 65;
+        const size_t idxPerChunk = size_t(64) * 64 * 6;
+        check(soup.size() == 1 + 4 * perChunk && soupIdx.size() == 1 + 4 * idxPerChunk,
+              "terrain: the tile reaches the soup as four chunks of triangles",
+              std::to_string(soup.size()) + " vertices, " + std::to_string(soupIdx.size()) + " indices");
+        bool inRange = true;
+        for (size_t k = 1; k < soupIdx.size(); ++k) inRange = inRange && soupIdx[k] >= 1 && soupIdx[k] < soup.size();
+        check(inRange, "terrain: the appended indices are renumbered past the vertices already in the soup");
+        // Every vertex is a sample of the map, moved by the origin: x and z on the tile's grid, y from the heightmap.
+        bool placed = soup[0] == glm::vec3(-9.0f) && soup[1] == glm::vec3(100.0f, 3.0f + ramp.heightAt(0, 0), -50.0f);
+        float minY = 1e9f, maxY = -1e9f;
+        for (size_t k = 1; k < soup.size() && placed; ++k) {
+            const glm::vec3& p = soup[k];
+            // The soup is chunk by chunk, so x runs 0..64 cells inside each chunk and repeats at 64 m steps.
+            const size_t local = (k - 1) % perChunk;
+            const uint32_t chunk = uint32_t((k - 1) / perChunk);
+            const uint32_t i = uint32_t(local % 65), j = uint32_t(local / 65);
+            const int gx = int((chunk & 1u) * 64u) + int(i), gz = int((chunk >> 1) * 64u) + int(j);
+            placed = std::fabs(p.x - (100.0f + float(gx) * ramp.cellSize)) < 1e-4f &&
+                     std::fabs(p.z - (-50.0f + float(gz) * ramp.cellSize)) < 1e-4f &&
+                     std::fabs(p.y - (3.0f + ramp.heightAt(gx, gz))) < 1e-4f;
+            minY = std::min(minY, p.y);
+            maxY = std::max(maxY, p.y);
+        }
+        check(placed, "terrain: every soup vertex sits on the tile's grid at its own height");
+        check(maxY - minY > 3.0f, "terrain: the soup keeps the hills, so a bake over it is not flat",
+              std::to_string(minY) + " to " + std::to_string(maxY) + " m");
+    }
+
     // The raw file round trip. Heights come back within the 16-bit step, and a wrong size is refused.
-    const std::string tmp = std::string(std::getenv("TMPDIR") ? std::getenv("TMPDIR") : "/tmp") + "/ukiyo_terrain_test.u16";
+    const std::string tmp = (std::filesystem::temp_directory_path() / "ukiyo_terrain_test.u16").string();
     std::string err;
     check(saveHeightmapU16(tmp, ramp, &err), "terrain: a heightmap saves to a raw file", err);
     Heightmap back;
@@ -1497,8 +2142,12 @@ static void testTerrain() {
 int main() {
     testPhysics();
     testActions();
+    testWorldInput();
+    testWorldTouch();
+    testWorldRebind();
     testNavigation();
     testAudio();
+    testGameBindings();
     testAnimState();
     testScript();
     testWorld();
@@ -1507,6 +2156,7 @@ int main() {
     testVfx();
     testSceneSwitch();
     testPhysicsInterpolation();
+    testRotatedColliders();
     testLuaMath();
     testVisibility();
     testContacts();
@@ -1521,6 +2171,7 @@ int main() {
     testTerrainLayers();
     testTerrainAtlases();
     testFoliage();
+    testGrass();
     testTerrainEdit();
     std::printf("systems: %d passed, %d failed\n", passed, failed);
     return failed == 0 ? 0 : 1;

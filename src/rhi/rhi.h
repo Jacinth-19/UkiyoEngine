@@ -15,6 +15,7 @@
 #include <cstdint>
 #include <memory>
 #include <string>
+#include <stdexcept>
 #include <vector>
 
 #include <glm/glm.hpp>
@@ -25,19 +26,38 @@ namespace rhi {
 
 enum class Backend { OpenGL, Vulkan };
 
+// Number of GPU-time brackets the device records (docs/PROFILER.md). Two timestamp queries per slot.
+constexpr uint32_t kGpuTimeSlots = 8;
+
 enum class Format : uint8_t {
     RGBA8,        // UNORM 8-bit
     RGBA8_SRGB,   // sRGB 8-bit (hardware linearises on sample)
     RGBA16F,      // HDR colour target
     D32F,         // 32-bit float depth
     Backbuffer,   // whatever the presentation target uses
+    // Block-compressed sample-only formats (batch 7, engine/texture_compress.h encodes the bytes). 4x4 blocks,
+    // 4 or 8 bits per pixel, sample-only: no attachments, no CPU readback, no generate-mipmap (compress each level
+    // of the CPU-built chain instead). ASTC for the phone joins this table later in the batch.
+    BC1,          // opaque colour, 4 bpp
+    BC1_SRGB,     // opaque colour, sRGB on sample
+    BC3,          // colour + 8-bit alpha, 8 bpp
+    BC3_SRGB,     // colour + 8-bit alpha, sRGB on sample
+    BC5,          // two channels (normal maps), 8 bpp
+    ASTC_4x4,     // phone formats: 4x4 blocks, 8 bpp, RGBA + alpha in one scheme (Vulkan only here)
+    ASTC_4x4_SRGB,
 };
 
-enum class BufferUsage : uint8_t { Vertex, Index, Uniform };
+// Storage: a shader-storage buffer (compute's read/write data). Indirect: a draw-command buffer — written by a
+// compute dispatch and read by drawIndexedIndirect, so the Vulkan backend gives it STORAGE|INDIRECT usage.
+enum class BufferUsage : uint8_t { Vertex, Index, Uniform, Storage, Indirect };
 // ShaderMaterial: parameters of a generated (node graph) material. UBO at binding 15,
 // textures at bindings 0-7. Vulkan only.
 // Particles: instance UBO at binding 11 (vertex stage), used by the particle quads.
-enum class SetType : uint8_t { Frame, Material, Skin, Post, ShaderMaterial, Motion, Particles };
+// Hud: one texture at binding 0, the glyph atlas. Its own set keeps the HUD out of the post chain and out of the
+// Frame set's texture units, which the GL backend flattens by binding number.
+// Compute: storage buffers at 0 and 1, a small UBO at 2, all visible to the compute stage only — the set a compute
+// pipeline binds. GL binds 0/1 as SSBOs and 2 as a uniform block for this set, and as uniform blocks for every other.
+enum class SetType : uint8_t { Frame, Material, Skin, Post, ShaderMaterial, Motion, Particles, Hud, Compute };
 enum class Cull : uint8_t { None, Back, Front };
 enum class Blend : uint8_t { None, Alpha, Additive };
 enum class Filter : uint8_t { Nearest, Linear };
@@ -65,7 +85,15 @@ struct TextureDesc {
     bool mipmaps = false;
     Filter filter = Filter::Linear;
     Wrap wrap = Wrap::Clamp;
+    uint16_t faces = 1;      // 6 makes the texture a cubemap: width == height, sampled with samplerCube
 };
+
+// Optional CPU-built RGBA8 mip chain for createTexture: levels[i] is level i, sized max(1, width >> i) by
+// max(1, height >> i). When it is non-empty the backend uploads it as-is instead of filtering the chain itself — that is
+// how alpha-coverage-preserving mips (engine/texture_mips.h) reach the GPU, since the coverage search cannot run on a
+// blit. `desc.mipmaps` must be true and the chain must have the full number of levels. For a cubemap (faces == 6) the
+// chain is face-major: face 0's whole chain, then face 1's (see engine/environment.h packMipChain).
+using MipChain = std::vector<std::vector<uint8_t>>;
 
 struct DeviceConfig {
     uint32_t width = 1280;
@@ -87,6 +115,13 @@ public:
     virtual uint32_t width() const = 0;
     virtual uint32_t height() const = 0;
     virtual Format format() const = 0;
+    // Replaces a rectangle of an RGBA8 texture with new pixels (row 0 at `y`, tightly packed, w*h*4 bytes). Both
+    // backends synchronise internally, so it is safe between beginFrame/endFrame. This is what makes a glyph atlas
+    // possible without rebuilding the texture: text arrives one glyph at a time while a frame is being assembled.
+    virtual void update(uint32_t x, uint32_t y, uint32_t w, uint32_t h, const void* rgba8) {
+        (void)x; (void)y; (void)w; (void)h; (void)rgba8;
+        throw std::runtime_error("this texture does not support partial updates");
+    }
 };
 
 class Pipeline {
@@ -111,10 +146,19 @@ struct PipelineDesc {
     // Optional GLSL 450 text for the fragment stage (generated materials). GL compiles this text,
     // after removing the Vulkan `set = N,` qualifiers. Used when fragmentSpirv is empty.
     std::string fragmentGlsl;
+    // Non-empty builds a compute pipeline instead of a graphics one: the shader is <computeShader>.comp
+    // (.comp.spv for Vulkan, .comp.glsl for GL), and vertexShader/fragmentShader/vertexInput/blend/raster state
+    // do not apply. The pipeline binds desc.sets like any other; a Compute set is what it expects.
+    std::string computeShader;
     // Descriptor sets in order: index i in bindDescriptorSet(i, ...) matches sets[i].
     std::vector<SetType> sets;
     bool vertexInput = false;     // true -> Vertex layout, false -> fullscreen/procedural
     Cull cull = Cull::Back;
+    // Draw triangles as their edges (a debug wireframe view). Vulkan wants the fillModeNonSolid feature, GL wants
+    // glPolygonMode; both are core and both are what the engine's wireframe view uses. Line rasterisation is one pixel
+    // wide on every driver this engine targets, which is the point of it: you can see the geometry, not an antialiasing
+    // sample of it.
+    bool wireframe = false;
     bool depthTest = false;
     bool depthWrite = false;
     Blend blend = Blend::None;
@@ -147,8 +191,17 @@ public:
     // the top of the screen (so the present pass must flip the image vertically).
     virtual bool presentFlipsY() const = 0;
 
+    // True when createTexture accepts the block-compressed formats (BCn). Vulkan asks the device's features; GL
+    // desktop contexts on real hardware and Mesa always have S3TC. A device without it keeps uncompressed textures
+    // — the loaders check before encoding.
+    virtual bool supportsBlockCompression() const = 0;
+    // True when the device samples ASTC (the phone formats). Vulkan's textureCompressionASTC_LDR: nearly universal
+    // on phones, rare on desktop — the loaders prefer ASTC where it exists and fall back to BCn, then to raw.
+    virtual bool supportsAstc() const = 0;
+
     virtual std::unique_ptr<Buffer> createBuffer(BufferUsage usage, size_t size) = 0;
-    virtual std::unique_ptr<Texture> createTexture(const TextureDesc& desc, const void* rgba8 = nullptr) = 0;
+    virtual std::unique_ptr<Texture> createTexture(const TextureDesc& desc, const void* rgba8 = nullptr,
+                                                   const MipChain* mipChain = nullptr) = 0;
     virtual std::unique_ptr<Pipeline> createPipeline(const PipelineDesc& desc) = 0;
     virtual std::unique_ptr<DescriptorSet> createDescriptorSet(SetType type) = 0;
 
@@ -164,6 +217,16 @@ public:
     // Callers must re-query backbufferWidth/Height and rebuild size-dependent targets.
     virtual bool resizeBackbuffer(uint32_t width, uint32_t height) { (void)width; (void)height; return false; }
 
+    // GPU time, in numbered brackets, for the profiler (docs/PROFILER.md). One pair of timestamps per slot: the
+    // caller brackets a group of passes with beginGpuTime/endGpuTime, outside any render pass, between beginFrame
+    // and endFrame. gpuTimesMs() returns the most recently *resolved* frame — one frame of latency, so the read
+    // never waits for the GPU — as kGpuTimeSlots milliseconds in slot order. A slot the frame did not write keeps
+    // its previous value; a device with no timestamp support returns an empty vector and the profiler falls back
+    // to its CPU stages. The names belong to the caller, not the device.
+    virtual void beginGpuTime(uint32_t slot) { (void)slot; }
+    virtual void endGpuTime(uint32_t slot) { (void)slot; }
+    virtual std::vector<float> gpuTimesMs() { return {}; }
+
     // Commands (recorded between beginFrame/endFrame).
     virtual void beginPass(const PassDesc& pass) = 0;
     virtual void endPass() = 0;
@@ -176,15 +239,43 @@ public:
     virtual void drawIndexed(uint32_t indexCount, uint32_t firstIndex = 0) = 0;
     // Instanced draw of the bound indexed mesh (step 3 foliage). Instance index comes from the draw, not a vertex buffer.
     virtual void drawIndexedInstanced(uint32_t indexCount, uint32_t instanceCount) = 0;
+    // Compute: dispatch `count` workgroups with the compute pipeline and its sets already bound. Recorded between
+    // beginFrame/endFrame and OUTSIDE a render pass. The backend puts the barrier this dispatch needs — before it
+    // (uploads and earlier writes visible to the compute stage) and after it (its writes visible to the draws and
+    // indirect commands that follow) — inside the call, so no caller has to know either backend's barrier model.
+    virtual void dispatch(uint32_t x, uint32_t y = 1, uint32_t z = 1) = 0;
+    // Draw `drawCount` indexed commands from `offset` bytes into an Indirect buffer (20-byte stride: indexCount,
+    // instanceCount, firstIndex, vertexOffset, firstInstance). Commands a producer did not write stay all-zero and
+    // draw nothing, which is how a GPU producer with an atomic count publishes without a readback: fill the buffer
+    // with zeros, dispatch, then draw the whole capacity.
+    virtual void drawIndexedIndirect(Buffer* buffer, size_t offset, uint32_t drawCount) = 0;
     virtual void drawFullscreen() = 0;
     // Non-indexed draw of `vertexCount` vertices, `instanceCount` times. Procedural vertex
     // shaders read gl_VertexID / gl_InstanceID (INSTANCE_ID in common.glsl).
     virtual void drawInstanced(uint32_t vertexCount, uint32_t instanceCount) = 0;
 };
 
+// A window the device presents to. Desktop fills `glfw`; Android fills `android` with the ANativeWindow the activity's
+// surface hands over. Two handles rather than a variant so this header needs neither GLFW nor <android/native_window.h>
+// on the platform that does not have it.
+struct NativeWindow {
+    GLFWwindow* glfw = nullptr;
+    void* android = nullptr;   // ANativeWindow*, Android only
+
+    bool valid() const { return glfw != nullptr || android != nullptr; }
+};
+
 // Creates a device for the requested backend. `window` may be null for headless
 // Vulkan; the GL backend always needs a current context (a hidden window works).
 std::unique_ptr<Device> createDevice(Backend backend, const DeviceConfig& config, GLFWwindow* window);
+std::unique_ptr<Device> createDevice(Backend backend, const DeviceConfig& config, const NativeWindow& window);
+
+// Where the compiled shaders are. The build compiles them into the directory baked in at configure time, which is what
+// a developer and every test use. A shipped game cannot use that path — it names a build tree on a machine the player
+// does not own — so a package carries its own `shaders/` folder and the player points this at it before creating a
+// device. Both backends read the root when they load a shader, not when they are constructed.
+void setShaderRoot(std::string dir);
+const std::string& shaderRoot();
 
 // Reads a whole file; throws on failure.
 std::vector<uint8_t> readFileBytes(const std::string& path);

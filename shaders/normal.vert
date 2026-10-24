@@ -1,13 +1,15 @@
-// Normal pre-pass: view-space normals for the screen-space effects. Same transform as velocity.vert,
-// so the depths match the main pass exactly.
+// Normal pre-pass: view-space normals for the screen-space effects, and the base colour for the multi-bounce AO
+// approximation. Same transform as velocity.vert, so the depths match the main pass exactly.
 #include "common.glsl"
 #include "frame.glsl"
 #include "skin.glsl"
 layout(location = 0) in vec3 inPos;
 layout(location = 1) in vec3 inNormal;
+layout(location = 2) in vec2 inUV;
 layout(location = 3) in uvec4 inJoints;
 layout(location = 4) in vec4 inWeights;
 layout(location = 0) out vec3 vNormal;   // view space
+layout(location = 1) out vec2 vUV;
 void main() {
     vec4 pr = vec4(inPos, 1.0);
     vec4 cur = pc.model * pr;
@@ -21,5 +23,6 @@ void main() {
         nm = mat3(S);
     }
     vNormal = mat3(frame.view) * (nm * inNormal);
+    vUV = inUV;
     gl_Position = frame.viewProj * cur;
 }

@@ -1,0 +1,91 @@
+{
+  "format": "ukiyo-scene",
+  "version": 2,
+  "models": [
+    {
+      "name": "Seed",
+      "path": "../../../assets/Seed-san.vrm",
+      "position": [
+        0,
+        0,
+        0
+      ],
+      "components": {
+        "character": {
+          "radius": 0.3,
+          "height": 1.6,
+          "speed": 3
+        }
+      }
+    }
+  ],
+  "settings": {
+    "shadows": true,
+    "ssao": 0.4,
+    "tonemap": 3
+  },
+  "gameCamera": {
+    "target": [
+      0,
+      1.0,
+      0
+    ],
+    "distance": 3.2,
+    "yaw": 0.4,
+    "pitch": 0.12,
+    "fovY": 0.6
+  },
+  "lights": [
+    {
+      "type": "directional",
+      "direction": [
+        0.35,
+        -1.0,
+        0.45
+      ],
+      "color": [
+        1.0,
+        0.96,
+        0.9
+      ],
+      "intensity": 1.4
+    },
+    {
+      "type": "point",
+      "position": [
+        -1.2,
+        1.6,
+        1.0
+      ],
+      "color": [
+        0.45,
+        0.7,
+        1.0
+      ],
+      "intensity": 2.5,
+      "radius": 5.0
+    },
+    {
+      "type": "spot",
+      "position": [
+        1.4,
+        2.2,
+        -0.6
+      ],
+      "direction": [
+        -0.5,
+        -1.0,
+        0.3
+      ],
+      "color": [
+        1.0,
+        0.72,
+        0.5
+      ],
+      "intensity": 3.0,
+      "radius": 6.0,
+      "angle": 45,
+      "softness": 0.35
+    }
+  ]
+}

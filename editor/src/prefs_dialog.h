@@ -43,6 +43,8 @@ signals:
 private:
     QWidget* buildGeneral();
     QWidget* buildBrowser();
+    // The external editor command, and whether scripts open here or there.
+    QWidget* buildScripting();
     QWidget* buildShortcuts();
     // Restores every General and Content Browser preference to its default. Shortcuts have their own reset.
     void resetPreferences();

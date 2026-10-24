@@ -18,16 +18,25 @@
 
 #include <QCheckBox>
 #include <QDockWidget>
+#include <QHash>
 #include <QPointer>
 #include <functional>
+#include <nlohmann/json.hpp>
+
+#include "engine/json_patch.h"
+#include "inspector_filter.h"
+#include "engine/plugin_host.h"
 #include "scene_gizmo.h"
+#include "view_gizmo.h"
 #include "engine_session.h"
+#include "engine/browser_zoom.h"
 #include "engine/terrain.h"
 #include <map>
 #include <set>
 #include "asset_ops.h"
 #include <QAbstractItemView>
 #include <QElapsedTimer>
+#include <QJsonArray>
 #include <QJsonObject>
 #include "engine/project_settings.h"
 #include <QMenu>
@@ -57,6 +66,7 @@ class QMenu;
 class QStackedWidget;
 class QDoubleSpinBox;
 class QFileSystemModel;
+class QSortFilterProxyModel;
 class QLineEdit;
 class QListView;
 class QListWidget;
@@ -78,6 +88,7 @@ inline const QString kTerrainUndoKey = QStringLiteral("terrainUndo");
 
 namespace editor {
 
+class LuaEditorDialog;
 class MaterialInspector;
 
 // One rendered view. The Scene view accepts mouse input to move the camera.
@@ -147,11 +158,16 @@ struct PrefabStage {
 class MainWindow : public QMainWindow {
     Q_OBJECT
 public:
-    explicit MainWindow(QWidget* parent = nullptr);
+    // `projectRoot` is the project to open. Empty uses the engine checkout (UKIYO_ROOT), which is
+    // also how the editor behaved before projects existed.
+    explicit MainWindow(const QString& projectRoot = QString(), QWidget* parent = nullptr);
     ~MainWindow() override;
 
-    // Starts the engine, loads the animation library and the default scene.
-    bool bootstrap(QString* error);
+    // Progress for the splash: the current stage and a 0..1 fraction. Runs on the GUI thread.
+    using LoadProgress = std::function<void(const QString& stage, float fraction)>;
+
+    // Starts the engine, loads the animation library and the project's scene (or the default scene).
+    bool bootstrap(QString* error, const LoadProgress& progress = LoadProgress());
 
     // Runs the built-in checks (`ukiyo_editor --selftest`) and prints PASS/FAIL lines.
     // Returns the number of failed checks.
@@ -191,6 +207,12 @@ private slots:
     void fillTimePage(QVBoxLayout* v);
     void fillPhysicsPage(QVBoxLayout* v);
     void fillBuildPage(QVBoxLayout* v);
+    // Assets: the .meta sidecars, their importer settings, and the check for references that no longer resolve.
+    void fillAssetsPage(QVBoxLayout* v);
+    // Localisation: the languages in assets/locales and the strings in the selected one.
+    void fillLocalisationPage(QVBoxLayout* v);
+    // Version control: git status, a commit, and the recent history.
+    void fillVcsPage(QVBoxLayout* v);
     void loadProjectSettingsFile();
     void saveProjectSettingsFile();
     // Forwards key presses from the Game view to the running world, so scripts can read actions.
@@ -248,8 +270,11 @@ private:
     void instancePrefabDialog();
     void addPrefabToScene(const QString& prefabPath);
     void editActiveTransform();
-    // Sets the active instance's placement and records overrides against its prefab.
+    // Sets an instance's whole placement and records overrides against its prefab. The six-argument form is what the
+    // Inspector and the gizmo write; the three-argument form keeps the rotation's other two angles and the scale.
     void setInstanceTransform(int index, const float position[3], float yawDeg);
+    void setInstanceTransform(int index, const float position[3], float yawDeg, float pitchDeg, float rollDeg,
+                              const float scale[3]);
     void applyOverridesToPrefab();
     void revertOverrides();
     // Apply or revert the given override keys ("translation", "yawDeg") of one instance.
@@ -294,9 +319,14 @@ private:
     void showPropertiesFor(QTreeWidgetItem* item);
     // The Inspector page. While the Inspector is locked, the current page stays read-only and new pages are dropped.
     void setInspectorPage(QWidget* page);
+    // Narrows the Inspector to the rows a query matches (Flax 1.13's Properties panel search). Runs over the widget
+    // tree the page builders produced, so every page gets it without knowing it exists.
+    void applyInspectorFilter();
     void setInspectorLocked(bool on);
     bool inspectorLocked_ = false;
     QToolButton* lockButton_ = nullptr;
+    QLineEdit* inspectorFilter_ = nullptr;      // the filter box above the page
+    editor::InspectorFilter inspectFilter_;      // the walk over the page's rows, shared with the screenshot mode
     void showNodeProperties(int node);
     void showCameraProperties(ukiyo::OrbitCamera* cam, const QString& title, const char* icon);
     void showLightProperties();
@@ -305,6 +335,12 @@ private:
     // Water volume section of the scene page (item 16). Edits push the volume to the render worker.
     void addWaterSection(QVBoxLayout* v);
     void pushWater();
+    // Scene lights (item 6). The inspector edits one light at a time; pushLights sends the list to the render thread.
+    void pushLights();
+    void showSceneLightProperties(int index);
+    void addLight(int type);          // 1 point, 2 spot
+    void deleteLight(int index);
+    void selectLightRow(int index);
     void syncCameraSpins();
     void applyCameraSpins();
     void applyNodeTransform();
@@ -342,8 +378,24 @@ private:
     // Undo history. beginEdit() records the scene before an edit; returns false when nothing was
     // recorded. Edits with the same non-empty key within 0.8 s share one step (a dragged spin box).
     bool beginEdit(const QString& key = QString());
+    // Records the edit that is in progress, if it changed the document. Called when an edit ends and before undo,
+    // redo, save and play.
+    void flushEdit();
+    // Drops the step a failed operation began. Nothing was applied, so there is nothing to undo; this only ends the
+    // debounce window so the next edit starts a new step.
+    void cancelEdit();
+    void dropTopEdit();   // removes the top step, keeping the stack's document in step
     void undoEdit();
     void redoEdit();
+    // The scene document as a patch target, and back. Numbers go through JSON text, so a value reads back exactly as it
+    // was written.
+    static nlohmann::json docToJson(const QJsonObject& doc);
+    static QJsonObject jsonToDoc(const nlohmann::json& j);
+    // Defined further down with the stacks they describe. Forward-declared here because the method that returns one is
+    // declared with the other edit commands.
+    struct SceneEdit;
+    struct PrefabEdit;
+    PrefabEdit capturePrefabStage() const;
     void updateEditActions();
     // Edit menu on model instances (rows listed under the scene in the Hierarchy).
     int selectedInstance() const;        // instance index of the selected row, or -1
@@ -356,9 +408,27 @@ private:
     void createTerrainObject();
     void renameInstance(int index, const QString& name);
     QMenu* hierarchyContextMenu(QTreeWidgetItem* item);
+    // The built-in Lua editor. A script already open is brought forward; one that is not is opened and read.
+    void openScriptEditor(const QString& path);
+    // Saves coming from any editor reload the running level (debounced), so an external IDE works during Play.
+    void reloadPlayingScripts();
+    // Project > Write Script Support Files: the API stub, .luarc.json, formatter/linter config and extensions.
+    void writeScriptSupportFiles();
+    // Tools > Scripting Tools: the recommended extensions, which are installed, and the editor to open them with.
+    void showScriptingTools();
     void buildGizmoToolbar();
     void setGizmoTool(gizmo::Tool tool);
+    // Editor extensions (src/engine/plugin_api.h): libraries in <project>/Plugins, loaded at start and on demand
+    // from the Plugins menu. A plugin adds commands and can claim a file extension for import.
+    QString pluginsDir() const;
+    void loadPlugins();
+    void rebuildPluginsMenu();
+    void fillPluginsPage(QVBoxLayout* v);
+    std::unique_ptr<ukiyo::PluginHost> plugins_;
+    QMenu* pluginsMenu_ = nullptr;
     bool gizmoTarget(int* index, InstanceInfo* info);
+    // Every instance selected in the Hierarchy, the active one first: the gizmo edits all of them.
+    std::vector<int> selectedInstances() const;
     // The selected model instance, whichever view is showing.
     bool selectionTarget(int* index, InstanceInfo* info);
     bool gizmoPress(QPointF s);
@@ -377,6 +447,7 @@ private:
     void gizmoHover(QPointF s);
     void cancelGizmoDrag();
     void paintGizmo(QPainter& p);
+    void paintViewGizmo(QPainter& p);   // Scene view: the corner axis widget
     void paintColliders(QPainter& p);     // Scene view: physics colliders as wireframes (Physics > Show colliders)
     void paintNavPreview(QPainter& p);    // Scene view: the last agent path preview
     // Find and Replace on object names. findInNames returns the next matching index after `from`, wrapping, or -1.
@@ -385,7 +456,21 @@ private:
     int replaceInNames(const QString& find, const QString& replacement, bool matchCase);
     void openFindReplace();
     void updateMemoryStatus();
-    void applyInstanceTransform(int index, const float position[3], float yawDeg);
+    void applyInstanceTransform(int index, const float position[3], float yawDeg, float pitchDeg, float rollDeg,
+                                const float scale[3]);
+    // One instance's placement. The rotation is (pitch, yaw, roll) because that is the order the Inspector and the
+    // scene file write. A drag edits every instance selected in the Hierarchy, not only the active one, so where each
+    // of them stood at the press is remembered: a drag is measured from where it started, never accumulated per frame.
+    struct PlacementWrite {
+        int index = -1;
+        glm::vec3 position{0.0f};
+        glm::vec3 rotationDeg{0.0f};
+        glm::vec3 scale{1.0f};
+    };
+    using GizmoStart = PlacementWrite;
+    // The same write for a whole selection, in one round trip to the worker and one refresh: a drag of fifty objects
+    // that made fifty round trips and refreshed fifty times would not be draggable.
+    void applyInstanceTransforms(const std::vector<PlacementWrite>& writes);
     void copyInstance(int index);
     void duplicateInstance(int index);
     void deleteInstance(int index);
@@ -418,7 +503,12 @@ private:
     QSize renderSize_{960, 540};   // frame size requested from the engine for the active view
 
     // Camera and render state. Only the GUI thread touches these; the worker gets copies.
-    ukiyo::OrbitCamera gameCam_;
+    // Two cameras, not one. The Scene view is where a level is built: it can be orthographic and flown. The Game view
+    // is the player's: it stands where the game camera stood when Play was pressed and nothing in edit mode touches it.
+    // Until then it follows the Scene view, so the first press of Play shows the view the user was working in.
+    ukiyo::OrbitCamera gameCam_;    // Scene view
+    ukiyo::OrbitCamera playCam_;    // Game view
+    bool playCamFollows_ = true;    // false once the user has moved or played; the Game view then stays put
     ukiyo::RenderSettings settings_;
     std::vector<std::function<void()>> settingSyncers_;   // re-read controls from settings_
 
@@ -462,10 +552,28 @@ private:
     QString scenePath_;
     bool sceneDirty_ = false;
     QAction* undoAction_ = nullptr;
+    QAction* orthoAction_ = nullptr;   // Scene view: orthographic
     QAction* redoAction_ = nullptr;
     QAction* pasteAction_ = nullptr;
-    std::vector<QJsonObject> undoStack_;   // scene documents before each recorded edit
-    std::vector<QJsonObject> redoStack_;   // documents that undo removed
+    // Undo keeps deltas, not documents. A step is an RFC 6902 patch from the document as it was to the document as the
+    // edit left it (src/engine/json_patch.h), so a step costs what the edit changed and not what the scene weighs.
+    struct SceneEdit {
+        ukiyo::JsonPatch patch;    // forward: the document before the edit -> after it
+        ukiyo::JsonPatch inverse;  // back: built with the same before document, so undo never needs a stored copy
+        QJsonArray terrain;        // terrain undo records this step applied, in order
+        QString label;             // the edit's key, for the status line
+    };
+    struct PrefabEdit {          // prefab mode has no scene document, so it keeps its objects
+        std::vector<InstanceInfo> list;
+        QStringList keys;
+        QStringList removedKeys;
+    };
+    std::vector<SceneEdit> undoStack_;
+    std::vector<SceneEdit> redoStack_;
+    nlohmann::json undoTopDoc_;    // the scene document as of the top of the undo stack
+    bool undoTopValid_ = false;
+    std::vector<PrefabEdit> prefabUndo_;
+    std::vector<PrefabEdit> prefabRedo_;
     QString lastEditKey_;
     // Terrain editing state. The brush is tool state: it is not saved and is not an undo step.
     TerrainBrushSettings terrainBrush_;
@@ -473,6 +581,7 @@ private:
     int terrainFoliageSel_ = 0;                  // foliage type shown in the Inspector
     bool terrainStroke_ = false;                 // a drag with a terrain brush is under way
     std::vector<int> terrainStrokeIds_;          // records of the stroke in progress, in order
+    QJsonArray pendingTerrain_;                  // terrain records of the edit in progress, until it is recorded
     std::map<int, TerrainEdit> terrainRecords_;  // undo records, kept while an undo or redo step refers to them
     int nextTerrainRecord_ = 1;
     QElapsedTimer terrainFlushTimer_;            // throttles GPU re-upload during a drag
@@ -483,6 +592,8 @@ private:
     QByteArray factoryLayout_;                 // dock arrangement at startup, used by Default
     std::vector<ShortcutEntry> shortcuts_;
     PreferencesDialog* prefsDialog_ = nullptr;
+    QHash<QString, QDialog*> scriptEditors_;   // path -> open editor; cleared when one closes
+    QTimer* scriptReload_ = nullptr;                          // debounces the script folder watcher
     bool showColliders_ = false;             // Scene view overlay for physics colliders. Not saved.
     std::vector<glm::vec3> navPreview_;      // Scene view overlay: the last agent path preview. Not saved.
     bool bakeInFlight_ = false;              // a navmesh bake is running on the render thread
@@ -510,6 +621,7 @@ private:
     // Toolbar.
     QPushButton* playBtn_ = nullptr;
     QPushButton* pauseBtn_ = nullptr;
+    QAction* wireframeAction_ = nullptr;   // View > Wireframe: a view setting, never saved into the scene
 
     // Hierarchy and inspector.
     QTreeWidget* hierarchy_ = nullptr;
@@ -527,12 +639,25 @@ private:
     gizmo::Part gizmoPart_ = gizmo::Part::None;   // the handle being dragged
     bool gizmoDragging_ = false;
     bool gizmoPushed_ = false;    // this drag pushed an undo step
-    bool gizmoChanged_ = false;   // the drag has moved or turned the instance
+    bool gizmoChanged_ = false;
+    std::vector<GizmoStart> gizmoStart_;    // every instance the drag is writing to, and where each began
+    std::vector<int> gizmoTargets_;         // the selection the drag began with, in Hierarchy order
+    glm::vec3 gizmoScale0_{1.0f};   // the instance's scale when the drag began
+    QPointF gizmoCenter0_;          // the gizmo's screen centre, for the uniform scale handle
+    QPointF gizmoMouse0_;           // where the pointer was when the drag began
+    glm::vec3 gizmoHit0_{0.0f};     // the pointer's point on a plane handle when the drag began
     int gizmoIndex_ = -1;
     glm::vec3 gizmoOrigin0_{0.0f};   // position when the drag began
     float gizmoYaw0_ = 0.0f;
+    float gizmoPitch0_ = 0.0f;
+    float gizmoRoll0_ = 0.0f;
     float gizmoT0_ = 0.0f;           // axis parameter under the pointer when the drag began
     float gizmoTheta0_ = 0.0f;       // ring angle under the pointer when the drag began
+    // View gizmo (view_gizmo.h): the corner widget's handle under the pointer, or -1.
+    int viewGizmoHover_ = -1;
+    bool viewGizmoPress(QPointF s);
+    void viewGizmoHover(QPointF s);
+    void viewGizmoSnap(int handle);
     bool snapOn_ = false;
     float moveSnap_ = 0.25f;         // metres
     float rotateSnapDeg_ = 15.0f;
@@ -547,12 +672,15 @@ private:
     // Project browser: folder tree, thumbnail grid and details pane.
     QString browserDir_;
     QFileSystemModel* fsModel_ = nullptr;      // files and folders, for the grid
+    QSortFilterProxyModel* fsFilter_ = nullptr;  // the grid's view of the model, filtered by the search query and kind
     QFileSystemModel* fsDirs_ = nullptr;       // folders only, for the tree
     QTreeView* fsTree_ = nullptr;
     QListView* fsList_ = nullptr;
     QLabel* fsPath_ = nullptr;
     QLineEdit* fsSearch_ = nullptr;
-    QSlider* fsSize_ = nullptr;
+    QSlider* fsSize_ = nullptr;                // thumbnail size, 32-224 in steps of 16 (engine/browser_zoom.h)
+    QTimer* fsSizeSave_ = nullptr;             // writes the size to the preferences once the wheel and the slider stop
+    int browserThumb_ = ukiyo::kThumbDefault;  // the size the grid is drawing at, snapped to the ladder
     QToolButton* browserFilterBtn_ = nullptr;
     QStackedWidget* browserViews_ = nullptr;   // icon/list grid or details tree
     QTreeView* fsDetail_ = nullptr;
@@ -563,6 +691,7 @@ private:
     QLabel* detailTitle_ = nullptr;
     QLabel* detailText_ = nullptr;
     std::optional<ukiyo::WaterVolume> water_;       // the scene's water volume (item 16), none when empty
+    std::vector<ukiyo::SceneLight> lights_;         // the scene's lights (item 6), in author order
     MaterialInspector* materialInspector_ = nullptr;   // properties of a selected .ukmat
     QLabel* detailDeps_ = nullptr;                     // "Uses" and "Used by" lines in the details pane
 
@@ -576,7 +705,12 @@ private:
     void browserDrop(QWidget* viewport, const QPoint& pos, const QStringList& paths);
     bool browserKey(QAbstractItemView* view, int key, bool perform);
     QString browserPathAt(QAbstractItemView* view, const QModelIndex& index) const;
+    QModelIndex browserIndex(const QString& path) const;   // the grid's index for a file, mapped through the filter
     void refreshBrowser();
+    // Thumbnail zoom: one place applies the size to the views, so the slider and Ctrl + wheel cannot disagree.
+    void applyThumbSize(int px);
+    void zoomBrowserThumb(int notches);
+    void saveBrowserThumb();
     assetops::Result createBrowserFolder(const QString& parentDir, const QString& name);
     assetops::Result renameBrowserItem(const QString& path, const QString& newName);
     assetops::Result removeBrowserItem(const QString& path);

@@ -65,6 +65,86 @@ std::vector<float> readLodSwitches(const QJsonValue& v) {
     return ukiyo::normalizeLodSwitches(raw);
 }
 
+// One light, as the scene file and the RuntimeScene reader (src/engine/scene_runtime.cpp) both spell it. A field a
+// newer writer adds is ignored by an older reader, and a field left out takes the C++ default.
+QJsonObject lightToJson(const ukiyo::SceneLight& l) {
+    auto floats = [](std::initializer_list<float> xs) {
+        QJsonArray a;
+        for (float x : xs) a.append(double(x));
+        return a;
+    };
+    QJsonObject o;
+    o["type"] = l.type == ukiyo::LightType::Directional ? "directional"
+             : l.type == ukiyo::LightType::Spot        ? "spot"
+                                                       : "point";
+    o["position"] = floats({l.position.x, l.position.y, l.position.z});
+    o["direction"] = floats({l.direction.x, l.direction.y, l.direction.z});
+    o["color"] = floats({l.color.x, l.color.y, l.color.z});
+    o["intensity"] = double(l.intensity);
+    o["radius"] = double(l.radius);
+    o["angle"] = double(l.spotAngleDeg);
+    o["softness"] = double(l.spotSoftness);
+    if (!l.enabled) o["enabled"] = false;
+    return o;
+}
+
+// A rotation as the runtime reads it: `rotation` [pitch, yaw, roll] when the file carries it, else the older
+// `yawDeg` with no tilt. Returns which field was used so the caller can tell a tilted model from a turned one.
+bool readRotation(const QJsonObject& o, glm::vec3* deg) {
+    const QJsonValue rot = o.value(QStringLiteral("rotation"));
+    if (rot.isArray() && rot.toArray().size() >= 3) {
+        const QJsonArray a = rot.toArray();
+        *deg = glm::vec3(float(a[0].toDouble()), float(a[1].toDouble()), float(a[2].toDouble()));
+        return true;
+    }
+    // `pitchDeg` and `rollDeg` are the fields an editor build before `rotation` wrote. They still open, so a scene
+    // authored with them is not lost.
+    *deg = glm::vec3(float(o.value(QStringLiteral("pitchDeg")).toDouble()),
+                     float(o.value(QStringLiteral("yawDeg")).toDouble()),
+                     float(o.value(QStringLiteral("rollDeg")).toDouble()));
+    return false;
+}
+
+QJsonArray lightsToJson(const std::vector<ukiyo::SceneLight>& lights) {
+    QJsonArray a;
+    for (const ukiyo::SceneLight& l : lights) a.append(lightToJson(l));
+    return a;
+}
+
+std::vector<ukiyo::SceneLight> readLights(const QJsonValue& v) {
+    std::vector<ukiyo::SceneLight> out;
+    if (!v.isArray()) return out;
+    const QJsonArray arr = v.toArray();
+    int directional = 0;
+    for (const QJsonValue& item : arr) {
+        if (!item.isObject()) continue;
+        const QJsonObject o = item.toObject();
+        ukiyo::SceneLight l;
+        const QString type = o.value("type").toString("point");
+        l.type = type == "directional" ? ukiyo::LightType::Directional
+               : type == "spot"        ? ukiyo::LightType::Spot
+                                       : ukiyo::LightType::Point;
+        // One key light: the renderer has one sun and one set of cascades. A second directional light is read as a
+        // point light rather than silently dropped, so the scene still says what the author meant.
+        if (l.type == ukiyo::LightType::Directional && ++directional > 1) l.type = ukiyo::LightType::Point;
+        auto readVec = [](const QJsonValue& j, glm::vec3* dst) {
+            const QJsonArray a = j.toArray();
+            if (a.size() != 3) return;
+            *dst = glm::vec3(float(a[0].toDouble()), float(a[1].toDouble()), float(a[2].toDouble()));
+        };
+        readVec(o.value("position"), &l.position);
+        readVec(o.value("direction"), &l.direction);
+        readVec(o.value("color"), &l.color);
+        l.intensity = std::clamp(float(o.value("intensity").toDouble(l.intensity)), 0.0f, 64.0f);
+        l.radius = std::clamp(float(o.value("radius").toDouble(l.radius)), 0.05f, 200.0f);
+        l.spotAngleDeg = std::clamp(float(o.value("angle").toDouble(l.spotAngleDeg)), 1.0f, 179.0f);
+        l.spotSoftness = std::clamp(float(o.value("softness").toDouble(l.spotSoftness)), 0.0f, 0.95f);
+        l.enabled = o.value("enabled").toBool(true);
+        out.push_back(l);
+    }
+    return out;
+}
+
 QJsonArray lodSwitchesToJson(const std::vector<float>& switches) {
     QJsonArray a;
     for (float s : switches) a.append(double(s));
@@ -103,9 +183,11 @@ std::optional<ukiyo::TerrainSettings> readTerrain(const QJsonValue& v, const QSt
             const QString dif = lo.value(QLatin1String("diffuseMap")).toString();
             const QString nrm = lo.value(QLatin1String("normalMap")).toString();
             const QString rgh = lo.value(QLatin1String("roughnessMap")).toString();
+            const QString ao = lo.value(QLatin1String("aoMap")).toString();
             if (!dif.isEmpty()) L.diffuseFile = QDir::cleanPath(QDir(projectRoot).absoluteFilePath(dif)).toStdString();
             if (!nrm.isEmpty()) L.normalFile = QDir::cleanPath(QDir(projectRoot).absoluteFilePath(nrm)).toStdString();
             if (!rgh.isEmpty()) L.roughnessFile = QDir::cleanPath(QDir(projectRoot).absoluteFilePath(rgh)).toStdString();
+            if (!ao.isEmpty()) L.aoFile = QDir::cleanPath(QDir(projectRoot).absoluteFilePath(ao)).toStdString();
             t.layers.push_back(L);
         }
     }
@@ -135,6 +217,73 @@ std::optional<ukiyo::TerrainSettings> readTerrain(const QJsonValue& v, const QSt
             F.tint = glm::clamp(glm::vec3(float(c[0].toDouble()), float(c[1].toDouble()), float(c[2].toDouble())),
                                 glm::vec3(0.0f), glm::vec3(1.0f));
         t.foliage.push_back(F);
+    }
+    // Grass (item 19). A missing object leaves grass off, which is how every scene written before the grass landed
+    // reads. Every key is clamped, so a hand-edited scene cannot ask for a negative density or a zero blade.
+    const QJsonValue gv = o.value(QLatin1String("grass"));
+    if (gv.isObject()) {
+        const QJsonObject go = gv.toObject();
+        ukiyo::GrassSettings& G = t.grass;
+        G.enabled = go.value(QLatin1String("enabled")).toBool(true);
+        G.density = std::clamp(float(go.value(QLatin1String("density")).toDouble(4.0)), 0.0f, 8.0f);
+        const QString gmap = go.value(QLatin1String("densityMap")).toString();
+        if (!gmap.isEmpty()) G.densityMap = QDir::cleanPath(QDir(projectRoot).absoluteFilePath(gmap)).toStdString();
+        G.heightMin = std::clamp(float(go.value(QLatin1String("heightMin")).toDouble(0.0)), 0.0f, 1.0f);
+        G.heightMax = std::clamp(float(go.value(QLatin1String("heightMax")).toDouble(1.0)), 0.0f, 1.0f);
+        G.slopeMax = std::clamp(float(go.value(QLatin1String("slopeMax")).toDouble(35.0)), 0.0f, 90.0f);
+        G.height = std::clamp(float(go.value(QLatin1String("height")).toDouble(0.44)), 0.02f, 5.0f);
+        G.width = std::clamp(float(go.value(QLatin1String("width")).toDouble(0.018)), 0.001f, 1.0f);
+        G.blades = uint32_t(std::clamp(go.value(QLatin1String("blades")).toInt(8), 1, 8));
+        G.segments = uint32_t(std::clamp(go.value(QLatin1String("segments")).toInt(4), 1, 12));
+        G.scaleMin = std::clamp(float(go.value(QLatin1String("scaleMin")).toDouble(0.75)), 0.01f, 20.0f);
+        G.scaleMax = std::clamp(float(go.value(QLatin1String("scaleMax")).toDouble(1.35)), 0.01f, 20.0f);
+        G.seed = uint32_t(std::clamp<qint64>(go.value(QLatin1String("seed")).toInteger(3), 0, 0xFFFFFFFFLL));
+        G.groundAlign = std::clamp(float(go.value(QLatin1String("groundAlign")).toDouble(0.55)), 0.0f, 1.0f);
+        G.bandNear = std::clamp(float(go.value(QLatin1String("bandNear")).toDouble(24.0)), 0.0f, 2000.0f);
+        G.bandMid = std::clamp(float(go.value(QLatin1String("bandMid")).toDouble(48.0)), 0.0f, 2000.0f);
+        G.cullDistance = std::clamp(float(go.value(QLatin1String("cullDistance")).toDouble(95.0)), 0.1f, 5000.0f);
+        const QJsonArray inc = go.value(QLatin1String("includeLayers")).toArray();
+        if (!inc.isEmpty()) {
+            G.includeLayers = 0u;
+            for (const QJsonValue& v : inc) {
+                const int k = v.toInt(-1);
+                if (k >= 0 && k < int(ukiyo::kTerrainMaxLayers)) G.includeLayers |= 1u << uint32_t(k);
+            }
+        }
+        const QJsonArray exc = go.value(QLatin1String("excludeLayers")).toArray();
+        for (const QJsonValue& v : exc) {
+            const int k = v.toInt(-1);
+            if (k >= 0 && k < int(ukiyo::kTerrainMaxLayers)) G.excludeLayers |= 1u << uint32_t(k);
+        }
+        G.includeThreshold = std::clamp(float(go.value(QLatin1String("includeThreshold")).toDouble(0.35)), 0.0f, 1.0f);
+        G.excludeThreshold = std::clamp(float(go.value(QLatin1String("excludeThreshold")).toDouble(0.5)), 0.0f, 1.0f);
+        const QJsonArray wd = go.value(QLatin1String("windDir")).toArray();
+        if (wd.size() == 2)
+            G.windDir = glm::vec2(float(wd[0].toDouble(0.85)), float(wd[1].toDouble(0.53)));
+        G.windStrength = std::clamp(float(go.value(QLatin1String("windStrength")).toDouble(0.22)), 0.0f, 5.0f);
+        G.windFrequency = std::clamp(float(go.value(QLatin1String("windFrequency")).toDouble(0.45)), 0.0f, 20.0f);
+        G.windScale = std::clamp(float(go.value(QLatin1String("windScale")).toDouble(0.11)), 0.0f, 10.0f);
+        G.flutter = std::clamp(float(go.value(QLatin1String("flutter")).toDouble(0.05)), 0.0f, 2.0f);
+        const QJsonArray bc = go.value(QLatin1String("baseColour")).toArray();
+        if (bc.size() == 3)
+            G.baseColour = glm::clamp(glm::vec3(float(bc[0].toDouble()), float(bc[1].toDouble()), float(bc[2].toDouble())),
+                                      glm::vec3(0.0f), glm::vec3(1.0f));
+        const QJsonArray tc = go.value(QLatin1String("tipColour")).toArray();
+        if (tc.size() == 3)
+            G.tipColour = glm::clamp(glm::vec3(float(tc[0].toDouble()), float(tc[1].toDouble()), float(tc[2].toDouble())),
+                                     glm::vec3(0.0f), glm::vec3(1.0f));
+        G.translucency = std::clamp(float(go.value(QLatin1String("translucency")).toDouble(0.5)), 0.0f, 1.0f);
+        G.tipDarkening = std::clamp(float(go.value(QLatin1String("tipDarkening")).toDouble(0.35)), 0.0f, 1.0f);
+    }
+    // Detail overlay. Missing keys leave the defaults, which is a modest overlay with no file.
+    const QJsonValue dv = o.value(QLatin1String("detail"));
+    if (dv.isObject()) {
+        const QJsonObject dobj = dv.toObject();
+        const QString df = dobj.value(QLatin1String("map")).toString();
+        if (!df.isEmpty()) t.detail.file = QDir::cleanPath(QDir(projectRoot).absoluteFilePath(df)).toStdString();
+        t.detail.metres = std::clamp(float(dobj.value(QLatin1String("metres")).toDouble(1.7)), 0.05f, 100.0f);
+        t.detail.strength = std::clamp(float(dobj.value(QLatin1String("strength")).toDouble(0.55)), 0.0f, 1.0f);
+        t.detail.macro = std::clamp(float(dobj.value(QLatin1String("macro")).toDouble(0.30)), 0.0f, 1.0f);
     }
     // Layer masks (item 18, step 4): up to two RGBA images, relative to the project.
     for (const QJsonValue& mv : o.value(QLatin1String("masks")).toArray()) {
@@ -167,6 +316,7 @@ QJsonObject terrainToJson(const ukiyo::TerrainSettings& t, const QString& projec
         if (!L.diffuseFile.empty()) lo[QStringLiteral("diffuseMap")] = QDir(projectRoot).relativeFilePath(QString::fromStdString(L.diffuseFile));
         if (!L.normalFile.empty()) lo[QStringLiteral("normalMap")] = QDir(projectRoot).relativeFilePath(QString::fromStdString(L.normalFile));
         if (!L.roughnessFile.empty()) lo[QStringLiteral("roughnessMap")] = QDir(projectRoot).relativeFilePath(QString::fromStdString(L.roughnessFile));
+        if (!L.aoFile.empty()) lo[QStringLiteral("aoMap")] = QDir(projectRoot).relativeFilePath(QString::fromStdString(L.aoFile));
         layers.append(lo);
     }
     o[QStringLiteral("layers")] = layers;
@@ -191,6 +341,55 @@ QJsonObject terrainToJson(const ukiyo::TerrainSettings& t, const QString& projec
             foliage.append(fo);
         }
         o[QStringLiteral("foliage")] = foliage;
+    }
+    if (t.grass.enabled) {
+        const ukiyo::GrassSettings& G = t.grass;
+        QJsonObject go;
+        go[QStringLiteral("enabled")] = true;
+        go[QStringLiteral("density")] = double(G.density);
+        if (!G.densityMap.empty())
+            go[QStringLiteral("densityMap")] = QDir(projectRoot).relativeFilePath(QString::fromStdString(G.densityMap));
+        go[QStringLiteral("heightMin")] = double(G.heightMin);
+        go[QStringLiteral("heightMax")] = double(G.heightMax);
+        go[QStringLiteral("slopeMax")] = double(G.slopeMax);
+        go[QStringLiteral("height")] = double(G.height);
+        go[QStringLiteral("width")] = double(G.width);
+        go[QStringLiteral("blades")] = int(G.blades);
+        go[QStringLiteral("segments")] = int(G.segments);
+        go[QStringLiteral("scaleMin")] = double(G.scaleMin);
+        go[QStringLiteral("scaleMax")] = double(G.scaleMax);
+        go[QStringLiteral("seed")] = double(G.seed);
+        go[QStringLiteral("groundAlign")] = double(G.groundAlign);
+        go[QStringLiteral("bandNear")] = double(G.bandNear);
+        go[QStringLiteral("bandMid")] = double(G.bandMid);
+        go[QStringLiteral("cullDistance")] = double(G.cullDistance);
+        QJsonArray inc, exc;
+        for (uint32_t k = 0; k < ukiyo::kTerrainMaxLayers; ++k) {
+            if (G.includeLayers & (1u << k)) inc.append(int(k));
+            if (G.excludeLayers & (1u << k)) exc.append(int(k));
+        }
+        go[QStringLiteral("includeLayers")] = inc;
+        if (!exc.isEmpty()) go[QStringLiteral("excludeLayers")] = exc;
+        go[QStringLiteral("includeThreshold")] = double(G.includeThreshold);
+        go[QStringLiteral("excludeThreshold")] = double(G.excludeThreshold);
+        go[QStringLiteral("windDir")] = QJsonArray{double(G.windDir.x), double(G.windDir.y)};
+        go[QStringLiteral("windStrength")] = double(G.windStrength);
+        go[QStringLiteral("windFrequency")] = double(G.windFrequency);
+        go[QStringLiteral("windScale")] = double(G.windScale);
+        go[QStringLiteral("flutter")] = double(G.flutter);
+        go[QStringLiteral("baseColour")] = QJsonArray{double(G.baseColour.r), double(G.baseColour.g), double(G.baseColour.b)};
+        go[QStringLiteral("tipColour")] = QJsonArray{double(G.tipColour.r), double(G.tipColour.g), double(G.tipColour.b)};
+        go[QStringLiteral("translucency")] = double(G.translucency);
+        go[QStringLiteral("tipDarkening")] = double(G.tipDarkening);
+        o[QStringLiteral("grass")] = go;
+    }
+    if (!t.detail.file.empty() || t.detail.strength > 0.0f) {
+        QJsonObject d;
+        if (!t.detail.file.empty()) d[QStringLiteral("map")] = QDir(projectRoot).relativeFilePath(QString::fromStdString(t.detail.file));
+        d[QStringLiteral("metres")] = double(t.detail.metres);
+        d[QStringLiteral("strength")] = double(t.detail.strength);
+        d[QStringLiteral("macro")] = double(t.detail.macro);
+        o[QStringLiteral("detail")] = d;
     }
     if (!t.maskFiles.empty()) {
         QJsonArray masks;
@@ -268,6 +467,22 @@ QJsonObject waterToJson(const ukiyo::WaterVolume& v) {
     return o;
 }
 
+namespace {
+
+// A scale is one number when it is even and three when it is not: a scene that only ever scaled everything up writes
+// "scale": 2, and one that stretched one axis writes [1, 2, 1]. Both read the same way.
+glm::vec3 readScale(const QJsonValue& v) {
+    if (v.isArray()) {
+        const QJsonArray a = v.toArray();
+        if (a.size() == 3)
+            return glm::vec3(float(a[0].toDouble(1.0)), float(a[1].toDouble(1.0)), float(a[2].toDouble(1.0)));
+    }
+    if (v.isDouble()) return glm::vec3(float(v.toDouble(1.0)));
+    return glm::vec3(1.0f);
+}
+
+} // namespace
+
 void parseSceneEntries(const QJsonObject& root, const QString& projectRoot, SceneContents* out) {
     out->active = std::max(0, root.value(QLatin1String("active")).toInt(0));
     parseWater(root, &out->water, &out->hasWater);
@@ -305,6 +520,23 @@ void parseSceneEntries(const QJsonObject& root, const QString& projectRoot, Scen
                 e.yawDeg = float(ov.value("yawDeg").toDouble());
                 e.overrides << QStringLiteral("yawDeg");
             }
+            if (ov.contains(QStringLiteral("scale"))) {
+                e.scale = readScale(ov.value(QStringLiteral("scale")));
+                e.overrides << QStringLiteral("scale");
+            }
+            // Pitch and roll are the instance's own: a prefab node carries a position and a yaw, so there is nothing in
+            // the prefab for them to be overridden from. They sit next to the reference, not inside `overrides`.
+            glm::vec3 deg;
+            readRotation(o, &deg);
+            // The prefab's yaw is the base; the file's rotation, when it has one, is the instance's own.
+            if (o.contains(QStringLiteral("rotation"))) {
+                e.pitchDeg = deg.x;
+                e.yawDeg = deg.y;
+                e.rollDeg = deg.z;
+            } else {
+                e.pitchDeg = deg.x;
+                e.rollDeg = deg.z;
+            }
         } else if (o.value("empty").toBool()) {
             QString emptyErr;
             if (!ensureEmptyModelFile(&emptyErr)) {
@@ -313,11 +545,21 @@ void parseSceneEntries(const QJsonObject& root, const QString& projectRoot, Scen
             }
             e.path = emptyModelPath();
             readFloats(o.value("position"), e.position, 3);
-            e.yawDeg = float(o.value("yawDeg").toDouble());
+            glm::vec3 deg;
+            readRotation(o, &deg);
+            e.pitchDeg = deg.x;
+            e.yawDeg = deg.y;
+            e.rollDeg = deg.z;
+            e.scale = readScale(o.value(QStringLiteral("scale")));
         } else {
             e.path = QDir(projectRoot).absoluteFilePath(o.value("path").toString());
             readFloats(o.value("position"), e.position, 3);
-            e.yawDeg = float(o.value("yawDeg").toDouble());
+            glm::vec3 deg;
+            readRotation(o, &deg);
+            e.pitchDeg = deg.x;
+            e.yawDeg = deg.y;
+            e.rollDeg = deg.z;
+            e.scale = readScale(o.value(QStringLiteral("scale")));
         }
         e.name = o.value("name").toString();
         entries.push_back(e);

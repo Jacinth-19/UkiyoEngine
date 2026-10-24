@@ -1,0 +1,17 @@
+# Build output
+/build/
+/build-*/
+
+# Offline preview renders (tools/terrain_preview, CI artifacts)
+/renders/
+
+# Virtual geometry caches, written beside the model it belongs to
+*.vgeom
+*.vgeomset
+
+# Python bytecode from the tools in tools/
+__pycache__/
+*.pyc
+
+# Packaged games (tools/ukiyo_pack) and their zips
+/dist/

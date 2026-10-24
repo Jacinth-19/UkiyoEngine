@@ -2,6 +2,7 @@
 
 #include <QFont>
 #include <QFontDatabase>
+#include <QGuiApplication>
 #include <QPainter>
 #include <QPixmap>
 #include <QStringList>
@@ -12,6 +13,7 @@ namespace editor {
 
 namespace {
 QString gIconFamily;
+QString gDisplayFamily;
 } // namespace
 
 bool loadIconFont(const QString& ttfPath) {
@@ -22,6 +24,40 @@ bool loadIconFont(const QString& ttfPath) {
     gIconFamily = families.first();
     return true;
 }
+
+QString loadBrandFont(const QString& fontsDir) {
+    // Four static weights rather than the variable font: Qt picks the right face directly and the rasteriser does
+    // not have to synthesise a weight for 浮世.
+    QString family;
+    for (const char* weight : {"Regular", "Medium", "SemiBold", "Bold"}) {
+        const int id = QFontDatabase::addApplicationFont(fontsDir + QStringLiteral("/IBMPlexSansJP-") +
+                                                         QString::fromLatin1(weight) + QStringLiteral(".ttf"));
+        if (id < 0) continue;
+        const QStringList families = QFontDatabase::applicationFontFamilies(id);
+        if (!families.isEmpty() && family.isEmpty()) family = families.first();
+    }
+    if (family.isEmpty()) return family;
+    QFont font(family);
+    font.setStyleStrategy(QFont::PreferAntialias);
+    QGuiApplication::setFont(font);
+    return family;
+}
+
+QString loadDisplayFont(const QString& fontsDir) {
+    // Two weights, subset to the identity's own words and kana: 400 for the Japanese sub-line, 700 for UKIYO.
+    QString family;
+    for (const char* weight : {"Regular", "Bold"}) {
+        const int id = QFontDatabase::addApplicationFont(fontsDir + QStringLiteral("/ShipporiMinchoDisplay-") +
+                                                         QString::fromLatin1(weight) + QStringLiteral(".ttf"));
+        if (id < 0) continue;
+        const QStringList families = QFontDatabase::applicationFontFamilies(id);
+        if (!families.isEmpty() && family.isEmpty()) family = families.first();
+    }
+    gDisplayFamily = family;
+    return family;
+}
+
+QString displayFamily() { return gDisplayFamily; }
 
 QIcon materialIcon(const char* name, const QColor& color, int px) {
     QIcon icon;

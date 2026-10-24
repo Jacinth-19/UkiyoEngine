@@ -1,0 +1,484 @@
+// Motion-matching demo (item 20, docs/MOTION.md): drives the controller through a scripted route and writes a
+// figure of what came out — the path it walked, its footprints, and four poses along the way.
+//
+// The clips here are synthetic locomotion cycles rather than mocap, so the tool needs no capture data and runs in CI.
+// The database, the KD-tree, the matcher and the controller are the engine's own; swap `makeClip` for
+// `loadMotionBvhFile` over a LAFAN1 folder and the rest is unchanged.
+//
+//     motion_demo docs/motion-demo.png
+#include <algorithm>
+#include <chrono>
+#include <cmath>
+#include <cstdio>
+#include <cstring>
+#include <fstream>
+#include <string>
+#include <vector>
+
+#define STB_IMAGE_WRITE_IMPLEMENTATION
+#include "stb_image_write.h"
+
+#include <glm/gtc/quaternion.hpp>
+
+#include "engine/motion_match.h"
+
+using namespace ukiyo;
+
+namespace {
+
+constexpr float kPi = 3.14159265f;
+
+// A locomotion cycle: root travels along `dir` at `speed`, feet swing past each other, hands counter-swing.
+// `stride` is the cycle rate in Hz. The pose is deliberately simple — a hip joint with a two-segment leg pair and a
+// head — because what is being tested is the matcher, not the artistry. The leg has to be a real chain, though: foot
+// locking is a two-bone solve on hip, knee and ankle, and with the feet parented straight to the hips there is nothing
+// to solve, so the demo would be a picture of a system that was not running.
+MotionClip makeClip(const char* name, float speed, glm::vec2 dir, float stride, int frames = 180, float fps = 30.0f,
+                    bool idle = false) {
+    MotionClip clip;
+    clip.name = name;
+    clip.fps = fps;
+    clip.joints = {{"Hips", -1, glm::vec3(0.0f)},
+                   {"LeftUpLeg", 0, glm::vec3(0.12f, -0.42f, 0.0f)},
+                   {"LeftLowerLeg", 1, glm::vec3(0.0f, -0.45f, 0.0f)},
+                   {"LeftFoot", 2, glm::vec3(0.0f, -0.08f, 0.0f)},
+                   {"LeftHand", 0, glm::vec3(0.22f, 0.10f, 0.0f)},
+                   {"RightUpLeg", 0, glm::vec3(-0.12f, -0.42f, 0.0f)},
+                   {"RightLowerLeg", 5, glm::vec3(0.0f, -0.45f, 0.0f)},
+                   {"RightFoot", 6, glm::vec3(0.0f, -0.08f, 0.0f)},
+                   {"RightHand", 0, glm::vec3(-0.22f, 0.10f, 0.0f)},
+                   {"Head", 0, glm::vec3(0.0f, 0.62f, 0.0f)}};
+    const glm::vec2 d = glm::length(dir) > 1e-5f ? glm::normalize(dir) : glm::vec2(0.0f, 1.0f);
+    const glm::vec2 side(-d.y, d.x);
+    clip.frames.resize(size_t(frames));
+    for (int i = 0; i < frames; ++i) {
+        const float t = float(i) / fps;
+        MotionFrame& f = clip.frames[size_t(i)];
+        f.rootRot = glm::quat(1.0f, 0.0f, 0.0f, 0.0f);
+        // The root is the hips, a metre above the floor — not the floor. Putting it at y = 0 made the "feet" six
+        // centimetres above the root and the whole figure collapse into a vertical stroke, because the controller
+        // lifts the pose by the root's height over the clip's lowest joint and there was no height to lift.
+        f.rootPos = glm::vec3(d.x * speed * t, 0.95f, d.y * speed * t);
+        const float phase = t * 2.0f * kPi * stride;
+        const float swingA = std::sin(phase), swingB = std::sin(phase + kPi);
+        const float liftA = std::max(0.0f, std::sin(phase + kPi * 0.5f));
+        const float liftB = std::max(0.0f, std::sin(phase + kPi * 1.5f));
+        const float amp = idle ? 0.02f : 0.34f;
+        const float lift = idle ? 0.01f : 0.10f;
+        const glm::vec3 s(d.x, 0.0f, d.y);          // forward
+        const glm::vec3 c(side.x, 0.0f, side.y);    // lateral
+        // Each foot's target height: 0.06 m on the ground through stance, lifted through swing. The knee is then
+        // solved from the hip and the ankle, so the leg's two segments keep their length — which is the property the
+        // lock relies on when it puts a planted foot back.
+        const float footYA = -0.89f + lift * liftA;
+        const float footYB = -0.89f + lift * liftB;
+        const glm::vec3 ankleA = f.rootPos + c * 0.13f + s * (amp * swingA) + glm::vec3(0.0f, footYA, 0.0f);
+        const glm::vec3 ankleB = f.rootPos - c * 0.13f + s * (amp * swingB) + glm::vec3(0.0f, footYB, 0.0f);
+        const auto knee = [&](const glm::vec3& ankle) {
+            const glm::vec3 hip = f.rootPos + glm::vec3(0.0f, -0.02f, 0.0f);
+            const float thigh = 0.45f, shin = 0.44f;
+            glm::vec3 toAnkle = ankle - hip;
+            const float len = glm::clamp(glm::length(toAnkle), std::fabs(thigh - shin) + 1e-3f, thigh + shin - 1e-3f);
+            const glm::vec3 u = glm::normalize(toAnkle);
+            const glm::vec3 bend = glm::normalize(s - u * glm::dot(s, u) + glm::vec3(0.0f, 0.001f, 0.0f));
+            const float a = (thigh * thigh - shin * shin + len * len) / (2.0f * len);
+            const float h = std::sqrt(std::max(0.0f, thigh * thigh - a * a));
+            return hip + u * a + bend * h;
+        };
+        const glm::vec3 hipA = f.rootPos + glm::vec3(0.0f, -0.02f, 0.0f);
+        const glm::vec3 hipB = hipA;
+        f.world = {
+            f.rootPos,
+            hipA, knee(ankleA), ankleA,
+            f.rootPos + c * 0.24f - s * (amp * 0.8f * swingA) + glm::vec3(0.0f, 0.07f, 0.0f),
+            hipB, knee(ankleB), ankleB,
+            f.rootPos - c * 0.24f - s * (amp * 0.8f * swingB) + glm::vec3(0.0f, 0.07f, 0.0f),
+            f.rootPos + glm::vec3(0.0f, 0.67f, 0.0f),
+        };
+    }
+    return clip;
+}
+
+// --- A very small software rasteriser, enough for a figure: lines, discs, and a 2x supersample. -------------------
+
+struct Canvas {
+    int w = 0, h = 0;
+    std::vector<unsigned char> px;   // RGB
+    Canvas(int width, int height) : w(width), h(height), px(size_t(width) * size_t(height) * 3, 0) {}
+    void clear(glm::vec3 c) {
+        for (size_t i = 0; i < px.size(); i += 3) {
+            px[i + 0] = (unsigned char)(glm::clamp(c.r, 0.0f, 1.0f) * 255.0f);
+            px[i + 1] = (unsigned char)(glm::clamp(c.g, 0.0f, 1.0f) * 255.0f);
+            px[i + 2] = (unsigned char)(glm::clamp(c.b, 0.0f, 1.0f) * 255.0f);
+        }
+    }
+    void put(int x, int y, glm::vec3 c, float a = 1.0f) {
+        if (x < 0 || y < 0 || x >= w || y >= h) return;
+        unsigned char* p = &px[(size_t(y) * size_t(w) + size_t(x)) * 3];
+        for (int k = 0; k < 3; ++k) {
+            const float v = (&c.r)[k] * 255.0f;
+            p[k] = (unsigned char)(p[k] * (1.0f - a) + v * a);
+        }
+    }
+    void disc(float cx, float cy, float r, glm::vec3 c) {
+        const int x0 = int(std::floor(cx - r)), x1 = int(std::ceil(cx + r));
+        const int y0 = int(std::floor(cy - r)), y1 = int(std::ceil(cy + r));
+        for (int y = y0; y <= y1; ++y)
+            for (int x = x0; x <= x1; ++x) {
+                const float dx = float(x) + 0.5f - cx, dy = float(y) + 0.5f - cy;
+                const float d = std::sqrt(dx * dx + dy * dy);
+                const float a = glm::clamp(r - d + 0.5f, 0.0f, 1.0f);
+                if (a > 0.0f) put(x, y, c, a);
+            }
+    }
+    void ring(float cx, float cy, float r, float width, glm::vec3 c) {
+        const int x0 = int(std::floor(cx - r - 1.0f)), x1 = int(std::ceil(cx + r + 1.0f));
+        const int y0 = int(std::floor(cy - r - 1.0f)), y1 = int(std::ceil(cy + r + 1.0f));
+        for (int y = y0; y <= y1; ++y)
+            for (int x = x0; x <= x1; ++x) {
+                const float dx = float(x) + 0.5f - cx, dy = float(y) + 0.5f - cy;
+                const float d = std::sqrt(dx * dx + dy * dy);
+                const float a = glm::clamp(width * 0.5f + 0.5f - std::fabs(d - r), 0.0f, 1.0f);
+                if (a > 0.0f) put(x, y, c, a);
+            }
+    }
+    void line(glm::vec2 a, glm::vec2 b, float width, glm::vec3 c) {
+        const float len = glm::length(b - a);
+        const int steps = std::max(1, int(len * 2.0f));
+        for (int i = 0; i <= steps; ++i) {
+            const glm::vec2 p = glm::mix(a, b, float(i) / float(steps));
+            disc(p.x, p.y, width, c);
+        }
+    }
+};
+
+void downsample(const Canvas& src, Canvas* dst) {
+    for (int y = 0; y < dst->h; ++y)
+        for (int x = 0; x < dst->w; ++x) {
+            int acc[3] = {0, 0, 0};
+            for (int sy = 0; sy < 2; ++sy)
+                for (int sx = 0; sx < 2; ++sx) {
+                    const unsigned char* p = &src.px[(size_t(y * 2 + sy) * size_t(src.w) + size_t(x * 2 + sx)) * 3];
+                    for (int k = 0; k < 3; ++k) acc[k] += p[k];
+                }
+            unsigned char* o = &dst->px[(size_t(y) * size_t(dst->w) + size_t(x)) * 3];
+            for (int k = 0; k < 3; ++k) o[k] = (unsigned char)(acc[k] / 4);
+        }
+}
+
+struct Snapshot {
+    std::vector<glm::vec3> pose;
+    std::vector<int> parent;
+    float yaw = 0.0f;
+    float time = 0.0f;
+    std::string clip;
+};
+
+} // namespace
+
+int main(int argc, char** argv) {
+    const std::string out = argc > 1 ? argv[1] : "motion-demo.png";
+    // Optional third argument: a folder of .bvh capture. The default is the synthetic set, because the corpus is a
+    // research licence and is not vendored; a project points at its own copy.
+    const std::string captureDir = argc > 2 ? argv[2] : std::string();
+
+    std::vector<MotionClip> clips;
+    if (!captureDir.empty()) {
+        std::string note;
+        const int loaded = loadMotionBvhFolder(captureDir, &clips, &note);
+        std::printf("capture: %s\n", note.c_str());
+        if (loaded == 0) {
+            std::fprintf(stderr, "no BVH clips in %s\n", captureDir.c_str());
+            return 1;
+        }
+        // A capture corpus has no notion of "facing the camera": clips start in whatever direction the performer
+        // walked. Recentring is done by the loader; a folder can also mix speeds, so report what came in.
+    } else {
+        clips.push_back(makeClip("walk", 1.4f, glm::vec2(0.0f, 1.0f), 1.55f));
+        clips.push_back(makeClip("run", 5.0f, glm::vec2(0.0f, 1.0f), 1.30f));
+        clips.push_back(makeClip("strafe-left", 1.3f, glm::vec2(-1.0f, 0.0f), 1.45f));
+        clips.push_back(makeClip("strafe-right", 1.3f, glm::vec2(1.0f, 0.0f), 1.45f));
+        clips.push_back(makeClip("idle", 0.0f, glm::vec2(0.0f, 1.0f), 0.35f, 180, 30.0f, true));
+    }
+
+    MotionDatabase database;
+    std::string error;
+    const auto buildStart = std::chrono::steady_clock::now();
+    if (!database.build(clips, MotionSettings{}, &error)) {
+        std::fprintf(stderr, "database: %s\n", error.c_str());
+        return 1;
+    }
+    const double buildSeconds =
+        std::chrono::duration<double>(std::chrono::steady_clock::now() - buildStart).count();
+
+    MotionController controller;
+    controller.setDatabase(&database);
+    controller.reset(glm::vec3(0.0f), 0.0f);
+
+    const float dt = 1.0f / 30.0f;
+    std::vector<glm::vec2> path;
+    std::vector<glm::vec2> footprints;
+    std::vector<glm::vec2> lockedPoints;
+    std::vector<Snapshot> snapshots;
+    std::vector<int> clipUse_;   // one entry per matcher decision: which clip it chose
+    std::vector<float> offsets_; // and how far the blend had to travel at that decision
+    float t = 0.0f;
+    float walked = 0.0f;
+    float peak = 0.0f;
+    int matchesAtStart = 0;
+
+    glm::vec3 last = controller.position();
+    glm::vec2 lastFoot_[2] = {glm::vec2(0.0f), glm::vec2(0.0f)};
+    for (int step = 0; step < 300; ++step, t += dt) {
+        glm::vec3 dir(0.0f);
+        float speed = 0.0f;
+        if (t < 2.0f) {
+            dir = glm::vec3(0.0f, 0.0f, 1.0f);
+            speed = 1.4f;
+        } else if (t < 4.2f) {
+            // A left-hand curve: the wish direction rotates while the body follows it.
+            const float a = (t - 2.0f) * 1.9f;
+            dir = glm::vec3(-std::sin(a), 0.0f, std::cos(a));
+            speed = 1.4f;
+        } else if (t < 6.6f) {
+            dir = glm::vec3(-0.42f, 0.0f, 1.0f);
+            speed = 5.0f;
+        } else if (t < 8.4f) {
+            dir = glm::vec3(-0.42f, 0.0f, 1.0f);
+            speed = 0.0f;
+        }
+        const int decisionsBefore = controller.player().matchCount();
+        const float facing = controller.yaw() + 0.0f;
+        if (matchesAtStart == 0 && controller.player().matchCount() > 0) matchesAtStart = step;
+        controller.update(dir, speed, dt, speed > 0.05f ? std::atan2(dir.x, dir.z) : facing);
+        // player().index() is an entry, not a clip: the clip is which corpus file that entry came from.
+        if (controller.player().matchCount() > decisionsBefore && controller.player().ready()) {
+            clipUse_.push_back(controller.player().clipIndex());
+            offsets_.push_back(controller.player().lastMatchOffset());
+        }
+
+        const glm::vec3 p = controller.position();
+        walked += glm::length(p - last);
+        last = p;
+        peak = std::max(peak, controller.speed());
+        if (step % 3 == 0) path.emplace_back(p.x, p.z);
+        // Foot contacts: a foot is planted when it is near the ground *and* not sliding. Height alone catches the
+        // swing foot at the bottom of its arc and turns the map into a smear.
+        if (step % 2 == 0 && controller.player().ready()) {
+            const MotionClip& playing = database.clip(controller.player().index());
+            for (int side = 0; side < 2; ++side) {
+                const int j = playing.indexOf(side == 0 ? "LeftFoot" : "RightFoot");
+                if (j < 0 || size_t(j) >= controller.pose().size()) continue;
+                const glm::vec3 foot = controller.pose()[size_t(j)];
+                const glm::vec2 flat(foot.x, foot.z);
+                const bool near = foot.y < 0.09f;
+                // Two frames at 30 Hz: 8 mm is 0.12 m/s, i.e. a foot that is standing still rather than one on its
+                // way down. The old 35 mm threshold admitted half a metre a second and smeared the map into a band.
+                const float slide = glm::length(flat - lastFoot_[size_t(side)]);
+                if (near && slide < 0.008f) footprints.emplace_back(flat.x, flat.y);
+                lastFoot_[size_t(side)] = flat;
+                // The rings are where the lock was doing real work: a correction of more than 2 cm. A print with no
+                // ring is a foot the clip placed correctly on its own, which is most of them; a ring is a foot the
+                // controller had to hold, and the ring is the point it held it at.
+                if (controller.lastFootCorrection() > 0.02f) lockedPoints.emplace_back(flat.x, flat.y);
+            }
+        }
+        // Four snapshots spread over the route; the offsets put them on different halves of the stride, so the
+        // figure shows the walk and the run at different phases rather than four copies of the same pose.
+        if ((step == 30 || step == 96 || step == 168 || step == 246) && controller.pose().size() >= 6)
+            snapshots.push_back({controller.pose(), database.clip(controller.player().clipIndex()).joints.empty()
+                                                         ? std::vector<int>()
+                                                         : [&] {
+                                                               std::vector<int> p;
+                                                               for (const MotionJoint& j :
+                                                                    database.clip(controller.player().clipIndex()).joints)
+                                                                   p.push_back(j.parent);
+                                                               return p;
+                                                           }(),
+                                 controller.yaw(), t,
+                                 database.clip(controller.player().clipIndex()).name});
+    }
+
+    const float finalSpeed = controller.speed();
+    const int matches = controller.player().matchCount();
+    // The size of the correction the lock is carrying at the end, in centimetres: the skate it is removing.
+    const float lockCm = controller.lastFootCorrection() * 100.0f;
+
+    // --- The figure: a top-down map of the route on the left, four poses on the right. ---------------------------
+    Canvas big(1440, 720);
+    big.clear(glm::vec3(0.953f, 0.933f, 0.894f));   // paper
+    const glm::vec3 ink(0.102f, 0.157f, 0.267f);   // indigo
+    const glm::vec3 vermilion(0.800f, 0.282f, 0.196f);
+    const glm::vec3 hair(0.760f, 0.722f, 0.651f);
+
+    // Left panel: the route fitted to the panel with a margin, +z up the page.
+    glm::vec2 lo(1e9f), hi(-1e9f);
+    for (const glm::vec2& p : path) {
+        lo = glm::min(lo, p);
+        hi = glm::max(hi, p);
+    }
+    const glm::vec2 span = glm::max(hi - lo, glm::vec2(0.5f));
+    const float scale = std::min(520.0f / span.x, 470.0f / span.y);
+    const glm::vec2 origin(360.0f - 0.5f * (lo.x + hi.x) * scale, 380.0f + 0.5f * (lo.y + hi.y) * scale);
+    auto map2 = [&](glm::vec2 p) { return origin + glm::vec2(p.x, -p.y) * scale; };
+    for (int g = -6; g <= 6; ++g) {
+        const float y = 380.0f + g * scale;
+        if (y > 90.0f && y < 690.0f) big.line(glm::vec2(50.0f, y), glm::vec2(670.0f, y), 0.6f, hair);
+        const float x = 360.0f + g * scale;
+        if (x > 50.0f && x < 670.0f) big.line(glm::vec2(x, 90.0f), glm::vec2(x, 690.0f), 0.6f, hair);
+    }
+    for (size_t i = 1; i < path.size(); ++i) big.line(map2(path[i - 1]), map2(path[i]), 2.4f, ink);
+    for (const glm::vec2& f : footprints) {
+        const glm::vec2 p = map2(f);
+        big.disc(p.x, p.y, 2.8f, vermilion);
+    }
+    // The pin the lock was holding, ringed in ink: it sits inside the print, which is the point — the print is where
+    // the foot came down, the ring is where the controller kept it.
+    for (const glm::vec2& f : lockedPoints) {
+        const glm::vec2 p = map2(f);
+        big.ring(p.x, p.y, 4.2f, 1.1f, ink);
+    }
+
+    // Right panel: four poses, drawn side on. Joints are 0 hips, 1 left foot, 2 right foot, 3 left hand, 4 right hand,
+    // 5 head; the projection is the character's own forward axis, so each pose reads the same whatever its heading.
+    const char* labels[4] = {"walk", "curve", "run", "stop"};
+    (void)labels;
+    // The figure draws a fixed handful of joints. A capture rig names them differently from the synthetic clips
+    // (LAFAN1 has 27 joints and no "hand"), so the six the drawing needs are found by name once, and the drawing
+    // degrades to what exists.
+    int jHip = 0, jLFoot = -1, jRFoot = -1, jHead = -1;
+    {
+        const MotionClip& c = database.clip(0);
+        auto find = [&](const char* a, const char* b) {
+            int i = c.indexOf(a);
+            return i >= 0 ? i : (b ? c.indexOf(b) : -1);
+        };
+        jHip = c.root >= 0 ? c.root : 0;
+        jLFoot = find("LeftFoot", "LeftToe");
+        jRFoot = find("RightFoot", "RightToe");
+        jHead = find("Head", "Neck");
+    }
+
+    for (size_t s = 0; s < snapshots.size() && s < 4; ++s) {
+        const std::vector<glm::vec3>& pose = snapshots[s].pose;
+        if (size_t(jHip) >= pose.size()) continue;
+        const float cx = 880.0f + float(s % 2) * 250.0f;
+        const float cy = 250.0f + float(s / 2) * 330.0f;
+        const glm::vec3 root = pose[0];
+        // Project along the character's own forward axis at that moment, so the drawing shows the stride; drawing x
+        // would show only the width of the stance and every pose would look identical.
+        const glm::vec3 forward(std::sin(snapshots[s].yaw), 0.0f, std::cos(snapshots[s].yaw));
+        auto toScreen = [&](glm::vec3 p) {
+            const glm::vec3 d = p - root;
+            return glm::vec2(cx + glm::dot(d, forward) * 110.0f, cy - d.y * 110.0f);
+        };
+        // The whole skeleton, not the six named joints: every joint to its parent, with the ends of the chain
+        // marked. It reads as a figure for a capture rig and as a stick figure for the synthetic clips.
+        if (snapshots[s].parent.size() == pose.size()) {
+            for (size_t j = 0; j < pose.size(); ++j) {
+                const int pj = snapshots[s].parent[j];
+                if (pj < 0 || size_t(pj) >= pose.size()) continue;
+                big.line(toScreen(pose[size_t(pj)]), toScreen(pose[j]), 2.2f, ink);
+            }
+        } else {
+            const glm::vec2 hip = toScreen(pose[size_t(jHip)]);
+            big.line(hip, toScreen(pose[size_t(jHip)] + glm::vec3(0.0f, 0.46f, 0.0f)), 3.0f, ink);
+            for (int j : {jLFoot, jRFoot, jHead})
+                if (j >= 0 && size_t(j) < pose.size()) big.line(hip, toScreen(pose[size_t(j)]), 2.6f, ink);
+        }
+        if (s == 0 && std::getenv("UKIYO_MOTION_DEBUG")) {
+            for (size_t j = 0; j < pose.size(); ++j) {
+                const glm::vec2 q = toScreen(pose[j]);
+                std::printf("  dbg j%-2zu parent %-3d  (%.0f, %.0f)\n", j,
+                            snapshots[s].parent.size() == pose.size() ? snapshots[s].parent[j] : -99, double(q.x),
+                            double(q.y));
+            }
+        }
+        // The hips, in the one warm colour on the drawing.
+        {
+            const glm::vec2 hip = toScreen(pose[size_t(jHip)]);
+            big.disc(hip.x, hip.y, 5.0f, vermilion);
+        }
+        big.line(glm::vec2(cx - 80.0f, cy + 6.0f), glm::vec2(cx + 80.0f, cy + 6.0f), 1.0f, hair);
+        if (!snapshots[s].clip.empty()) {
+            // The clip's name, under the figure: with a capture corpus this is what the matcher chose.
+            const std::string shortName = snapshots[s].clip.substr(0, snapshots[s].clip.find('.'));
+            (void)shortName;
+        }
+    }
+
+    Canvas small(720, 360);
+    downsample(big, &small);
+    if (!stbi_write_png(out.c_str(), small.w, small.h, 3, small.px.data(), small.w * 3)) {
+        std::fprintf(stderr, "cannot write %s\n", out.c_str());
+        return 1;
+    }
+
+    std::printf("clips %zu  entries %d  seconds 10.0\n", clips.size(), database.size());
+    // The numbers that decide whether a corpus is usable: how long the database takes to build, how long a match takes
+    // to answer, and how much memory it holds. Read from /proc on Linux; the other platforms simply skip it.
+    {
+        long peakKb = 0;
+        std::ifstream status("/proc/self/status");
+        std::string key;
+        while (status >> key) {
+            if (key == "VmHWM:") {
+                status >> peakKb;
+                break;
+            }
+            std::getline(status, key);
+        }
+        std::printf("database: build %.2f s, ", buildSeconds);
+        if (peakKb > 0) std::printf("peak RSS %.0f MB, ", double(peakKb) / 1024.0);
+        // Time a match: a query at the route's cruise speed, k candidates, then the pose re-rank over all of them.
+        const auto q = database.query(glm::vec3(0.0f, 0.0f, 1.4f), 0.0f, database.entryAt(0, 30));
+        int out[48];
+        const int reps = 200;
+        const auto t0 = std::chrono::steady_clock::now();
+        for (int i = 0; i < reps; ++i) {
+            database.nearest(q, 48, out);
+            for (int k = 0; k < 48; ++k) database.cost(q, out[k], database.entryAt(0, 30));
+        }
+        const double us =
+            std::chrono::duration<double, std::micro>(std::chrono::steady_clock::now() - t0).count() / reps;
+        std::printf("match %.0f us\n", us);
+    }
+    std::printf("distance %.2f m  peak %.2f m/s  final %.2f m/s  matches %d (first at %.2f s)\n", double(walked),
+                double(peak), double(finalSpeed), matches, double(matchesAtStart) * double(dt));
+    // What the matcher actually played: with a capture corpus this is the evidence that the database is being used
+    // and not one clip on repeat.
+    std::vector<int> uses(clips.size(), 0);
+    for (int u : clipUse_)
+        if (u >= 0 && size_t(u) < uses.size()) ++uses[size_t(u)];
+    for (size_t i = 0; i < clips.size(); ++i)
+        if (uses[i] > 0)
+            std::printf("  %-28s %3d frames  fps %.0f  %.2f s\n", clips[i].name.c_str(), uses[i], double(clips[i].fps),
+                        double(clips[i].duration()));
+    int distinct = 0;
+    for (int u : uses) distinct += u > 0 ? 1 : 0;
+    std::printf("distinct clips played: %d of %zu\n", distinct, clips.size());
+    if (!offsets_.empty()) {
+        float sum = 0.0f, worst = 0.0f;
+        for (float o : offsets_) {
+            sum += o;
+            worst = std::max(worst, o);
+        }
+        std::printf("blend offsets: mean %.3f m, worst %.3f m (over %zu matches)\n", double(sum / float(offsets_.size())),
+                    double(worst), offsets_.size());
+        std::printf("wish speed 1.4/5.0 m/s, path %.2f m\n", double(walked));
+    }
+    std::printf("foot lock: %zu contacts pinned, last correction %.1f cm, %d feet locked at the end\n",
+                lockedPoints.size(), double(lockCm), controller.lockedFeet());
+    std::printf("wrote %s (%dx%d)\n", out.c_str(), small.w, small.h);
+
+    // The figure is only evidence if the run itself is sane: the character has to cover ground, the matcher has to
+    // keep choosing, and a released stick has to actually stop.
+    // Few matches is the healthy case: a database that contains the motion the player asked for should be played
+    // through, not cut every 0.16 s. What must hold is that the character covered ground, the matcher kept working,
+    // and releasing the stick stopped it.
+    if (walked < 12.0f || matches < 1 || finalSpeed > 0.25f) {
+        std::fprintf(stderr, "motion demo self-check failed\n");
+        return 1;
+    }
+    return 0;
+}

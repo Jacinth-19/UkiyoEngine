@@ -5,6 +5,7 @@
 
 #include <atomic>
 #include <memory>
+#include <set>
 #include <optional>
 
 #include "systems/audio.h"
@@ -14,6 +15,7 @@
 #include <map>
 #include <set>
 #include <memory>
+#include <set>
 #include <string>
 #include <vector>
 
@@ -21,6 +23,8 @@
 #include <QString>
 
 #include "engine/anim.h"
+#include "engine/hud.h"
+#include "engine/text_atlas.h"
 #include "engine/camera.h"
 #include "engine/model.h"
 #include "engine/project_settings.h"
@@ -82,12 +86,23 @@ public:
     bool loadModel(const QString& path, QString* error);
     // Applied to models loaded from now on (RealToon smooth object normals).
     void setSmoothNormals(bool on) { smoothNormals_ = on; }
+    // Alpha-coverage-preserving mips (GH-104289) and the cutoff they preserve. Load-time, like smooth normals.
+    void setPreserveAlphaCoverage(bool on) { preserveAlphaCoverage_ = on; }
+    void setAlphaTestThreshold(float t) { alphaTestThreshold_ = t; }
 
     // Adds a model to the scene at `position` (metres) with `yawDeg` (degrees about +Y). The new
     // instance becomes active; its index is returned in *index.
     bool addModel(const QString& path, const float position[3], float yawDeg, QString* error, int* index);
     // Project folder. Scene switches resolve their paths against it.
     void setProjectRoot(const QString& root) { projectRoot_ = root; }
+    // The scene's lights (item 6). Every render is shaded with them; a directional light in the list becomes the key
+    // light and casts the cascades. An empty list keeps the engine's two stylistic fills, so a scene that authors no
+    // lights renders exactly as it did before lights existed.
+    void setSceneLights(std::vector<ukiyo::SceneLight> lights) {
+        sceneLights_ = std::move(lights);
+        if (renderer_) renderer_->setSceneLights(sceneLights_);
+    }
+    const std::vector<ukiyo::SceneLight>& sceneLights() const { return sceneLights_; }
     // The scene's water volume (item 16), or none. Drawn by render() until it is changed.
     // It also reaches the play world's physics for buoyancy (item 17). The wave clock is the render time.
     void setWater(const ukiyo::WaterVolume* w) {
@@ -112,13 +127,19 @@ public:
     // Makes instance `index` the active one (the target of the node and graph queries).
     bool setActiveInstance(int index);
     // Moves and turns an instance. Takes effect on the next frame.
-    bool setInstancePlacement(int index, const float position[3], float yawDeg);
+    // Rotation is Euler ZXY, the same order the engine's transform uses: roll about Z, then pitch about X, then yaw
+    // about Y. A gizmo ring per axis writes one of the three, and the matrix is rebuilt from all three.
+    bool setInstancePlacement(int index, const float position[3], float yawDeg, float pitchDeg = 0.0f,
+                              float rollDeg = 0.0f, const float scale[3] = nullptr);
 
     // Snapshot of one instance, for saving the scene.
     struct PlacedModel {
         std::string path;
         float position[3] = {0.0f, 0.0f, 0.0f};
         float yawDeg = 0.0f;
+        float pitchDeg = 0.0f;
+        float rollDeg = 0.0f;
+        float scale[3] = {1.0f, 1.0f, 1.0f};   // per-axis scale
         std::string prefab;                 // .ukprefab this instance is linked to, or empty
         std::string prefabId;
         std::set<std::string> overrides;    // keys that the instance sets itself: "translation", "yawDeg"
@@ -218,6 +239,9 @@ public:
     bool bakeNavMesh(QString* error, int* triangles, std::atomic<int>* progress = nullptr);
     // A straight path on the baked navmesh, for the Inspector's path preview. Fails with a reason in error.
     bool previewPath(const glm::vec3& from, const glm::vec3& to, std::vector<glm::vec3>* path, QString* error);
+    // The geometry the last successful bake was built from (every model plus every terrain tile). It exists so a caller
+    // can say what the navmesh covers without asking Recast, and the self-test uses it to check that a hill reaches it.
+    const std::vector<glm::vec3>& bakedNavVertices() const { return navVerts_; }
     // Plays a sound file once through the editor's own audio device, outside play mode.
     bool previewSound(const std::string& path, float volume, bool loop, QString* error);
     void stopPreviewSound();
@@ -229,6 +253,18 @@ public:
     std::vector<ukiyo::ParticleInstance> particleSamples() const;
     // Compiles a Lua script without running it. Returns false with the Lua message, which includes the line.
     bool checkScript(const std::string& path, QString* error) const;
+    // Compiles text that is not saved yet: the code editor checks what is on screen. `path` names the chunk, so the
+    // message reads "path:line: ..." exactly as it would from a file.
+    bool checkScriptText(const std::string& path, const std::string& text, QString* error) const;
+    // Rewrites the Lua support files for this project (the API stub, .luarc.json, and the editor configuration files
+    // that are missing). `written` receives the project-relative paths that changed.
+    bool writeScriptSupportFiles(std::vector<std::string>* written, QString* error) const;
+    // The scripts the running world has, for the Play page and the editor's script list.
+    const std::vector<ukiyo::ScriptInfo>& playScripts() const;
+    // Re-reads every script from disk while play is running. Each script keeps its place in the frame, so saving a file
+    // from any editor changes the running level without stopping it. Returns false with the first error, and adds it to
+    // the play warnings.
+    bool reloadScripts(QString* error);
     bool navMeshBaked() const { return navBaked_; }
     // Starts play mode: builds a World from the components. Entities are named "instance<N>", and the
     // listener follows the active instance. Fails with a message if the setup cannot run.
@@ -240,12 +276,25 @@ public:
     // Stops play mode and puts every instance back where it was before play.
     void stopPlay();
     bool playing() const { return world_ != nullptr; }
+    // The world that exists while playing, for the parts of the editor that drive its input directly (the rebinding
+    // screen). Only valid when playing(); the key path goes through setKeyHeld.
+    ukiyo::World& world() { return *world_; }
     // Non-fatal problems found while starting play, such as a sound file that does not load.
     const std::vector<std::string>& playWarnings() const { return playWarnings_; }
     // Advances play mode by dt seconds and moves instances to their simulated positions. Render calls
     // this with the frame step, so it does nothing while paused.
     void tickPlay(float dt);
     int playingEntities() const;
+    // What the last play tick cost, stage by stage (src/systems/world.h). Zero outside play, or when the profiler is off.
+    ukiyo::FrameTiming playTiming();
+    // The profiler switch. Play turns it on; a shipped game does not pay for it.
+    void setProfiling(bool on);
+    bool profiling() const { return profiling_; }
+    // The GPU time of the last rendered frame, one frame behind by design (docs/PROFILER.md). Empty before the
+    // first frame, or on a backend with no timestamps.
+    std::vector<ukiyo::Renderer::GpuStat> gpuStats() const {
+        return renderer_ ? renderer_->lastGpuStats() : std::vector<ukiyo::Renderer::GpuStat>{};
+    }
     // Snapshot of the particles in play (count only, for the Inspector).
     int liveParticles() const;
 
@@ -254,8 +303,11 @@ public:
 
 private:
     bool smoothNormals_ = false;
+    bool preserveAlphaCoverage_ = true;
+    float alphaTestThreshold_ = 0.5f;
     std::unique_ptr<rhi::Device> device_;
     std::unique_ptr<Renderer> renderer_;
+    std::vector<ukiyo::SceneLight> sceneLights_;
     std::optional<ukiyo::WaterVolume> water_;
     bool audioMuted_ = false;
     void applyAudioMute();
@@ -266,6 +318,10 @@ private:
         std::string path;
         glm::vec3 position{0.0f};
         float yawDeg = 0.0f;
+        float pitchDeg = 0.0f;
+        float rollDeg = 0.0f;
+        // Per-axis scale, as Blender's scale handles have: dragging one axis handle stretches one axis.
+        glm::vec3 scale{1.0f};
         // Graph material assignments by this model's node index.
         std::map<int, std::string> nodeGraph;
         // Nodes drawn with the MMD-style toon look.
@@ -290,6 +346,9 @@ private:
         bool layerDirty = false;
         std::vector<std::vector<uint8_t>> density;              // per foliage type, empty when no density mask exists
         std::vector<uint8_t> densityDirty;
+        // The grass detail map (item 19), read the same way as a foliage density map.
+        std::vector<uint8_t> grassDensity;
+        std::string grassDensitySource;
         // The image each mask was read from or written to. When the settings name another image, it is read again.
         std::vector<std::string> maskSource;                    // the layer mask files, as the settings hold them
         std::vector<std::string> densitySource;                 // per foliage type
@@ -318,14 +377,38 @@ private:
     struct Placement {
         glm::vec3 position{0.0f};
         float yawDeg = 0.0f;
+        float pitchDeg = 0.0f;
+        float rollDeg = 0.0f;
     };
     std::vector<Placement> playStart_;   // placements before play, restored by stopPlay
     std::vector<glm::vec3> playLast_;    // entity positions after the previous tick
     std::vector<float> playSpeed_;       // horizontal speed per instance, fed to the animation machines
+    std::vector<glm::vec3> playScale_;   // instance scales before play, put back by stopPlay
+    ukiyo::FrameTiming playTiming_;      // the last play tick's breakdown
+    bool profiling_ = false;
+    // Instances with a capsule character (item 4), and the walk speed each was authored with. Driven from the game
+    // view's WASD in play mode.
+    struct PlayCharacter {
+        int instance = -1;
+        float speed = 4.0f;
+    };
+    std::vector<PlayCharacter> playCharacters_;
+    std::set<std::string> playKeys_;   // keys held during play, in portable key text, for the character input
+    float playCamYaw_ = 0.0f;          // the game view's yaw from the last render, for camera-relative walking
     std::vector<std::string> playWarnings_;
     std::string clipBeforePlay_;
     std::unique_ptr<ParticleRenderer> particles_;
     void drawParticleOverlay(const OrbitCamera& cam);
+    // Walks the capsule characters from the game view's WASD during play (item 4).
+    void drivePlayCharacters(float dt);
+    // The HUD over play mode: title, frame statistics and the first play warning, from the same layout the player uses.
+    void drawPlayHud();
+    void setHudVisible(bool on) { hudVisible_ = on; }
+    bool hudVisible() const { return hudVisible_; }
+    FontAtlas hudFont_;
+    HudCanvas hudCanvas_;
+    bool hudFontTried_ = false;
+    bool hudVisible_ = true;
     int active_ = -1;
     Model* activeModel() const;
 
@@ -336,6 +419,8 @@ private:
         std::unique_ptr<Model> model;
         qint64 modified = -1;
         bool smoothNormals = false;
+        bool preserveAlphaCoverage = true;
+        float alphaTestThreshold = 0.5f;
     };
     std::map<std::string, StagedModel> staged_;
     std::unique_ptr<Model> takeModel(const QString& path, QString* error);
@@ -349,7 +434,7 @@ private:
     std::vector<SceneNote> sceneNotes_;
     void noteScene(const std::string& text, bool structural);
     void bindActive();
-    static glm::mat4 placementOf(const glm::vec3& position, float yawDeg);
+    static glm::mat4 placementOf(const glm::vec3& position, const glm::vec3& eulerDeg, const glm::vec3& scale);
     std::unique_ptr<AnimLibrary> lib_;
     ukiyo::ClipEdits clipEdits_;
     AnimPlayer player_;

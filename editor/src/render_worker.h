@@ -5,6 +5,7 @@
 #pragma once
 
 #include <atomic>
+#include <memory>
 
 #include <optional>
 #include <vector>
@@ -16,6 +17,7 @@
 
 #include "engine/camera.h"
 #include "engine/renderer.h"
+#include "input/rebind.h"
 #include "systems/components.h"
 
 #include <QStringList>
@@ -64,6 +66,9 @@ struct InstanceInfo {
     QString path;
     float position[3] = {0.0f, 0.0f, 0.0f};
     float yawDeg = 0.0f;
+    float pitchDeg = 0.0f;
+    float rollDeg = 0.0f;
+    glm::vec3 scale{1.0f};   // per-axis scale
     QString prefab;             // linked .ukprefab, empty for a plain model
     QString prefabId;
     QStringList overrides;      // "translation", "yawDeg"
@@ -94,13 +99,18 @@ public:
     bool loadLibrary(const QString& path, QString* error, std::vector<ClipInfo>* clips);
     bool loadModel(const QString& path, QString* error, ModelInfo* info);
     void setSmoothNormals(bool on) { session_.setSmoothNormals(on); }
+    void setPreserveAlphaCoverage(bool on) { session_.setPreserveAlphaCoverage(on); }
+    void setAlphaTestThreshold(float t) { session_.setAlphaTestThreshold(t); }
     void setWater(bool on, const ukiyo::WaterVolume& w) { session_.setWater(on ? &w : nullptr); }
+    // The scene's lights (item 6). An empty list restores the engine's two stylistic fills.
+    void setSceneLights(const std::vector<ukiyo::SceneLight>& lights) { session_.setSceneLights(lights); }
     // Adds a model to the scene and makes it active. *info describes the new active model.
     bool addModel(const QString& path, const float position[3], float yawDeg, QString* error, ModelInfo* info,
                   int* index);
     // Makes an instance active and describes it in *info.
     bool activateInstance(int index, ModelInfo* info);
-    bool setInstancePlacement(int index, const float position[3], float yawDeg);
+    bool setInstancePlacement(int index, const float position[3], float yawDeg, float pitchDeg = 0.0f,
+                              float rollDeg = 0.0f, const float scale[3] = nullptr);
     bool setInstanceLink(int index, const QString& prefab, const QString& prefabId, const QStringList& overrides);
     // Removes every model from the scene.
     void clearScene() { session_.clearInstances(); }
@@ -153,6 +163,9 @@ public:
     bool previewPath(const glm::vec3& from, const glm::vec3& to, std::vector<glm::vec3>* path, QString* error) {
         return session_.previewPath(from, to, path, error);
     }
+    // The geometry the last bake used, by value: the session's vector can be replaced by the next bake, so a caller
+    // reading it from another thread gets its own copy. Call it on the worker, like every other session read.
+    std::vector<glm::vec3> bakedNavVertices() const { return session_.bakedNavVertices(); }
     bool previewSound(const QString& path, float volume, bool loop, QString* error) {
         return session_.previewSound(path.toStdString(), volume, loop, error);
     }
@@ -162,6 +175,14 @@ public:
     float masterVolume() const { return session_.masterVolume(); }
     std::vector<ukiyo::ParticleInstance> particleSamples() const { return session_.particleSamples(); }
     bool checkScript(const QString& path, QString* error) const { return session_.checkScript(path.toStdString(), error); }
+    bool checkScriptText(const QString& path, const QString& text, QString* error) const {
+        return session_.checkScriptText(path.toStdString(), text.toStdString(), error);
+    }
+    bool writeScriptSupportFiles(std::vector<std::string>* written, QString* error) const {
+        return session_.writeScriptSupportFiles(written, error);
+    }
+    std::vector<ukiyo::ScriptInfo> playScripts() const { return session_.playScripts(); }
+    bool reloadScripts(QString* error) { return session_.reloadScripts(error); }
     bool navMeshBaked() const { return session_.navMeshBaked(); }
     bool startPlay(QString* error) {
         const bool ok = session_.startPlay(error);
@@ -179,9 +200,26 @@ public:
     bool preloadModel(const QString& path, QString* error) { return session_.preloadModel(path, error); }
     void setProjectSettings(const engine::ProjectSettings& s) { session_.setProjectSettings(s); }
     void setKeyHeld(const QString& key, bool down) { session_.setKeyHeld(key, down); }
+    // Starts a capture on the live world's input state, so a rebinding screen rebinds the binding the running game is
+    // actually reading. Empty on success, otherwise why it could not start.
+    QString beginRebind(const QString& action);
+    // Feeds one key press to the waiting capture and answers with the control path it produced ("<Keyboard>/space"),
+    // empty when nothing was captured. The press and its release are delivered together, so a key that was only
+    // pressed to bind it does not stay held in the game. This is the editor's input path: play mode gets its keys from
+    // the Game view's key events (setKeyHeld), not from a poller, so a page that listens for one has to deliver it the
+    // same way.
+    QString rebindKey(const QString& key);
+    // Stops the capture where it is. The binding is left alone: a capture that has not applied anything has nothing
+    // to undo, and one that has is the page's to write down (it holds the same result).
+    void cancelRebind();
     bool playing() const { return session_.playing(); }
     std::vector<std::string> playWarnings() const { return session_.playWarnings(); }
     int liveParticles() const { return session_.liveParticles(); }
+    // What the last play tick cost, stage by stage. Zero when nothing is playing (src/systems/world.h).
+    ukiyo::FrameTiming playTiming() { return session_.playTiming(); }
+    void setProfiling(bool on) { session_.setProfiling(on); }
+    bool profiling() const { return session_.profiling(); }
+    std::vector<ukiyo::Renderer::GpuStat> gpuStats() const { return session_.gpuStats(); }
     void playTick(float dt) {
         session_.tickPlay(dt);
         reportScene();
@@ -211,6 +249,9 @@ private:
     // Emits sceneChanged when the session has notes.
     void reportScene();
     EngineSession session_;
+    // The capture, on the worker thread, on the running world (see input/rebind.h). Null when nothing is waiting.
+    std::unique_ptr<ukiyo::input::RebindOperation> rebindOp_;
+    std::string rebindCaptured_;
 };
 
 } // namespace editor

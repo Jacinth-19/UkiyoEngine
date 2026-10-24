@@ -62,29 +62,34 @@ std::vector<float> layerWeightMap(const Heightmap& map, const std::vector<Terrai
     if (!paint.empty() && paint.size() != samples * kTerrainMaxLayers) return {};
 
     std::vector<float> out(samples * kTerrainMaxLayers, 0.0f);
-    for (uint32_t z = 0; z < map.size; ++z) {
-        for (uint32_t x = 0; x < map.size; ++x) {
-            const size_t s = size_t(z) * map.size + x;
-            const float h = map.samples[s];
-            const float slope = slopeDegAt(map, int(x), int(z));
-            float* w = &out[s * kTerrainMaxLayers];
-            float total = 0.0f;
-            for (size_t k = 0; k < count; ++k) {
-                const TerrainLayer& L = layers[k];
-                float v = band(h, L.heightMin, L.heightMax, L.heightFade) *
-                          band(slope, L.slopeMin, L.slopeMax, L.slopeFade);
-                if (!paint.empty()) v *= float(paint[s * kTerrainMaxLayers + k]) / 255.0f;
-                w[k] = v;
-                total += v;
-            }
-            if (total > 1e-6f) {
-                for (size_t k = 0; k < count; ++k) w[k] /= total;
-            } else {
-                w[0] = 1.0f;   // nothing matched or everything is painted off: the base layer takes the sample
-            }
-        }
-    }
+    for (size_t s = 0; s < samples; ++s) layerWeightsAtSample(map, layers, paint, s, &out[s * kTerrainMaxLayers]);
     return out;
+}
+
+void layerWeightsAtSample(const Heightmap& map, const std::vector<TerrainLayer>& layers,
+                          const std::vector<uint8_t>& paint, size_t sample, float* out) {
+    const size_t count = std::min<size_t>(layers.size(), kTerrainMaxLayers);
+    if (!out) return;
+    for (uint32_t k = 0; k < kTerrainMaxLayers; ++k) out[k] = 0.0f;
+    if (count == 0 || !map.valid() || sample >= size_t(map.size) * map.size) return;
+    const uint32_t x = uint32_t(sample % map.size);
+    const uint32_t z = uint32_t(sample / map.size);
+    const bool painted = !paint.empty() && paint.size() >= (sample + 1) * kTerrainMaxLayers;
+    const float h = map.samples[sample];
+    const float slope = slopeDegAt(map, int(x), int(z));
+    float total = 0.0f;
+    for (size_t k = 0; k < count; ++k) {
+        const TerrainLayer& L = layers[k];
+        float v = band(h, L.heightMin, L.heightMax, L.heightFade) * band(slope, L.slopeMin, L.slopeMax, L.slopeFade);
+        if (painted) v *= float(paint[sample * kTerrainMaxLayers + k]) / 255.0f;
+        out[k] = v;
+        total += v;
+    }
+    if (total > 1e-6f) {
+        for (size_t k = 0; k < count; ++k) out[k] /= total;
+    } else {
+        out[0] = 1.0f;   // nothing matched or everything is painted off: the base layer takes the sample
+    }
 }
 
 bool loadRgba8(const std::string& path, uint32_t* width, uint32_t* height, std::vector<uint8_t>* rgba, std::string* error) {
@@ -156,6 +161,20 @@ bool buildTerrainAtlases(const std::vector<TerrainLayer>& layers, TerrainAtlases
                     const size_t src = (size_t(y) * n + x) * 4;
                     const size_t dst = (size_t(y0 + y) * a.width + (x0 + x)) * 4;
                     for (int c = 0; c < 3; ++c) a.normal[dst + c] = cell[src + c];
+                }
+            }
+        }
+        // Occlusion lives in the normal atlas alpha, so the terrain shader darkens ambient light in the crevices of the
+        // ground without a third texture. White is unoccluded.
+        if (L && !L->aoFile.empty()) {
+            uint32_t w = 0, h = 0;
+            if (!loadRgba8(L->aoFile, &w, &h, &img, error)) return false;
+            resampleToCell(img, w, h, cell);
+            for (uint32_t y = 0; y < n; ++y) {
+                for (uint32_t x = 0; x < n; ++x) {
+                    const size_t src = (size_t(y) * n + x) * 4;
+                    const size_t dst = (size_t(y0 + y) * a.width + (x0 + x)) * 4;
+                    a.normal[dst + 3] = cell[src];
                 }
             }
         }

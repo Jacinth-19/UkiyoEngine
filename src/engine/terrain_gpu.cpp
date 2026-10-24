@@ -9,7 +9,8 @@
 namespace ukiyo {
 
 bool uploadTerrain(rhi::Device& device, const Heightmap& map, uint32_t cells, const std::vector<TerrainLayer>& layers,
-                   const std::vector<uint8_t>& paint, TerrainGpu* out, std::string* error) {
+                   const std::vector<uint8_t>& paint, const TerrainDetail& detail, TerrainGpu* out,
+                   std::string* error) {
     if (!out) return false;
     const uint32_t n = chunksPerSide(map, cells);
     if (n == 0) {
@@ -64,6 +65,8 @@ bool uploadTerrain(rhi::Device& device, const Heightmap& map, uint32_t cells, co
         block.tile[k] = glm::vec4(std::max(0.5f, layers[k].tileMetres), 0.0f, 0.0f, 0.0f);
     }
     for (size_t k = layers.size(); k < kTerrainMaxLayers; ++k) block.tile[k] = glm::vec4(8.0f, 0, 0, 0);
+    block.detail = glm::vec4(std::max(0.1f, detail.metres), std::clamp(detail.strength, 0.0f, 1.0f),
+                             std::clamp(detail.macro, 0.0f, 1.0f), 0.0f);
     g.layerBuffer = device.createBuffer(rhi::BufferUsage::Uniform, sizeof(TerrainLayerBlock));
     g.layerBuffer->upload(&block, sizeof(block));
 
@@ -77,9 +80,79 @@ bool uploadTerrain(rhi::Device& device, const Heightmap& map, uint32_t cells, co
     g.diffuseAtlas = device.createTexture(td, atlases.diffuse.data());
     g.normalAtlas = device.createTexture(td, atlases.normal.data());
 
+    // The detail overlay. A 1 x 1 white texture is a no-op, so a tile without an overlay still binds something at
+    // binding 2 and the shader's uniform branch collapses.
+    std::vector<uint8_t> white{255, 255, 255, 255};
+    uint32_t dw = 1, dh = 1;
+    if (!detail.file.empty()) {
+        std::vector<uint8_t> pixels;
+        if (!loadRgba8(detail.file, &dw, &dh, &pixels, error)) return false;
+        td.width = dw;
+        td.height = dh;
+        g.detailTexture = device.createTexture(td, pixels.data());
+    } else {
+        td.width = 1;
+        td.height = 1;
+        g.detailTexture = device.createTexture(td, white.data());
+    }
+
+    // The heightmap, for the GI pass: R is the normalised height, GBA the terrain's albedo at that sample. The tile is
+    // `map.size` samples square; the shader reconstructs metres from the texture's own size, so no metadata travels
+    // with it.
+    //
+    // The albedo is the layer blend *averaged to the heightfield's resolution*, not the blended texture: a texel here
+    // covers map.cellSize metres, so the detail the surface shader shows at centimetre scale is not representable and
+    // is not what a twelve-metre bounce needs. Each layer's mean colour comes from its own atlas cell, times the
+    // layer tint the surface shader multiplies in. The detail overlay and the macro variation are left out: they vary
+    // by ±20 %, and the bounce they modulate is a few percent of the frame.
+    glm::vec3 layerMean[kTerrainMaxLayers]{};
+    {
+        const uint32_t cw = atlases.width / kTerrainAtlasCols, ch = atlases.height / kTerrainAtlasRows;
+        for (size_t k = 0; k < layers.size() && k < kTerrainMaxLayers; ++k) {
+            const uint32_t cx = uint32_t(k % kTerrainAtlasCols) * cw, cy = uint32_t(k / kTerrainAtlasCols) * ch;
+            double sum[3] = {0, 0, 0};
+            for (uint32_t y = 0; y < ch; ++y) {
+                const uint8_t* row = &atlases.diffuse[(size_t(cy + y) * atlases.width + cx) * 4];
+                for (uint32_t x = 0; x < cw; ++x)
+                    for (int c = 0; c < 3; ++c) sum[c] += double(row[size_t(x) * 4 + size_t(c)]) / 255.0;
+            }
+            const double inv = 1.0 / (double(cw) * double(ch));
+            layerMean[k] = glm::vec3(float(sum[0] * inv), float(sum[1] * inv), float(sum[2] * inv)) *
+                           glm::vec3(layers[k].colour);
+        }
+    }
+    {
+        rhi::TextureDesc hd;
+        hd.width = uint32_t(map.size);
+        hd.height = uint32_t(map.size);
+        hd.format = rhi::Format::RGBA16F;
+        hd.filter = rhi::Filter::Linear;
+        hd.wrap = rhi::Wrap::Clamp;
+        // RGBA16F uploads go through the RGBA8 path in the RHI, which is not right for float data; store the height
+        // normalised to 0..1 in red and let the shader scale by heightScale. That keeps the texture an ordinary 8-bit
+        // texture, which every backend here can create, and 1/255 of the tile's height is 5 cm — under the estimator's
+        // own step size. The albedo shares the remaining channels; 1/255 of a 0.1 albedo is 4 %, and the bounce it
+        // scales is a few percent of the frame, so 8 bits are enough here where they would not be for a G-buffer.
+        std::vector<uint8_t> pixels(size_t(map.size) * size_t(map.size) * 4, 255);
+        for (size_t i = 0; i < map.samples.size() && i < size_t(map.size) * size_t(map.size); ++i) {
+            const float n = std::clamp(map.samples[i], 0.0f, 1.0f);
+            glm::vec3 a(0.0f);
+            const float* w = &weights[i * kTerrainMaxLayers];
+            for (size_t k = 0; k < layers.size() && k < kTerrainMaxLayers; ++k) a += w[k] * layerMean[k];
+            a = glm::clamp(a, glm::vec3(0.0f), glm::vec3(1.0f));
+            pixels[i * 4 + 0] = uint8_t(n * 255.0f + 0.5f);
+            for (int c = 0; c < 3; ++c) pixels[i * 4 + 1 + c] = uint8_t(a[c] * 255.0f + 0.5f);
+        }
+        hd.format = rhi::Format::RGBA8;
+        g.heightTexture = device.createTexture(hd, pixels.data());
+    }
+
     g.layerSet = device.createDescriptorSet(rhi::SetType::ShaderMaterial);
+    // Units 2 and 3: unit 1 is the frame set's shadow atlas, and the GL backend binds every set into the same texture
+    // unit space.
     g.layerSet->setTexture(0, g.diffuseAtlas.get());
-    g.layerSet->setTexture(1, g.normalAtlas.get());
+    g.layerSet->setTexture(2, g.normalAtlas.get());
+    g.layerSet->setTexture(3, g.detailTexture.get());
     g.layerSet->setBuffer(15, g.layerBuffer.get());
 
     *out = std::move(g);
@@ -156,6 +229,74 @@ bool uploadFoliage(rhi::Device& device, const std::vector<FoliageType>& types,
     }
     gpu->foliageMeshes = std::move(meshes);
     gpu->foliage = std::move(batches);
+    return true;
+}
+
+
+bool uploadGrass(rhi::Device& device, const std::vector<TerrainLayer>& layers, const std::vector<uint8_t>& paint,
+                 const GrassSettings& settings, const std::vector<uint8_t>& detailField, TerrainGpu* gpu,
+                 std::string* error) {
+    if (!gpu) return false;
+    gpu->grass.meshes.clear();
+    gpu->grass.batches.clear();
+    if (!settings.enabled) return true;   // off is not an error, it just leaves nothing to draw
+
+    const Heightmap& map = gpu->map;
+    const uint32_t n = chunksPerSide(map, kTerrainChunkCells);
+    if (n == 0 || gpu->chunks.size() != size_t(n) * n) {
+        if (error) *error = "the terrain has no chunks for the grass";
+        return false;
+    }
+    if (!detailField.empty() && detailField.size() != size_t(map.size) * map.size) {
+        if (error) *error = "the grass density map does not match the tile size";
+        return false;
+    }
+
+    // One tuft mesh for the whole tile. Its uv.y is the height along the blade, which is what the wind curve needs.
+    const GrassMesh mesh = buildGrassMesh(settings);
+    std::vector<rhi::Vertex> verts(mesh.positions.size());   // value-initialised
+    for (size_t k = 0; k < verts.size(); ++k) {
+        verts[k].pos = mesh.positions[k];
+        verts[k].normal = mesh.normals[k];
+        verts[k].uv = mesh.uvs[k];
+    }
+    GrassMeshGpu mg;
+    mg.vertices = device.createBuffer(rhi::BufferUsage::Vertex, verts.size() * sizeof(rhi::Vertex));
+    mg.vertices->upload(verts.data(), verts.size() * sizeof(rhi::Vertex));
+    mg.indices = device.createBuffer(rhi::BufferUsage::Index, mesh.indices.size() * sizeof(uint32_t));
+    mg.indices->upload(mesh.indices.data(), mesh.indices.size() * sizeof(uint32_t));
+    mg.indexCount = uint32_t(mesh.indices.size());
+
+    // Scatter, then one batch of rows per kGrassBatch blades in each chunk.
+    const auto groups = groupGrassByChunk(scatterGrass(map, layers, paint, settings, detailField), map.cellSize,
+                                          kTerrainChunkCells, n);
+    const float top = settings.height * std::max(settings.scaleMin, settings.scaleMax) * 1.15f +
+                      settings.windStrength + settings.flutter;
+    const float side = settings.width * 2.0f + top * 0.5f;
+
+    GrassRowBlock block{};
+    block.base = glm::vec4(settings.baseColour, settings.tipDarkening);
+    block.tip = glm::vec4(settings.tipColour, settings.translucency);
+    std::vector<GrassBatchGpu> batches;
+    for (size_t c = 0; c < groups.size(); ++c) {
+        const std::vector<GrassInstance>& list = groups[c];
+        for (size_t first = 0; first < list.size(); first += kGrassBatch) {
+            const uint32_t count = uint32_t(std::min<size_t>(kGrassBatch, list.size() - first));
+            packGrassRows(list.data() + first, count, block.row);
+            GrassBatchGpu b;
+            b.rows = device.createBuffer(rhi::BufferUsage::Uniform, sizeof(GrassRowBlock));
+            b.rows->upload(&block, sizeof(GrassRowBlock));
+            b.set = device.createDescriptorSet(rhi::SetType::ShaderMaterial);
+            b.set->setBuffer(15, b.rows.get());
+            b.count = count;
+            b.mesh = 0;
+            b.boundsMin = gpu->chunks[c].boundsMin - glm::vec3(side, 0.0f, side);
+            b.boundsMax = gpu->chunks[c].boundsMax + glm::vec3(side, top, side);
+            batches.push_back(std::move(b));
+        }
+    }
+    gpu->grass.meshes.push_back(std::move(mg));
+    gpu->grass.batches = std::move(batches);
     return true;
 }
 

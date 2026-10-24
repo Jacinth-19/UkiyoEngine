@@ -2,23 +2,1456 @@ name: build
 
 on:
   push:
-    branches: [ "arena/7971959b-ukiyoengine", "main" ]
+    branches: [ "arena/7971959b-ukiyoengine", "arena/da507d27-ukiyoengine", "main" ]
   pull_request:
     branches: [ "main" ]
   workflow_dispatch:
+
+permissions:
+  contents: write
+
+# ccache settings shared by every job. The cache is the difference between a four-minute build and a one-minute one:
+# only the files a change actually touches are recompiled, and every other translation unit comes back as an object
+# file from the previous run.
+env:
+  CCACHE_COMPRESS: "1"
+  CCACHE_COMPRESSLEVEL: "6"
+  CCACHE_MAXSIZE: "2G"
 
 jobs:
   build:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      # ccache, before anything configures the build: CMAKE_*_COMPILER_LAUNCHER below makes every compile go through
+      # it. The key is per-platform, not per-commit, so each run restores the newest cache from the branch and only
+      # recompiles what changed. Qt comes from apt and is not cached — it is unchanged between runs, so apt's own
+      # download cache inside the runner image handles it.
+      - name: Set up ccache
+        uses: hendrikmuhs/ccache-action@v1.2
+        with:
+          key: linux-release
+          max-size: 2G
       - name: Install dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y cmake g++ libglfw3-dev libvulkan-dev glslang-tools libglm-dev nlohmann-json3-dev glslang-dev python3 python3-pip qt6-base-dev qt6-base-dev-tools libqt6opengl6-dev qt6-tools-dev qt6-tools-dev-tools
+          # GLM, nlohmann_json and GLFW are vendored under third_party/ (third_party/VENDOR.md), so their -dev packages
+          # are not installed. GLFW is built from source and its X11 backend needs these headers; the Wayland backend
+          # is off (see the GLFW_BUILD_WAYLAND block in CMakeLists.txt), which is why no wayland-scanner is needed.
+          sudo apt-get install -y cmake g++ ccache libvulkan-dev glslang-tools glslang-dev python3 python3-pip \
+            qt6-base-dev qt6-base-dev-tools libqt6opengl6-dev qt6-tools-dev qt6-tools-dev-tools \
+            libx11-dev libxrandr-dev libxinerama-dev libxcursor-dev libxi-dev libxext-dev
       - name: Configure CMake
-        run: cmake -B build -DCMAKE_BUILD_TYPE=Release
+        run: |
+          cmake -B build -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_C_COMPILER_LAUNCHER=ccache -DCMAKE_CXX_COMPILER_LAUNCHER=ccache
       - name: Build Everything
-        run: cmake --build build --parallel 4
+        run: |
+          set -o pipefail
+          cmake --build build --parallel 4 2>&1 | tee build.log
+      # A compiler error in a 4-minute log is hard to find, so the failing lines are lifted into the run's
+      # annotations, where the summary shows them without downloading anything.
+      # The hit rate is the number that says whether the cache is doing its job; it is printed on every run, pass or
+      # fail, so a regression in the cache is visible without downloading anything.
+      - name: ccache stats
+        if: always()
+        run: ccache --show-stats --verbose 2>/dev/null || ccache --show-stats
+
+      - name: Annotate compile errors
+        if: failure()
+        run: |
+          # `undefined reference` is a link failure's actual sentence; without it a missing translation unit shows up as
+          # a bare "collect2: error: ld returned 1 exit status" and says nothing.
+          grep -E "error:|undefined reference|Error [0-9]" build.log | head -40 | while IFS= read -r line; do
+            echo "::error::${line//'%'/'%25'}"
+          done
       - name: Run Systems Test
-        run: ./build/systems_test
+        run: |
+          set -o pipefail
+          ./build/systems_test 2>&1 | tee /tmp/ukiyo-test-systems_test.log
+      - name: Run Network Test
+        run: |
+          set -o pipefail
+          ./build/network_test 2>&1 | tee /tmp/ukiyo-test-network_test.log
+      - name: Run Project Template Test
+        run: |
+          set -o pipefail
+          ./build/project_test 2>&1 | tee /tmp/ukiyo-test-project_test.log
+      - name: Run Virtual Geometry Test
+        run: |
+          set -o pipefail
+          ./build/vgeom_test 2>&1 | tee /tmp/ukiyo-test-vgeom_test.log
+      # The compute cut's semantics, mirrored on the CPU: no GPU needed, so every OS proves the kernel agrees
+      # with selectVGeom before the GPU jobs exercise the shader itself.
+      - name: Run Virtual Geometry Cut Test
+        run: |
+          set -o pipefail
+          ./build/vgcut_test 2>&1 | tee /tmp/ukiyo-test-vgcut_test.log
+      - name: Run Motion Matching Test
+        run: |
+          set -o pipefail
+          ./build/motion_test 2>&1 | tee /tmp/ukiyo-test-motion_test.log
+      # The estimator's maths, mirrored on the CPU: the shader cannot run here, but its algebra can be checked.
+      - name: Run Real-Time GI Test
+        run: |
+          set -o pipefail
+          ./build/gi_test 2>&1 | tee /tmp/ukiyo-test-gi_test.log
+      # Trails: the ribbon geometry Godot 4.8 shipped as Trail3D, built by the engine's own CPU code (docs/TRAIL.md).
+      # The strip, its width curve, its gradient, the tiling modes and the trimming rules are measured, not asserted.
+      - name: Run Trail Test
+        run: |
+          set -o pipefail
+          ./build/trail_test 2>&1 | tee /tmp/ukiyo-test-trail_test.log
+      # Multi-bounce AO (GH-115426): the curve effects.frag evaluates, checked for its endpoints, monotonicity and the
+      # clamp that keeps a post-processed frame from gaining light (docs/AO.md).
+      - name: Run Multi-Bounce AO Test
+        run: |
+          set -o pipefail
+          ./build/ao_test 2>&1 | tee /tmp/ukiyo-test-ao_test.log
+      # Screen-space contact shadows (GH-118045): the depth-buffer march effects.frag runs, on a scene that can be
+      # solved on paper (docs/CONTACT_SHADOWS.md).
+      - name: Run Contact Shadow Test
+        run: |-
+          set -o pipefail
+          ./build/contact_shadow_test 2>&1 | tee /tmp/ukiyo-test-contact_shadow_test.log
+      # Percentage-closer soft shadows: the blocker search and the penumbra it sizes, against the analytic disc-light
+      # visibility of a straight edge, on one gap and across three (docs/PCSS.md).
+      - name: Run PCSS Test
+        run: |-
+          set -o pipefail
+          ./build/pcss_test 2>&1 | tee /tmp/ukiyo-test-pcss_test.log
+      # Multi-channel signed distance fields (Flax 1.12's MSDF fonts): the field against the exact outline, the median
+      # against the corners it is there to keep, and the atlas page (docs/MSDF.md).
+      - name: Run MSDF Test
+        run: |-
+          set -o pipefail
+          ./build/msdf_test 2>&1 | tee /tmp/ukiyo-test-msdf_test.log
+      # Alpha-coverage-preserving mipmaps (GH-104289): the chain builder the model loader runs, on cut-outs whose
+      # coverage can be measured exactly (docs/ALPHA_MIPS.md).
+      - name: Run Alpha Mipmap Test
+        run: |-
+          set -o pipefail
+          ./build/alpha_mips_test 2>&1 | tee /tmp/ukiyo-test-alpha_mips_test.log
+      # Fuzzy asset search and glob matching: the ranking that makes three keystrokes enough in the Project browser
+      # (docs/SEARCH.md). Pure C++, no window.
+      - name: Run Search Test
+        run: |
+          set -o pipefail
+          ./build/search_test 2>&1 | tee /tmp/ukiyo-test-search_test.log
+      # The Project browser's thumbnail ladder (GH-119103): the size the slider, Ctrl + wheel and the grid share, held
+      # steady without a window (docs/FILESYSTEM.md).
+      - name: Run Browser Zoom Test
+        run: |
+          set -o pipefail
+          ./build/browser_zoom_test 2>&1 | tee /tmp/ukiyo-test-browser_zoom_test.log
+      # The scripting system: the sandbox, require(), error reporting, the per-entity Lua runtime, and the files a
+      # project needs for an external editor. The API stub is compiled as Lua by the test, so a stub that does not
+      # parse fails here (docs/LUA.md).
+      - name: Run Scripting Test
+        run: |
+          set -o pipefail
+          ./build/script_test 2>&1 | tee /tmp/ukiyo-test-script_test.log
+      # The figure in docs/TRAIL.md, from the same ribbon triangles the renderer uploads. Writing it also checks that
+      # the tool still runs after a change to Trail, not merely that it compiles.
+      - name: Render the trail figure
+        run: mkdir -p renders && ./build/trail_preview renders/trail-preview.png 1600 900
+      # The AO figure, and the number the docs quote: single-bounce against multi-bounce, both against a tracer.
+      - name: Render the multi-bounce AO figure
+        run: mkdir -p renders && ./build/ao_preview renders/ao-preview.png 1600 900 96
+      # The contact-shadow figure, and the numbers its caption quotes.
+      - name: Render the contact shadow figure
+        run: mkdir -p renders && ./build/contact_shadow_preview renders/contact-shadows.png 1600 1000
+      # The PCSS figure, and the numbers its caption quotes: the fixed filter swept and handed its best radius, PCSS
+      # measured against 64 rays over the sun's disc.
+      - name: Render the PCSS figure
+        run: mkdir -p renders && ./build/pcss_preview renders/pcss.png 1600 1000
+      # The wireframe figure: one procedural scene drawn shaded and drawn as the edges of the same 428 triangles.
+      - name: Render the wireframe figure
+        run: mkdir -p renders && ./build/wireframe_preview --out renders/wireframe.png
+      # The loading figure: what each frame pays while a scene loads, with and without a budget.
+      - name: Render the loading figure
+        run: mkdir -p renders && ./build/async_load_preview --out renders/async-loading.png
+      # The MSDF figure: a coverage page and a field page drawn at sizes neither was made for, with the measurements.
+      - name: Render the MSDF figure
+        run: mkdir -p renders && ./build/msdf_preview --out renders/msdf.png --font editor/res/fonts/IBMPlexSansJP-Regular.ttf
+      # The alpha-coverage figure, and the per-level coverage its caption quotes.
+      - name: Render the alpha mipmap figure
+        run: mkdir -p renders && ./build/alpha_mips_preview renders/alpha-mips.png 1600 1000
+      # The browser figure: the zoom ladder drawn at its real sizes, and glob queries run against a real asset list, so
+      # the counts in docs/FILESYSTEM.md are the ones the engine's matcher returns.
+      - name: Render the browser figure
+        run: mkdir -p renders && ./build/browser_qol_preview renders/browser-qol.png 1600 1000
+      # The player's runtime, without a device: the build manifest, the scene reader, transforms and the hierarchy,
+      # scene lights, the save format, HUD text and layout, and the whole boot/tick/script-switch path (docs/PLAYER.md).
+      - name: Run Player Tests
+        run: |
+          set -o pipefail
+          for t in transform_test lights_test environment_test texture_compress_test save_test manifest_test scene_runtime_test hud_test character_test player_test android_stage_test; do
+            echo "::group::$t"
+            ./build/$t 2>&1 | tee /tmp/ukiyo-test-$t.log
+            echo "::endgroup::"
+          done
+      # The Inspector's search, drawn by the program itself: the real filter box, the real row widgets and the real
+      # narrowing. Typed query "shadow" over a page of four sections.
+      - name: Capture the Inspector search
+        run: |-
+          mkdir -p renders
+          QT_QPA_PLATFORM=offscreen ./build/ukiyo_editor --screenshot-inspector shadow --out renders/inspector-search.png
+      # The player binary itself, booting the fixture project with no window, no GPU and no sound device: the same
+      # start, tick and HUD path main.cpp takes. This is the check that the Build page's output actually runs.
+      - name: Run Player Self-Test
+        run: ./build/ukiyo_player --selftest --build Build/build.json --project tests/fixtures/player
+      # The figure in docs/PLAYER.md, from the shipping layout. It renders the HUD with the same vertex list the GPU gets.
+      - name: Render the player HUD figure
+        run: mkdir -p renders && ./build/hud_preview --out renders/player-hud.png --background docs/terrain-hero.png
+      # The figure in docs/CHARACTER.md: the controller walking a real course, drawn from the states it reports. This is
+      # also a runtime check - the tool drives a real CharacterVirtual for about four seconds and fails on a crash.
+      - name: Render the character figure
+        run: mkdir -p renders && ./build/character_preview --out renders/character.png --font editor/res/fonts/IBMPlexSansJP-Regular.ttf
+      # The figure in docs/LIGHTS.md: three authored lights, ranked by the shipping selection and shaded with the
+      # fragment shader's ramp, windowed falloff and cone. It also exercises the light packing in a real run.
+      - name: Render the lights figure
+        run: mkdir -p renders && ./build/lights_preview --out renders/lights.png --font editor/res/fonts/IBMPlexSansJP-Regular.ttf
+      # The Inspector's search rule (Flax 1.13's Properties panel search): one query over a page of rows, which rows stay
+      # and which sections survive. Pure C++ over strings, so it runs anywhere.
+      - name: Run Property Search Test
+        run: |-
+          set -o pipefail
+          ./build/property_search_test 2>&1 | tee /tmp/ukiyo-test-property_search_test.log
+      # Undo as deltas: the patch that turns one document into another, applied and inverted. The editor's undo stack
+      # stores these instead of whole-scene copies.
+      - name: Run JSON Patch Test
+        run: |-
+          set -o pipefail
+          ./build/json_patch_test 2>&1 | tee /tmp/ukiyo-test-json_patch_test.log
+      # The asset pipeline: sidecars, GUIDs, the index, broken references and a move repaired by GUID.
+      - name: Run Asset Database Test
+        run: |-
+          set -o pipefail
+          ./build/asset_db_test 2>&1 | tee /tmp/ukiyo-test-asset_db_test.log
+      # Git status parsing, locale files and the packer's argument list: the editor's other tools.
+      - name: Run Editor Tools Test
+        run: |-
+          set -o pipefail
+          ./build/editor_tools_test 2>&1 | tee /tmp/ukiyo-test-editor_tools_test.log
+      # The Scene view's camera: perspective, orthographic, zoom, pan and flying.
+      - name: Run Camera Test
+        run: |-
+          set -o pipefail
+          ./build/camera_test 2>&1 | tee /tmp/ukiyo-test-camera_test.log
+      # The gizmos' geometry: the view's ray, axis and plane drags, the visibility rule, snapping, a whole selection at
+      # once, and the view gizmo's six handles. No window and no GPU, so a wrong angle fails here rather than in a
+      # screenshot.
+      - name: Run Gizmo Math Test
+        run: |-
+          set -o pipefail
+          ./build/gizmo_math_test 2>&1 | tee /tmp/ukiyo-test-gizmo_math_test.log
+      # The plugin ABI against real shared libraries: the exported symbols, the table the plugin calls back through,
+      # and a plugin that fails being reported and taken back. CMake bakes the two libraries' paths into the test.
+      - name: Run Plugin Test
+        run: |-
+          set -o pipefail
+          ./build/plugin_test 2>&1 | tee /tmp/ukiyo-test-plugin_test.log
+      # The launcher icon: the committed PNGs have to be exactly what tools/android_icon.cpp writes, five densities and
+      # the 512 px image, or someone edited a file the tool will next overwrite.
+      - name: Check the launcher icon
+        run: |-
+          set -o pipefail
+          rm -rf /tmp/icons-check
+          ./build/android_icon --out /tmp/icons-check --doc /tmp/icon-check.png
+          diff -r --no-dereference android/res /tmp/icons-check
+          cmp docs/icon.png /tmp/icon-check.png
+          echo "the committed icons are what the tool draws"
+      # Budgeted loading (Flax 1.11's async scene loading): the scheduler that decides how much of a scene one frame pays
+      # for, driven by a fake clock so a budget is a number the test can hold it to.
+      - name: Run Async Load Test
+        run: |-
+          set -o pipefail
+          ./build/async_load_test 2>&1 | tee /tmp/ukiyo-test-async_load_test.log
+      # The first game (docs/GAME.md): Lantern Run's project directory, its scene, the script it hangs on "Night", and
+      # the four GLB files tools/lantern_assets.cpp generated. No device, so a broken path or a stale asset fails here.
+      - name: Check the first game
+        run: |-
+          set -o pipefail
+          ./build/game_data_test games/lantern-run 2>&1 | tee /tmp/ukiyo-test-game_data_test.log
+          ./build/game_test games/lantern-run 2>&1 | tee /tmp/ukiyo-test-game_test.log
+          # The committed GLBs have to be exactly what the generator writes, or the game and its source have drifted.
+          ./build/lantern_assets --check
+      # Afterglow (docs/GAME.md): the shipped game's contract — manifest, scene, the ten relights, locales and audio.
+      - name: Check Afterglow
+        run: |-
+          set -o pipefail
+          ./build/afterglow_test games/afterglow 2>&1 | tee /tmp/ukiyo-test-afterglow_test.log
+          # The third-party models and the three wavs are byte-pinned (fetcher and audio tool), so drift fails here
+          # with a file name — hashes only, no network and no DSP install on the runner.
+          python3 tools/fetch_afterglow_assets.py --check
+          python3 tools/afterglow_audio.py --check
+      # The packer (docs/PACKAGING.md): what a package contains, that it verifies, that a corrupted file is caught and
+      # that a reference outside the repository is refused.
+      - name: Run Packer Test
+        run: |-
+          set -o pipefail
+          ./build/pack_test 2>&1 | tee /tmp/ukiyo-test-pack_test.log
+      # The Linux build of the first game, as a player would download it: the binary, the compiled shaders, the project
+      # and everything it references, plus a zip. The packaged game is run in the gpu job, where there is a device.
+      - name: Package the first game for Linux
+        run: |-
+          ./build/ukiyo_pack --project games/lantern-run --player build/ukiyo_player --platform linux \
+            --shaders build/shaders --out dist/lantern-run-linux --zip dist/lantern-run-linux.zip
+      - name: Upload the Linux package
+        uses: actions/upload-artifact@v4
+        with:
+          name: lantern-run-linux
+          path: dist/lantern-run-linux.zip
+      # The shipped game, packaged the same way: its own folder, its own launcher, its own zip.
+      - name: Package Afterglow for Linux
+        run: |-
+          ./build/ukiyo_pack --project games/afterglow --player build/ukiyo_player --platform linux \
+            --shaders build/shaders --out dist/afterglow-linux --zip dist/afterglow-linux.zip
+      - name: Upload Afterglow for Linux
+        uses: actions/upload-artifact@v4
+        with:
+          name: afterglow-linux
+          path: dist/afterglow-linux.zip
+      # The input runtime, its asset format and its actions, driven from synthetic devices: no window, no GPU, no GLFW.
+      # It checks press/hold/tap/multitap, 1D and 2D composites, processors, control schemes, rebinding, and that the
+      # .inputactions file the engine writes loads back byte-for-byte. docs/INPUT.md.
+      - name: Run Input System Test
+        run: |
+          set -o pipefail
+          ./build/input_test 2>&1 | tee /tmp/ukiyo-test-input_test.log
+      # NOTICE.md claims the ground textures are complete and correct. This checks that claim: every layer has
+      # albedo/normal/AO at the atlas size, the three layers are genuinely different images, and the normal maps are
+      # tangent-space rather than mis-exported. It is cheap and it is the difference between a documented promise and
+      # a tested one.
+      - name: Verify terrain texture coverage
+        run: |
+          python3 -m pip install --quiet --break-system-packages pillow
+          python3 tools/verify_terrain_textures.py --repo .
+      # Bindings are the one class of shader bug a compiler cannot see and CI has no GPU to catch. This resolves the
+      # includes and fails on two samplers at one (set, binding), or two bindings on one GL texture unit.
+      - name: Audit shader descriptor bindings
+        run: python3 tools/shader_bindings.py shaders
+      # The real-time GI estimator against the tracer, in the same units and on the same scene. Slower than the other
+      # steps on purpose: the reference is 32 samples a pixel. It writes renders/gi-*.png and fails the build if the
+      # RMSE is past its budget — the measured value is ~0.038, and 0.05 is the point past which the model, not the
+      # sampling, has changed.
+      - name: Real-time GI estimator
+        run: |
+          mkdir -p renders
+          UKIYO_RT_MAX_RMSE=0.05 ./build/pathtrace_preview realtime renders/gi-realtime.png . 480 270 8 4 32
+          # The same pass against a converged truth, which also prints how much of the missing light it reproduces.
+          UKIYO_RT_TRUTH_SPP=256 ./build/pathtrace_preview realtime renders/gi-truth-check.png . 160 90 8 4 64
+
+      # The controller, driven through a route: writes docs/motion-demo.png and fails if the run is not sane.
+      - name: Run Motion Demo
+        run: mkdir -p renders && ./build/motion_demo renders/motion-demo.png
+
+      - name: Run Hub Self-Test
+        run: QT_QPA_PLATFORM=offscreen ./build/ukiyo_hub --selftest
+      # The launcher's pages, grabbed offscreen: downloadable as the screenshots artifact and used by the docs.
+      - name: Capture hub screenshots
+        run: QT_QPA_PLATFORM=offscreen ./build/ukiyo_hub --screenshots renders
+      # The built-in Lua editor, drawn by the editor itself: the figure in docs/LUA.md. It runs before the engine
+      # starts, so the offscreen platform is enough and no device is needed. The picture is checked for the syntax
+      # colours, because a blank dialog would still save a PNG.
+      - name: Capture the Lua editor
+        run: |
+          mkdir -p renders
+          QT_QPA_PLATFORM=offscreen ./build/ukiyo_editor --screenshot-script tools/script_editor_demo.lua \
+            --out renders/script-editor.png
+          python3 - <<'PY'
+          import sys
+          sys.path.insert(0, "tools")
+          from frame_check import read_png
+          width, height, channels, px = read_png("renders/script-editor.png")
+          buckets = {(px[i] >> 3, px[i + 1] >> 3, px[i + 2] >> 3) for i in range(0, len(px), channels)}
+          # The keyword colour from lua_editor.cpp: 255, 121, 198.
+          keyword = sum(1 for i in range(0, len(px), channels)
+                        if px[i] > 200 and px[i + 1] < 160 and px[i + 2] > 150)
+          print(f"script editor: {width}x{height}, {len(buckets)} colours, {keyword} keyword pixels")
+          if len(buckets) < 64 or keyword < 200:
+              print("FAIL: the capture has no highlighted code", file=sys.stderr)
+              sys.exit(1)
+          PY
+          # The Scripting Tools window: the recommendation list, drawn from the engine's own table.
+          QT_QPA_PLATFORM=offscreen ./build/ukiyo_editor --screenshot-tools --out renders/scripting-tools.png
+          python3 - <<'PY'
+          import sys
+          sys.path.insert(0, "tools")
+          from frame_check import read_png
+          width, height, channels, px = read_png("renders/scripting-tools.png")
+          buckets = {(px[i] >> 3, px[i + 1] >> 3, px[i + 2] >> 3) for i in range(0, len(px), channels)}
+          print(f"scripting tools: {width}x{height}, {len(buckets)} colours")
+          if len(buckets) < 40:
+              print("FAIL: the tools window is nearly uniform", file=sys.stderr)
+              sys.exit(1)
+          PY
+      # The splash, offscreen and with real content: beat 1 (the mark) and beat 2 (the artwork, lockup, status block).
+      # This is the program's own output — the identity is drawn in C++ and its assets come from tools/brand.py.
+      - name: Capture splash screenshots
+        run: QT_QPA_PLATFORM=offscreen ./build/ukiyo_hub --splash-shots renders
+      # The artifact host is not reachable from every environment, so the pictures a reviewer needs also land in the
+      # repository: the hub's three pages are committed under docs/hub/ from CI, where they are actually rendered.
+      # [skip ci] stops that commit from starting another build.
+      - name: Publish hub screenshots
+        if: github.event_name == 'push'
+        run: |
+          mkdir -p docs/hub
+          cp renders/hub_projects.png renders/hub_templates.png renders/hub_about.png docs/hub/
+          # The captures get their own names: docs/splash.png is the artwork itself, which docs/index.html uses as a
+          # background, so the splash *screen* is a separate file.
+          cp renders/splash.png docs/splash-capture.png
+          cp renders/splash_mark.png docs/splash-mark.png
+          cp renders/script-editor.png docs/script-editor.png
+          cp renders/scripting-tools.png docs/scripting-tools.png
+          cp renders/inspector-search.png docs/inspector-search.png
+          cp renders/wireframe.png docs/wireframe.png
+          cp renders/async-loading.png docs/async-loading.png
+          git config user.name "ukiyo-ci"
+          git config user.email "ci@ukiyo.invalid"
+          git add docs/hub docs/splash-capture.png docs/splash-mark.png docs/script-editor.png docs/scripting-tools.png \
+            docs/inspector-search.png docs/wireframe.png docs/async-loading.png
+          if git diff --cached --quiet; then echo "no change"; exit 0; fi
+          # actions/checkout leaves a detached HEAD, so there is no branch to push to: name the ref explicitly, and
+          # rebase first in case another push landed while this job was building. The fetch names the remote-tracking
+          # ref explicitly — a bare `git fetch origin <branch>` only writes FETCH_HEAD in a shallow checkout, and the
+          # rebase then has no upstream to use.
+          branch="${GITHUB_REF_NAME}"
+          git commit -m "Hub screenshots from CI [skip ci]"
+          for attempt in 1 2 3; do
+            git fetch origin "+refs/heads/$branch:refs/remotes/origin/$branch"
+            git rebase "origin/$branch" || { git rebase --abort; exit 1; }
+            if git push origin "HEAD:$branch"; then exit 0; fi
+            sleep 5
+          done
+          echo "could not publish the screenshots; the artifact still has them" >&2
+          exit 1
+
+      # A failing test's own output, as annotations. The job log is served from a signed URL that is not reachable from
+      # every environment, and the lines that matter (FAIL, and the summary) are never the last ones.
+      - name: Annotate test failures
+        if: failure()
+        run: |
+          shopt -s nullglob
+          for f in /tmp/ukiyo-test-*.log; do
+            echo "::group::$f"
+            grep -E "FAIL|failed|error" "$f" | head -20 | while IFS= read -r line; do
+              echo "::error::${line//'%'/'%25'}"
+            done
+            echo "::endgroup::"
+          done
+
+      # The self-test draws the sample terrain to renders/terrain_*.png. Keep them, so a graphics change can be
+      # looked at without a local GL context.
+      - name: Upload terrain renders
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: terrain-renders
+          path: |
+            renders/terrain_*.png
+            renders/hub_*.png
+            renders/splash*.png
+            renders/motion-demo.png
+            renders/gi-*.png
+          if-no-files-found: warn
+
+  # --------------------------------------------------------------------------------------------- Windows (MSVC)
+  # The same engine, built by a different compiler, against a different Vulkan loader, with a different Qt. The point
+  # is not a second opinion on Linux: it is the platform most of the team's players run, and the input system in
+  # particular has to prove it does not depend on POSIX or on GLFW's X11 backend.
+  #
+  # Where things come from:
+  #   * MSVC and the Windows SDK: installed on windows-latest; the Visual Studio generator finds them, so no vcvars.
+  #   * Vulkan SDK: preinstalled on the image, and it brings glslangValidator, the glslang CMake package and vulkan-1.lib.
+  #   * Qt 6: aqtinstall via install-qt-action, cached between runs, because a Qt download is the slowest step here.
+  #   * Everything else (GLM, GLFW, Jolt, Lua, miniaudio, Recast, ...) is vendored under third_party/ and needs no
+  #     package manager at all — which is exactly why the checkout and the build are the only network-dependent steps.
+  #
+  # ccache is deliberately not used here: its MSVC support is young (it has to stay away from /Zi debug info and PDBs),
+  # and a cache broken by a runner image update is worse than no cache. Qt and the Vulkan SDK are cached instead, and
+  # the Ninja build compiles in parallel.
+  # The device-facing half of the engine, on a software Vulkan driver (lavapipe) and a virtual X display. The editor,
+  # the player's windowed path and the GPU tests need a device that the plain Linux job has no way to give them, which is
+  # why they went unrun for so long. mesa's lavapipe is a complete Vulkan 1.3 implementation in software: slow, but it
+  # compiles every pipeline and executes every draw, which is exactly what a shader or a pipeline bug needs.
+  gpu:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Set up ccache
+        uses: hendrikmuhs/ccache-action@v1.2
+        with:
+          key: linux-gpu
+          max-size: 2G
+      - name: Install a software Vulkan driver and a virtual display
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y cmake g++ ccache libvulkan-dev vulkan-tools glslang-tools glslang-dev python3 \
+            qt6-base-dev qt6-base-dev-tools libqt6opengl6-dev qt6-tools-dev qt6-tools-dev-tools xvfb \
+            mesa-vulkan-drivers libgl1-mesa-dri \
+            libx11-dev libxrandr-dev libxinerama-dev libxcursor-dev libxi-dev libxext-dev
+          # lavapipe is the CPU Vulkan implementation. Its ICD manifest is what tells the loader to use it.
+          ls /usr/share/vulkan/icd.d/
+      - name: Configure CMake
+        run: |
+          cmake -B build -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_C_COMPILER_LAUNCHER=ccache -DCMAKE_CXX_COMPILER_LAUNCHER=ccache
+      - name: Build
+        run: |
+          set -o pipefail
+          cmake --build build --parallel 4 2>&1 | tee build.log
+      - name: Annotate compile errors
+        if: failure()
+        run: |
+          grep -E "error:|Error [0-9]" build.log | head -40 | while IFS= read -r line; do
+            echo "::error::${line//'%'/'%25'}"
+          done
+      # Every one of these creates a headless Vulkan device, compiles its pipelines and runs a real draw. A shader that
+      # does not compile, a descriptor set that does not match its layout, or a pipeline state that the driver rejects
+      # fails here and nowhere else.
+      - name: Run the device tests
+        run: |
+          set -o pipefail
+          # mesa names the manifest lvp_icd.<arch>.json; take whatever this image has rather than hardcoding the name.
+          icd="$(ls /usr/share/vulkan/icd.d/*lvp* 2>/dev/null | head -1)"
+          if [ -z "$icd" ]; then echo "::error::lavapipe is not installed"; exit 1; fi
+          export VK_ICD_FILENAMES="$icd"
+          echo "ICD: $VK_ICD_FILENAMES"
+          vulkaninfo --summary || true
+          failed=""
+          # endfield_scene_test and endfield_gpu_test need assets/personal (the author's own character assets), which
+          # .gitignore keeps out of the repository; they run where those assets exist and are skipped here rather than
+          # counted as passing.
+          for t in endfield_shader_test lod_gpu_test particles_gpu_test wireframe_test compute_test; do
+            echo "::group::$t"
+            if xvfb-run -a ./build/$t 2>&1 | tee /tmp/ukiyo-gpu-$t.log; then
+              echo "::endgroup::"
+            else
+              echo "::error::$t failed"
+              tail -25 /tmp/ukiyo-gpu-$t.log | while IFS= read -r line; do echo "::error::  $line"; done
+              echo "::endgroup::"
+              failed="$failed $t"
+            fi
+          done
+          if [ -n "$failed" ]; then echo "::error::device tests failed:$failed"; exit 1; fi
+      # The editor's own self-test, on the virtual display the engine session expects. It covers the window, the panels,
+      # the scene format round trips, play mode and the new component forms, all on a real (software) device.
+      - name: Run the editor self-test
+        env:
+          QT_QPA_PLATFORM: xcb
+        run: |
+          mkdir -p selftest
+          # tee writes into the workspace, not /tmp, so the log is still there for the upload step below when the run
+          # fails — including when the editor dies before it prints anything.
+          if xvfb-run -a -s "-screen 0 1600x1000x24" ./build/ukiyo_editor --selftest --no-splash 2>&1 |
+             tee selftest/editor-selftest.log; then
+            exit 0
+          fi
+          # A job's log cannot be read back through the API, and the annotation carries forty lines at most, so the last
+          # forty lines go into one annotation and the whole log goes up as an artifact.
+          tail -40 selftest/editor-selftest.log | sed 's/%/%25/g' |
+            awk 'NR>1{printf "%s", "%0A"} {printf "%s", $0}' > selftest/tail.txt
+          echo "::error::editor self-test:$(cat selftest/tail.txt)"
+          exit 1
+      - name: Upload the editor self-test log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: editor-selftest-log
+          path: selftest/editor-selftest.log
+          if-no-files-found: warn
+      # The player, end to end: a real window on the virtual display, a real device, a real model, the HUD over it. The
+      # capture is then checked for content, because a black or empty frame is the failure mode a green exit code hides.
+      - name: Run the player and capture a frame
+        env:
+          QT_QPA_PLATFORM: xcb
+        run: |
+          export VK_ICD_FILENAMES="$(ls /usr/share/vulkan/icd.d/*lvp* | head -1)"
+          mkdir -p renders
+          xvfb-run -a -s "-screen 0 1280x720x24" ./build/ukiyo_player --backend vk --headless \
+            --build Build/render.json --project tests/fixtures/player --shot renders/player-frame.png --seconds 1
+          ls -la renders/player-frame.png
+          python3 tools/frame_check.py renders/player-frame.png
+      # The same boot with a 2 ms frame budget for loading: the scene arrives over several frames instead of one stall,
+      # and the player says so when it is done. A budget that is never spent would never print that line, which is what
+      # the grep is for. This lives in the device job because the player needs a device to reach its frame loop at all;
+      # the plain Linux job has no ICD and no display.
+      - name: Run the player with a load budget
+        env:
+          QT_QPA_PLATFORM: xcb
+        run: |-
+          set -o pipefail
+          export VK_ICD_FILENAMES="$(ls /usr/share/vulkan/icd.d/*lvp* | head -1)"
+          xvfb-run -a -s "-screen 0 1280x720x24" ./build/ukiyo_player --backend vk --headless \
+            --build Build/build.json --project tests/fixtures/player --seconds 4 --load-budget 2 \
+            2>&1 | tee /tmp/ukiyo-player-budget.log
+          grep -q "player: loaded" /tmp/ukiyo-player-budget.log
+      # The first game, packaged and then run the way a player runs it: the package's launcher, its own project path
+      # and its own copy of the compiled shaders, on a real device. The check is not "it exited zero" — it is that the
+      # game's script is running, that nothing warned, and that the frame has a scene in it.
+      - name: Package and run the first game
+        env:
+          QT_QPA_PLATFORM: xcb
+        run: |-
+          set -o pipefail
+          export VK_ICD_FILENAMES="$(ls /usr/share/vulkan/icd.d/*lvp* | head -1)"
+          ./build/ukiyo_pack --project games/lantern-run --player build/ukiyo_player --platform linux \
+            --shaders build/shaders --out dist/lantern-run-linux --zip dist/lantern-run-linux.zip
+          mkdir -p renders
+          ls -la dist/lantern-run-linux/run.sh dist/lantern-run-linux/ukiyo_player
+          # `sh` rather than `./`: the package is a folder of files, and a zip on its way to a player does not carry the
+          # executable bit. The launcher has to work either way, so the check runs it the conservative way.
+          # The launcher changes into the package directory, so the capture path has to be absolute: a relative --shot
+          # would be written inside the package and the artifact upload would find nothing.
+          xvfb-run -a -s "-screen 0 1280x720x24" sh dist/lantern-run-linux/run.sh --backend vk --headless \
+            --seconds 3 --shot "$GITHUB_WORKSPACE/renders/lantern-run.png" 2>&1 | tee /tmp/ukiyo-lantern-run.log
+          grep -q "player: 1 script running" /tmp/ukiyo-lantern-run.log
+          if grep -q "player: warning:" /tmp/ukiyo-lantern-run.log; then
+            echo "::error::the game started with warnings:"
+            grep "player: warning:" /tmp/ukiyo-lantern-run.log
+            exit 1
+          fi
+          ls -la renders/lantern-run.png
+          python3 tools/frame_check.py renders/lantern-run.png
+      - name: Upload the game's first frame
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: lantern-run-frame
+          path: renders/lantern-run.png
+      # The shipped game, packaged and run the same way — the check is the same: the script is running, nothing
+      # warned, and the frame has a dusk village in it rather than a black rectangle.
+      - name: Package and run Afterglow
+        env:
+          QT_QPA_PLATFORM: xcb
+        run: |-
+          set -o pipefail
+          export VK_ICD_FILENAMES="$(ls /usr/share/vulkan/icd.d/*lvp* | head -1)"
+          ./build/ukiyo_pack --project games/afterglow --player build/ukiyo_player --platform linux \
+            --shaders build/shaders --out dist/afterglow-linux --zip dist/afterglow-linux.zip
+          xvfb-run -a -s "-screen 0 1280x720x24" sh dist/afterglow-linux/run.sh --backend vk --headless \
+            --seconds 4 --shot "$GITHUB_WORKSPACE/renders/afterglow.png" 2>&1 | tee /tmp/ukiyo-afterglow.log
+          grep -q "player: 1 script running" /tmp/ukiyo-afterglow.log
+          if grep -q "player: warning:" /tmp/ukiyo-afterglow.log; then
+            echo "::error::Afterglow started with warnings:"
+            grep "player: warning:" /tmp/ukiyo-afterglow.log
+            exit 1
+          fi
+          python3 tools/frame_check.py renders/afterglow.png
+      - name: Upload Afterglow's first frame
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: afterglow-frame
+          path: renders/afterglow.png
+      - name: Upload the player frame and the logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: gpu-logs
+          path: |
+            renders/player-frame.png
+            renders/gizmo_scene_view.png
+            /tmp/ukiyo-gpu-*.log
+            /tmp/ukiyo-editor-selftest.log
+
+  windows:
+    runs-on: windows-2022
+    defaults:
+      run:
+        shell: pwsh
+    steps:
+      - uses: actions/checkout@v4
+
+      # aqtinstall runs under the runner's default Python, which is newer than aqt supports for a while after each
+      # Python release; 3.12 is the version the Qt action is tested against. This costs a few seconds and removes a
+      # failure that has nothing to do with this repository.
+      - name: Python for aqt
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install Qt 6
+        uses: jurplel/install-qt-action@v4
+        with:
+          version: "6.7.2"
+          arch: win64_msvc2019_64
+          cache: true
+          cache-key-prefix: ukiyo-qt-windows
+
+      # The image ships the SDK, but not every image version does; if VULKAN_SDK is unset the job installs it rather
+      # than failing at find_package(Vulkan).
+      - name: Check the Vulkan SDK
+        run: |
+          if (-not $env:VULKAN_SDK) {
+            Write-Host "VULKAN_SDK is not set; installing the SDK"
+            choco install vulkan-sdk -y --no-progress
+            $sdk = Get-ChildItem "C:\VulkanSDK" -Directory | Sort-Object Name -Descending | Select-Object -First 1
+            if (-not $sdk) { throw "the Vulkan SDK installed but C:\VulkanSDK is empty" }
+            "VULKAN_SDK=$($sdk.FullName)" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+          }
+          Write-Host "VULKAN_SDK=$env:VULKAN_SDK"
+
+      # glslang: the SDK's own CMake package is broken (its SPIRV-Tools target points at a lib path that does not
+      # exist), so the library comes from vcpkg. The triplet is the dynamic-CRT one on purpose: Qt is built /MD and
+      # this build uses CMake's default /MD too, so a static-CRT glslang would fail the link with an
+      # RuntimeLibrary mismatch. Its DLLs go on PATH for every later step. The prefix is cached — on a hit this is a
+      # no-op, on a miss it builds glslang and its two SPIR-V dependencies, the slowest thing in the job.
+      - name: Cache vcpkg packages
+        uses: actions/cache@v4
+        with:
+          path: C:\vcpkg\installed
+          key: vcpkg-glslang-${{ runner.os }}-2
+
+      - name: Install glslang
+        run: |
+          & C:\vcpkg\vcpkg.exe install glslang:x64-windows --clean-after-build
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          "C:\vcpkg\installed\x64-windows\bin" | Out-File -FilePath $env:GITHUB_PATH -Append -Encoding utf8
+
+      # What the image actually provides, in the log rather than in an annotation: when a package is missing, this is
+      # the question being asked, and it is answered without a second run. (During bring-up these lines were
+      # ::warning:: annotations, which is how the SDK's layout was found; a green build does not need them to shout.)
+      - name: Where the Vulkan SDK is
+        run: |
+          Write-Host "VULKAN_SDK=$env:VULKAN_SDK"
+          Get-ChildItem C:\VulkanSDK -Directory -ErrorAction SilentlyContinue |
+            ForEach-Object { Write-Host "sdk dir: $($_.FullName)" }
+          Get-ChildItem C:\VulkanSDK -Recurse -Filter "glslang*config.cmake" -ErrorAction SilentlyContinue |
+            Select-Object -First 5 | ForEach-Object { Write-Host "glslang config: $($_.FullName)" }
+          $v = Get-Command glslangValidator -ErrorAction SilentlyContinue
+          if ($v) { Write-Host "glslangValidator: $($v.Source)" } else { Write-Host "glslangValidator: not on PATH" }
+
+      # Ninja rather than the Visual Studio generator: it is the configuration MSVC developers actually use, it compiles
+      # translation units in parallel by default, and it puts the binaries in one directory instead of per-config
+      # subdirectories. vcvars is what supplies cl.exe and the SDK to CMake.
+      - name: Set up MSVC
+        uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: x64
+
+      # Configure and build are teed to files so a failure can be lifted into annotations: the job log lives behind a
+      # signed URL on a host this repository's tooling cannot always reach, and an annotation is readable from the API.
+      - name: Configure CMake
+        run: |
+          # CMAKE_PREFIX_PATH keeps whatever Qt set and adds the vcpkg prefix, so both packages are found and neither
+          # search path is lost.
+          cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=Release `
+            -DCMAKE_PREFIX_PATH="$env:CMAKE_PREFIX_PATH;C:/vcpkg/installed/x64-windows" `
+            2>&1 | Tee-Object -FilePath configure.log
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      - name: Build Everything
+        run: |
+          $env:CL = "/MP"
+          cmake --build build 2>&1 | Tee-Object -FilePath build.log
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      - name: Annotate configure errors
+        if: failure()
+        run: |
+          if (Test-Path configure.log) {
+            # Context matters: "CMake Error at CMakeLists.txt:2 (project):" says nothing on its own, the line under it
+            # names the compiler or generator that was missing.
+            Get-Content configure.log | Select-String -Pattern "CMake Error" -Context 0,4 |
+              Select-Object -First 12 |
+              ForEach-Object {
+                Write-Host ("::error::" + ($_.Line -replace '%','%25'))
+                $_.Context.PostContext | ForEach-Object { Write-Host "::error::  $_" }
+              }
+          }
+
+      - name: Annotate compile errors
+        if: failure()
+        run: |
+          if (Test-Path build.log) {
+            Select-String -Path build.log -Pattern "error C[0-9]+|error LNK|fatal error" |
+              Select-Object -First 40 |
+              ForEach-Object { Write-Host ("::error::" + ($_.Line -replace '%','%25')) }
+          }
+
+      # The Windows build of the first game, packaged before the tests run: the package only needs the compiler to have
+      # succeeded, and a test that fails later must not cost the artifact. (script_test's upstream crash is the reason
+      # this is here rather than at the end of the job.)
+      - name: Package the first game for Windows
+        run: |-
+          ./build/ukiyo_pack.exe --project games/lantern-run --player build/ukiyo_player.exe --platform windows `
+            --shaders build/shaders --out dist/lantern-run-windows --zip dist/lantern-run-windows.zip
+          # The player is built /MD, so a machine without the VC++ runtime cannot start it -- and CI machines are
+          # exactly the machines that have it, which is why a green run never caught that. The redist DLLs ship
+          # beside the player, and the zip is rebuilt from the folder that now holds them.
+          if (-not $env:VCToolsRedistDir) { throw "VCToolsRedistDir is not set; the package would not run elsewhere" }
+          Copy-Item "$env:VCToolsRedistDir\x64\Microsoft.VC143.CRT\*.dll" dist/lantern-run-windows/
+          Compress-Archive -Path dist/lantern-run-windows/* -DestinationPath dist/lantern-run-windows.zip -Force
+          # The packaged game boots here, deviceless: the self-test loads the project, the scene and the script from
+          # inside the package, the way a player's machine would.
+          Push-Location dist/lantern-run-windows
+          ./ukiyo_player.exe --selftest --project games/lantern-run --build Build/build.json --shaders shaders
+          Pop-Location
+      - name: Upload the Windows package
+        uses: actions/upload-artifact@v4
+        with:
+          name: lantern-run-windows
+          path: dist/lantern-run-windows.zip
+      # The shipped game's Windows package, before the tests for the same reason.
+      - name: Package Afterglow for Windows
+        run: |-
+          ./build/ukiyo_pack.exe --project games/afterglow --player build/ukiyo_player.exe --platform windows `
+            --shaders build/shaders --out dist/afterglow-windows --zip dist/afterglow-windows.zip
+          if (-not $env:VCToolsRedistDir) { throw "VCToolsRedistDir is not set; the package would not run elsewhere" }
+          Copy-Item "$env:VCToolsRedistDir\x64\Microsoft.VC143.CRT\*.dll" dist/afterglow-windows/
+          Compress-Archive -Path dist/afterglow-windows/* -DestinationPath dist/afterglow-windows.zip -Force
+          Push-Location dist/afterglow-windows
+          ./ukiyo_player.exe --selftest --project games/afterglow --build Build/build.json --shaders shaders
+          Pop-Location
+      # A picture, not an exit code: the runner gets a CPU Vulkan driver (Mesa's lavapipe -- the Windows twin of
+      # the Linux job's software device), the packaged game opens its window against it, and frame_check reads the
+      # result so a black rectangle fails the run.
+      - name: Boot the packaged games on Windows and photograph them
+        run: |
+          # Every stage annotates its own failure: this step spans a download, an archive, a driver and two games,
+          # and "exit 1" alone says nothing about which one broke.
+          $mesa = "$env:RUNNER_TEMP\mesa"
+          New-Item -ItemType Directory -Force -Path $mesa | Out-Null
+          try {
+            Invoke-WebRequest -Uri "https://github.com/pal1000/mesa-dist-win/releases/download/26.2.4/mesa3d-26.2.4-release-msvc.7z" `
+              -OutFile "$mesa\mesa.7z"
+          } catch { Write-Host "::error::mesa download failed: $_"; exit 1 }
+          $sevenZip = "C:\Program Files\7-Zip\7z.exe"
+          if (Test-Path $sevenZip) {
+            & $sevenZip x "$mesa\mesa.7z" -o"$mesa\dist" -y | Out-Null
+          } else {
+            tar -xf "$mesa\mesa.7z" -C "$mesa\dist"
+          }
+          $files = @(Get-ChildItem "$mesa\dist" -Recurse -File -ErrorAction SilentlyContinue)
+          Write-Host "::error::mesa extracted: $($files.Count) files"
+          if ($files.Count -lt 5) { Write-Host "::error::the mesa archive did not extract"; exit 1 }
+          $icd = Get-ChildItem "$mesa\dist" -Recurse -Filter "lvp_icd*.json" -ErrorAction SilentlyContinue | Select-Object -First 1
+          if (-not $icd) {
+            $icd = Get-ChildItem "$mesa\dist" -Recurse -Filter "*.json" -ErrorAction SilentlyContinue | Select-Object -First 1
+          }
+          if (-not $icd) {
+            Get-ChildItem "$mesa\dist" -Recurse -File | Select-Object -First 30 | ForEach-Object { Write-Host "::error::  $($_.FullName)" }
+            Write-Host "::error::no ICD json in the mesa package"; exit 1
+          }
+          Write-Host "::error::icd: $($icd.FullName)"
+          Get-Content $icd.FullName | ForEach-Object { Write-Host "::error::icd-json: $_" }
+          $icdDir = Split-Path $icd.FullName
+          Get-ChildItem $icdDir | ForEach-Object { Write-Host "::error::icd-dir: $($_.Name) $($_.Length)" }
+          Write-Host "::error::lvp present: $(Test-Path "$icdDir\vulkan_lvp.dll")"
+          # The runner is elevated, and the loader ignores VK_DRIVER_FILES / VK_ICD_FILENAMES in an elevated session
+          # (its security policy: the last trace proved it -- "Environment variable VK_DRIVER_FILES will be ignored",
+          # then "Found no drivers!"). The registry is how a real driver registers, and elevated means we may write it.
+          New-Item -Path "HKLM:\SOFTWARE\Khronos\Vulkan\Drivers" -Force | Out-Null
+          New-ItemProperty -Path "HKLM:\SOFTWARE\Khronos\Vulkan\Drivers" -Name "$($icd.FullName)" -Value 0 `
+            -PropertyType DWord -Force | Out-Null
+          $env:VK_DRIVER_FILES = $icd.FullName
+          $env:VK_ICD_FILENAMES = $icd.FullName
+          $env:VK_LOADER_DEBUG = "error"
+          $env:PATH = "$icdDir;$env:PATH"
+          $loader = Get-ChildItem "$mesa\dist" -Recurse -Filter "vulkan-1.dll" -ErrorAction SilentlyContinue | Select-Object -First 1
+          if (-not $loader) {
+            $loader = Get-ChildItem "$env:VULKAN_SDK" -Recurse -Filter "vulkan-1.dll" -ErrorAction SilentlyContinue |
+              Where-Object { $_.DirectoryName -match "Bin" } | Select-Object -First 1
+          }
+          if (-not $loader -and (Test-Path "C:\Windows\System32\vulkan-1.dll")) {
+            $loader = Get-Item "C:\Windows\System32\vulkan-1.dll"
+          }
+          if (-not $loader) { Write-Host "::error::no vulkan-1.dll anywhere (mesa, SDK, System32)"; exit 1 }
+          Write-Host "::error::loader: $($loader.FullName)"
+          mkdir renders -Force | Out-Null
+          $diag = "$env:GITHUB_WORKSPACE\windows-diagnosis.txt"
+          $shots = @()
+          foreach ($game in @(@("lantern-run", "lantern-run-windows"), @("afterglow", "afterglow-windows"))) {
+            $shot = "$env:GITHUB_WORKSPACE\renders\$($game[0])-windows.png"
+            Push-Location "dist\$($game[1])"
+            Copy-Item $loader.FullName . -ErrorAction SilentlyContinue
+            # The loader trace is thousands of lines: it goes to the diagnosis file the evidence-commit step
+            # publishes, and only the lines that decide the fix reach the annotations (they cap at fifty).
+            "=== $($game[0]) ===" | Out-File $diag -Append
+            ./ukiyo_player.exe --project "games/$($game[0])" --build Build/build.json --shaders shaders --backend vk `
+              --headless --seconds 4 --shot $shot 2>&1 | Tee-Object -FilePath $diag -Append | Out-Null
+            $code = $LASTEXITCODE
+            Pop-Location
+            if ($code -ne 0 -or -not (Test-Path $shot)) {
+              Write-Host "::error::$($game[0]) exited $code, shot exists: $(Test-Path $shot)"
+              Get-Content $diag | Select-String -Pattern "vkCreateInstance|lvp|LVP|driver|Driver|DriverFiles|ICD|scan|Failed|failed|error" |
+                Select-Object -Last 10 | ForEach-Object { Write-Host "::error::player: $($_.Line)" }
+            } else {
+              $shots += $shot
+            }
+          }
+          foreach ($shot in $shots) { python tools/frame_check.py $shot }
+          if ($shots.Count -lt 2) { Write-Host "::error::only $($shots.Count) of 2 games were photographed"; exit 1 }
+      - name: Upload the Windows frames
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-frames
+          path: |
+            renders/lantern-run-windows.png
+            renders/afterglow-windows.png
+          if-no-files-found: warn
+      - name: Upload Afterglow for Windows
+        uses: actions/upload-artifact@v4
+        with:
+          name: afterglow-windows
+          path: dist/afterglow-windows.zip
+
+      # The same tests the Linux job runs, in the same order, in one step: a failing test's own output is the only
+      # useful diagnostic, and the job log is not reachable from everywhere, so the last lines go out as annotations.
+      - name: Run the portable tests
+        run: |
+          # A crash that kills the process outright (a checked stack frame, an abort) leaves Windows Error Reporting
+          # with the only stack there is: keep its dump, so the next reader of a failure has one.
+          $dumpDir = "$PWD\dumps"
+          try {
+            New-Item -ItemType Directory -Force -Path $dumpDir | Out-Null
+            $werKey = "HKLM:\SOFTWARE\Microsoft\Windows\Windows Error Reporting\LocalDumps"
+            New-Item -Path $werKey -Force | Out-Null
+            Set-ItemProperty -Path $werKey -Name DumpFolder -Value $dumpDir -Type ExpandString
+            Set-ItemProperty -Path $werKey -Name DumpType -Value 2 -Type DWord
+          } catch {
+            Write-Host "::warning::no crash dumps this run: $_"
+          }
+          $failed = @()
+          foreach ($t in @("systems_test", "script_test", "network_test", "project_test", "vgeom_test", "vgcut_test", "motion_test", "gi_test", "input_test", "trail_test", "search_test", "browser_zoom_test", "ao_test",
+                    "contact_shadow_test", "pcss_test", "msdf_test", "alpha_mips_test", "transform_test", "lights_test", "save_test",
+                    "property_search_test", "async_load_test", "game_data_test", "game_test", "afterglow_test", "pack_test",
+                    "manifest_test", "scene_runtime_test", "hud_test", "character_test", "player_test", "android_stage_test",
+                    "environment_test", "texture_compress_test", "json_patch_test", "asset_db_test", "editor_tools_test",
+                    "camera_test",
+                    "gizmo_math_test", "plugin_test")) {
+            Write-Host "::group::$t"
+            # script_test keeps a trace in a file as well as on stdout: a process that dies on Windows has been seen to
+            # lose the last lines of a redirected stdout, and a file is flushed on every line.
+            $traceLog = "$PWD\$t.trace.log"
+            $env:UKIYO_TEST_LOG = ""
+            $testArgs = @()
+            if ($t -eq "script_test") {
+                $testArgs = @("--trace")
+                $env:UKIYO_TEST_LOG = $traceLog
+            }
+            $out = & "./build/$t.exe" @testArgs 2>&1
+            $code = $LASTEXITCODE
+            $out | Out-File "$PWD\$t.stdout.log" -Encoding utf8
+            $out | ForEach-Object { Write-Host $_ }
+            Write-Host "::endgroup::"
+            if ($code -ne 0) {
+              Write-Host "::error::$t failed with exit code $code"
+              # Annotations are the only part of this log a restricted client can read, and a step's budget for them is
+              # small, so script_test's diagnosis goes to a file that the step after this one announces.
+              if ($t -eq "script_test") {
+                # The diagnosis file is announced by a step that can only print ten lines, so the lines that decide what
+                # to do next are written first: which check kills the run, then why, then where.
+                #
+                # An address in this binary, resolved against the map the linker wrote.
+                function Resolve-UkiyoOffset([string]$hexOffset) {
+                  if (-not (Test-Path "build/script_test.map")) { return "" }
+                  $rva = [Convert]::ToUInt64($hexOffset, 16)
+                  $best = ""
+                  $bestAt = [Convert]::ToUInt64("0", 16)
+                  $base = [Convert]::ToUInt64("0000000140000000", 16)
+                  foreach ($mapLine in Get-Content "build/script_test.map") {
+                    $load = [regex]::Match($mapLine, "Preferred load address is ([0-9a-fA-F]+)")
+                    if ($load.Success) { $base = [Convert]::ToUInt64($load.Groups[1].Value, 16); continue }
+                    $m = [regex]::Match($mapLine, "^\s+[0-9a-f]{4}:[0-9a-f]{8}\s+(\S+)\s+([0-9a-fA-F]{16})")
+                    if (-not $m.Success) { continue }
+                    $at = [Convert]::ToUInt64($m.Groups[2].Value, 16)
+                    if ($at -le ($base + $rva) -and $at -gt $bestAt) { $bestAt = $at; $best = $m.Groups[1].Value }
+                  }
+                  if ($best) { return "$best + 0x$('{0:x}' -f (($base + $rva) - $bestAt))" }
+                  return ""
+                }
+                # Which check damages the heap? The whole test, one fresh process per check count, stopping after each
+                # count in turn: the first count the test cannot survive is the check that does it.
+                $first = 0
+                for ($n = 1; $n -le 120; $n++) {
+                  $probeLog = "$PWD\script_test.probe.log"
+                  $env:UKIYO_TEST_LOG = $probeLog
+                  & "./build/script_test.exe" --trace --max $n | Out-Null
+                  $probeCode = $LASTEXITCODE
+                  if ($probeCode -ne 0) {
+                    $last = @()
+                    if (Test-Path $probeLog) {
+                      $last = Get-Content $probeLog | Select-String -Pattern "^PASS|^CRASH " | Select-Object -Last 1
+                    }
+                    Add-Content windows-diagnosis.txt "bisect: dies at check $n (exit $probeCode), after: $($last -join '')"
+                    $first = $n
+                    break
+                  }
+                  if ((Test-Path $probeLog) -and ((Get-Content $probeLog -Tail 1) -like "END*")) { break }
+                }
+                if ($first -eq 0) { Add-Content windows-diagnosis.txt "bisect: survives every prefix" }
+                $env:UKIYO_TEST_LOG = $traceLog
+                # The harness's own lines: a broken canary, a double free, a pointer that is not a block, or the
+                # exception that killed it.
+                $trace = @()
+                if (Test-Path $traceLog) { $trace = @(Get-Content $traceLog) }
+                $crashLines = @($trace | Select-String -Pattern "^CRASH " | Select-Object -First 2)
+                if ($crashLines.Count -gt 0) {
+                  $crashLines | ForEach-Object { Add-Content windows-diagnosis.txt "crash: $($_.Line)" }
+                  $hex = [regex]::Match($crashLines[0].Line, "script_test\.exe\+0x([0-9a-f]+)")
+                  if ($hex.Success) {
+                    $symbol = Resolve-UkiyoOffset $hex.Groups[1].Value
+                    if ($symbol) { Add-Content windows-diagnosis.txt "symbol: $symbol" }
+                  }
+                } elseif ($trace.Count -gt 0) {
+                  Add-Content windows-diagnosis.txt "trace: no CRASH line; last was: $($trace[-1])"
+                }
+                # A dump is the only thing a fast-fail leaves that names its own reason: the exception record carries
+                # the fast-fail code in its first parameter -- a stack cookie, an invalid argument, a bad longjmp.
+                $dump = Get-ChildItem "dumps" -Filter *.dmp -ErrorAction SilentlyContinue |
+                  Sort-Object LastWriteTime -Descending | Select-Object -First 1
+                if ($dump) {
+                  $bytes = [IO.File]::ReadAllBytes($dump.FullName)
+                  $streams = 0
+                  if ($bytes.Length -gt 32) {
+                    $streams = [BitConverter]::ToUInt32($bytes, 8)
+                    $dirRva = [BitConverter]::ToUInt32($bytes, 12)
+                  }
+                  $found = $false
+                  for ($i = 0; $i -lt $streams; $i++) {
+                    $entry = $dirRva + 12 * $i
+                    if ($entry + 12 -gt $bytes.Length) { break }
+                    if ([BitConverter]::ToUInt32($bytes, $entry) -ne 6) { continue }
+                    $stream = [BitConverter]::ToUInt32($bytes, $entry + 8)
+                    if ($stream + 48 -gt $bytes.Length) { break }
+                    $exCode = [BitConverter]::ToUInt32($bytes, $stream + 8)
+                    $info0 = [BitConverter]::ToUInt64($bytes, $stream + 40)
+                    $why = @{ 0 = "legacy GS"; 1 = "CFG"; 2 = "stack cookie"; 3 = "corrupt heap list";
+                              4 = "incorrect stack"; 5 = "invalid argument"; 6 = "GS cookie init";
+                              7 = "abort"; 8 = "range check" }
+                    Add-Content windows-diagnosis.txt "dump: exception 0x$('{0:x}' -f $exCode), fast-fail $info0 $($why[[int]$info0])"
+                    $found = $true
+                    break
+                  }
+                  if (-not $found) { Add-Content windows-diagnosis.txt "dump: $($dump.Name), no exception stream" }
+                }
+                Add-Content windows-diagnosis.txt "script_test exit code $code"
+                # The frames go to the diagnosis with the map's names beside them: the faulting function is
+                # already resolved above, and it is the caller of that function -- whose string died -- that says
+                # which scope the rot is in.
+                if ($trace.Count -gt 0) {
+                  $trace | Select-String -Pattern "^CRASH frame" | Select-Object -First 20 | ForEach-Object {
+                    $entry = $_.Line
+                    $hex = [regex]::Match($entry, "script_test\.exe\+0x([0-9a-f]+)")
+                    if ($hex.Success) {
+                      $symbol = Resolve-UkiyoOffset $hex.Groups[1].Value
+                      if ($symbol) { $entry = "$entry  ==  $symbol" }
+                    }
+                    Add-Content windows-diagnosis.txt "frame: $entry"
+                  }
+                }
+              } else {
+                # The failing assertions first, then the summary line, then the tail: a test can print hundreds of PASS
+                # lines, and the interesting ones are never the last.
+                $fails = $out | Select-String -Pattern "FAIL|ERROR|error:" | Select-Object -First 6
+                if ($fails) { $fails | ForEach-Object { Write-Host "::error::  $($_.Line)" } }
+                $summary = $out | Select-String -Pattern "passed|failed|checks" | Select-Object -Last 2
+                if ($summary) { $summary | ForEach-Object { Write-Host "::error::  $($_.Line)" } }
+                $tail = @()
+                if (Test-Path $traceLog) { $tail = Get-Content $traceLog -Tail 6 }
+                if ($tail.Count -eq 0) { $tail = $out | Select-Object -Last 6 }
+                $tail | ForEach-Object { Write-Host "::error::  $_" }
+              }
+              $failed += $t
+            }
+          }
+          if ($failed.Count -gt 0) { throw "failed: $($failed -join ', ')" }
+
+      # What the scripting test found when it died, in a step of its own: the annotations a step may write are few, and
+      # the harness that explains a Windows crash has more to say than that.
+      - name: Announce the Windows crash
+        if: always()
+        run: |
+          if (Test-Path windows-diagnosis.txt) {
+            Get-Content windows-diagnosis.txt | Select-Object -First 9 | ForEach-Object { Write-Host "::error::$_" }
+          }
+      - name: Announce the Windows crash, part two
+        if: always()
+        run: |
+          if (Test-Path windows-diagnosis.txt) {
+            Get-Content windows-diagnosis.txt | Select-Object -Skip 9 -First 9 | ForEach-Object { Write-Host "::error::$_" }
+          }
+      - name: Announce the Windows crash, part three
+        if: always()
+        run: |
+          if (Test-Path windows-diagnosis.txt) {
+            Get-Content windows-diagnosis.txt | Select-Object -Skip 18 -First 9 | ForEach-Object { Write-Host "::error::$_" }
+          }
+
+      # The same evidence, committed onto the branch: annotations carry ten lines, an artifact needs a download
+      # path this workspace cannot reach, and the diagnosis -- the whole trace, the map, the exception record --
+      # is exactly what the next fix needs. The frames publish the same way.
+      - name: Commit the crash evidence
+        if: failure()
+        run: |
+          try {
+            if (-not (Test-Path windows-diagnosis.txt)) { Write-Host "no diagnosis to commit"; exit 0 }
+            New-Item -ItemType Directory -Force -Path "ci/windows-crash" | Out-Null
+            # The diagnosis itself is the point; everything else is context. (Its absence here cost a run.)
+            Copy-Item windows-diagnosis.txt ci/windows-crash/ -Force
+            if (Test-Path "*.trace.log") { Copy-Item "*.trace.log" ci/windows-crash/ -Force }
+            if (Test-Path "script_test.stdout.log") { Copy-Item "script_test.stdout.log" ci/windows-crash/ -Force }
+            if (Test-Path "build/script_test.map") { Copy-Item "build/script_test.map" ci/windows-crash/ -Force }
+            git config user.name "ukiyo-ci"
+            git config user.email "ci@ukiyo.invalid"
+            git add ci/windows-crash
+            $staged = git diff --cached --name-only
+            if (-not $staged) { Write-Host "nothing new"; exit 0 }
+            $branch = $env:GITHUB_REF_NAME
+            git commit -m "Windows crash evidence from run $env:GITHUB_RUN_NUMBER"
+            $pushed = $false
+            foreach ($attempt in 1..3) {
+              git pull --rebase origin "$branch" 2>&1 | Out-Null
+              if ($LASTEXITCODE -eq 0 -and (git push origin "HEAD:$branch" 2>&1)) { $pushed = $true; break }
+              Start-Sleep -Seconds 5
+            }
+            if ($pushed) { Write-Host "evidence published" } else {
+              Add-Content windows-diagnosis.txt "evidence: the commit step could not push"
+              Write-Host "could not publish the evidence"
+            }
+          } catch {
+            Write-Host "evidence step failed: $_"
+          }
+          exit 0
+
+      # The player, booting the fixture project with no window and no device (docs/PLAYER.md).
+      - name: Run Player Self-Test
+        run: ./build/ukiyo_player.exe --selftest --build Build/build.json --project tests/fixtures/player
+
+      # The hub is the only Qt program CI can run without a desktop: offscreen, the same self-test the Linux job runs.
+      - name: Run Hub Self-Test
+        run: |
+          $env:QT_QPA_PLATFORM = "offscreen"
+          ./build/ukiyo_hub.exe --selftest
+
+      - name: Upload the crash evidence
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-crash-evidence
+          path: |
+            windows-diagnosis.txt
+            *.trace.log
+            *.stdout.log
+            build/script_test.map
+          if-no-files-found: ignore
+      - name: Upload build log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-build-log
+          path: |
+            configure.log
+            build.log
+            dumps/*.dmp
+            *.trace.log
+            script_test.again*.log
+            windows-diagnosis.txt
+            build/script_test.map
+            build/script_test.pdb
+          if-no-files-found: warn
+
+  # ---------------------------------------------------------------------------------------------- Android (NDK)
+  # What an Android build means here today: there is no Android application in the repository and no NDK build of Qt,
+  # so the phone target compiles the portable core rather than a window — the Project browser's query grammar and
+  # thumbnail ladder (src/engine/search.*, src/engine/browser_zoom.*), which are plain C++17 with no Qt and no graphics
+  # header. Both ABIs the project ships are built: arm64-v8a, what a phone runs, and x86_64, what an emulator runs.
+  # The executable the job builds for each ABI is the same test binary Linux and Windows run, so a compile error in the
+  # shared code fails here too, on a toolchain and a C library that have nothing to do with the desktop ones.
+  #
+  # The NDK comes with the runner image (ANDROID_NDK_LATEST_HOME); the fallback covers images that spell it differently.
+  android:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Find the NDK
+        run: |
+          ndk="${ANDROID_NDK_LATEST_HOME:-}"
+          if [ -z "$ndk" ] || [ ! -d "$ndk" ]; then
+            ndk="$(ls -d "${ANDROID_SDK_ROOT:-/usr/local/lib/android/sdk}"/ndk/*/ 2>/dev/null | sort -V | tail -1)"
+            ndk="${ndk%/}"
+          fi
+          if [ -z "$ndk" ] || [ ! -d "$ndk" ]; then echo "::error::no NDK on this image"; exit 1; fi
+          echo "NDK=$ndk"
+          echo "UKIYO_NDK=$ndk" >> "$GITHUB_ENV"
+          cat "$ndk/source.properties" 2>/dev/null || true
+
+      - name: Build for arm64-v8a
+        run: |
+          set -o pipefail
+          cmake -B build-android-arm64 -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_TOOLCHAIN_FILE="$UKIYO_NDK/build/cmake/android.toolchain.cmake" \
+            -DANDROID_ABI=arm64-v8a -DANDROID_PLATFORM=android-33 2>&1 | tee /tmp/android-arm64.log
+          cmake --build build-android-arm64 --parallel 2>&1 | tee -a /tmp/android-arm64.log
+
+      - name: Build for x86_64
+        if: always()
+        run: |
+          set -o pipefail
+          cmake -B build-android-x86_64 -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_TOOLCHAIN_FILE="$UKIYO_NDK/build/cmake/android.toolchain.cmake" \
+            -DANDROID_ABI=x86_64 -DANDROID_PLATFORM=android-33 2>&1 | tee /tmp/android-x86_64.log
+          cmake --build build-android-x86_64 --parallel 2>&1 | tee -a /tmp/android-x86_64.log
+
+      # An NDK build's error is one line in a thousand; an annotation is the only part of a job log GitHub lets this
+      # repository read back, so the diagnostics are lifted into them rather than left in the log.
+      - name: Annotate Android build errors
+        if: failure()
+        run: |
+          for f in /tmp/android-arm64.log /tmp/android-x86_64.log; do
+            [ -f "$f" ] || continue
+            echo "::group::$f"
+            grep -E "error:|CMake Error|undefined reference|cannot find -l" "$f" | head -25 | while IFS= read -r line; do
+              echo "::error::$line"
+            done
+            echo "::endgroup::"
+          done
+          exit 1
+
+      # The ABIs are the point of two builds, so the binaries are checked rather than assumed: an ELF for AArch64 and one
+      # for x86-64, both built against Bionic. A build that silently fell back to the host compiler fails here.
+      - name: Check the ABIs
+        run: |
+          file build-android-arm64/game_data_test build-android-x86_64/game_data_test
+          file build-android-arm64/afterglow_test build-android-x86_64/afterglow_test
+          file build-android-arm64/search_test build-android-x86_64/search_test
+          file build-android-arm64/browser_zoom_test build-android-x86_64/browser_zoom_test
+          file build-android-arm64/transform_test build-android-x86_64/transform_test
+          file build-android-arm64/search_test | grep -q "ARM aarch64" ||
+            { echo "::error::the arm64 build is not AArch64"; exit 1; }
+          file build-android-x86_64/search_test | grep -Eq "x86-64" ||
+            { echo "::error::the x86_64 build is not x86-64"; exit 1; }
+          # Bionic, not glibc: an Android binary links libc.so through the dynamic linker, and its interpreter is /system/bin/linker64.
+          for f in build-android-arm64/search_test build-android-x86_64/search_test; do
+            "$UKIYO_NDK/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-readelf" -h -l "$f" | grep -E "Machine:|interpreter"
+          done
+          for f in build-android-arm64/search_test build-android-x86_64/search_test; do
+            "$UKIYO_NDK/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-readelf" -l "$f" | grep -q "/system/bin/linker64" ||
+              { echo "::error::$f was not linked against the Android loader"; exit 1; }
+          done
+
+      # The game as an installable APK: the native player for both ABIs, the packaged project in assets/, and no Java at
+      # all (the manifest sets hasCode=false and NativeActivity loads libukiyo_player.so). The tooling is the SDK's own
+      # aapt2/zipalign/apksigner — no Gradle, because there is nothing for Gradle to do.
+      - name: Compile the shaders for the APK
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq glslang-tools
+          mkdir -p apk/assets/shaders
+          python3 tools/shaderc.py shaders apk/assets/shaders "$(command -v glslangValidator)"
+
+      - name: Assemble Lantern Run
+        run: |
+          set -euo pipefail
+          sdk="${ANDROID_SDK_ROOT:-/usr/local/lib/android/sdk}"
+          build_tools="$(ls -d "$sdk"/build-tools/*/ | sort -V | tail -1)"; build_tools="${build_tools%/}"
+          platform="$(ls -d "$sdk"/platforms/android-*/ | sort -V | tail -1)"; platform="${platform%/}"
+          echo "build-tools: $build_tools"
+          echo "platform: $platform"
+
+          # The project tree, the character it references, its font and the compiled shaders: the same trees a desktop
+          # package carries, staged into the APK's assets. The app copies them out on first launch, so every relative
+          # path in the project resolves on the phone exactly as it does on a desktop.
+          mkdir -p apk/assets/games/lantern-run apk/assets/games/afterglow apk/assets/assets apk/assets/editor/res/fonts
+          cp -r games/lantern-run/. apk/assets/games/lantern-run/
+          cp -r games/afterglow/. apk/assets/games/afterglow/
+          cp assets/AliciaSolid_vrm-0.51.vrm apk/assets/assets/
+          cp editor/res/fonts/IBMPlexSansJP-Regular.ttf apk/assets/editor/res/fonts/
+          ( cd apk/assets && find . -type f | sed 's|^\./||' | LC_ALL=C sort > files.txt )
+          wc -l apk/assets/files.txt
+
+          mkdir -p apk/lib/arm64-v8a apk/lib/x86_64
+          cp build-android-arm64/libukiyo_player.so apk/lib/arm64-v8a/
+          cp build-android-x86_64/libukiyo_player.so apk/lib/x86_64/
+          cp android/AndroidManifest.xml apk/
+
+          # versionCode is the run number, not the manifest's 1: the package manager orders installed apps by it, and
+          # a pipeline that ships "1" for every build cannot upgrade a phone without an uninstall first. The manifest's
+          # own value stays as the fallback for anyone linking the APK by hand.
+          version_code="${{ github.run_number }}"
+
+          # Name the step a failure happens in, as an annotation: job logs are not always fetchable after the fact,
+          # and "exit code 1" alone says nothing about which command broke.
+          assemble_step="start"
+          on_assemble_error() { echo "::error::Afterglow assembly failed in step: $assemble_step"; }
+          trap on_assemble_error ERR
+
+          # The launcher icon, five densities of the same drawing (tools/android_icon.cpp), linked as @mipmap/ic_launcher.
+          # --dir belongs to aapt2 compile, not link; link takes the compiled zip as an input file.
+          assemble_step="aapt2 compile android/res"
+          "$build_tools/aapt2" compile --dir android/res -o apk/res.zip
+          assemble_step="aapt2 link"
+          "$build_tools/aapt2" link -o apk/unaligned.apk -I "$platform/android.jar" \
+            --manifest apk/AndroidManifest.xml -A apk/assets \
+            --version-code "$version_code" --min-sdk-version 33 --target-sdk-version 34 \
+            apk/res.zip
+          assemble_step="zip the native libraries"
+          ( cd apk && zip -q -r unaligned.apk lib )
+          assemble_step="zipalign"
+          "$build_tools/zipalign" -f 4 apk/unaligned.apk apk/aligned.apk
+
+          # Signing: a key that outlives the run, so a second build installs over the first instead of refusing to. The
+          # repository carries a CI key (android/lantern-run-ci.p12, password in this file) so any run signs the same
+          # way; a project with real release keys sets the secrets and they win. Generating a fresh throwaway key per
+          # run - what this used to do - produced an APK nobody could update.
+          assemble_step="sign"
+          if [ -n "${{ secrets.ANDROID_KEYSTORE_B64 }}" ]; then
+            printf '%s' "${{ secrets.ANDROID_KEYSTORE_B64 }}" | base64 -d > apk/release.ks
+            ks="apk/release.ks"
+            ks_pass="${{ secrets.ANDROID_KEYSTORE_PASS }}"
+            ks_alias="${{ secrets.ANDROID_KEYSTORE_ALIAS }}"
+            key_pass="${{ secrets.ANDROID_KEYSTORE_KEY_PASS }}"
+            "$build_tools/apksigner" sign --ks "$ks" --ks-pass "pass:$ks_pass" --ks-key-alias "$ks_alias" \
+              --key-pass "pass:${key_pass:-$ks_pass}" --out Afterglow.apk apk/aligned.apk
+          else
+            ks="android/lantern-run-ci.p12"
+            "$build_tools/apksigner" sign --ks "$ks" --ks-type pkcs12 --ks-pass pass:lantern-run-ci \
+              --key-pass pass:lantern-run-ci --out Afterglow.apk apk/aligned.apk
+          fi
+          assemble_step="verify"
+          "$build_tools/apksigner" verify Afterglow.apk
+          assemble_step="report"
+          # The version the phone will see, printed so a run's number is readable from its log.
+          "$build_tools/aapt2" dump badging Afterglow.apk | grep -E "^package:|^application:" | head -4
+          unzip -l Afterglow.apk | grep -E "lib/|mipmap|lantern-run-ci" | tail -6
+          trap - ERR
+
+      # The APK is the deliverable, so it is attached to the run: an Android build nobody can install is a build log.
+      - uses: actions/upload-artifact@v4
+        with:
+          name: afterglow-android
+          path: Afterglow.apk
+
+      # Install it on a real Android and photograph what the user sees: the emulator boots API 33 on a software GPU,
+      # the signed APK installs, the launcher starts the NativeActivity, the first launch stages the APK's assets
+      # and opens the village, and screencap captures it. A process that dies leaves a pid-less shell, a logcat tail
+      # in the annotations, and a red run -- the same promise the desktop frames make.
+      - name: Boot Afterglow in an emulator and photograph it
+        timeout-minutes: 25
+        run: |
+          set -euo pipefail
+          # The screenshot proof needs KVM: without it an API 33 software boot cannot finish on these runners at all
+          # (two hours of TCG got through the kernel and no further), so the machine decides. The android-photo
+          # workflow runs the same steps on demand with a bigger budget, and any KVM-capable runner photographs
+          # every push here.
+          if [ ! -w /dev/kvm ]; then
+            echo "::notice::no usable /dev/kvm on this runner -- the emulator boots in the android-photo workflow"
+            exit 0
+          fi
+          accel="on"
+          sdk="${ANDROID_SDK_ROOT:-/usr/local/lib/android/sdk}"
+          # emulator, platform-tools and cmdline-tools are on the image already; only the system image arrives.
+          "$sdk/cmdline-tools/latest/bin/sdkmanager" --install "system-images;android-33;google_apis;x86_64" \
+            > /tmp/sdkmanager.log 2>&1 || { tail -20 /tmp/sdkmanager.log; exit 1; }
+          # avdmanager (newer cmdline-tools) writes to the XDG config dir; the emulator looks in $ANDROID_AVD_HOME
+          # and $HOME/.android/avd -- pin both sides or the emulator reports "Unknown AVD name" and dies.
+          export ANDROID_AVD_HOME="$HOME/.android/avd"
+          mkdir -p "$ANDROID_AVD_HOME"
+          echo no | "$sdk/cmdline-tools/latest/bin/avdmanager" create avd -n afterglow \
+            -k "system-images;android-33;google_apis;x86_64" -d pixel_5 --force
+          ls "$ANDROID_AVD_HOME"
+          adb="adb"   # preinstalled platform-tools
+          "$sdk/emulator/emulator" -avd afterglow -no-window -no-audio -no-boot-anim -no-snapshot -no-metrics \
+            -gpu swiftshader_indirect -accel $accel -memory 3072 -cores 4 > /tmp/emulator.log 2>&1 &
+          emu=$!
+          # A hang is a verdict too: watch the emulator's pulse while waiting for boot, and when either fails,
+          # the log tail becomes the annotation instead of forty silent minutes.
+          for i in $(seq 1 60); do
+            boot="$("$adb" shell getprop sys.boot_completed 2>/dev/null | tr -d '\r' || true)"
+            [ "$boot" = "1" ] && break
+            if ! kill -0 "$emu" 2>/dev/null; then
+              echo "::error::the emulator died during boot:"
+              tail -30 /tmp/emulator.log | while IFS= read -r line; do echo "::error::$line"; done
+              exit 1
+            fi
+            sleep 10
+          done
+          boot="$("$adb" shell getprop sys.boot_completed 2>/dev/null | tr -d '\r' || true)"
+          if [ "$boot" != "1" ]; then
+            echo "::error::the emulator never finished booting:"
+            tail -30 /tmp/emulator.log | while IFS= read -r line; do echo "::error::$line"; done
+            exit 1
+          fi
+          echo "the emulator is up" 
+          "$adb" install -r Afterglow.apk
+          "$adb" shell monkey -p dev.ukiyo.lanternrun -c android.intent.category.LAUNCHER 1
+          sleep 30   # first launch stages the APK's assets into the app's storage and opens the village
+          "$adb" exec-out screencap -p > renders/afterglow-android.png
+          pid="$("$adb" shell pidof dev.ukiyo.lanternrun 2>/dev/null | tr -d '\r' || true)"
+          "$adb" logcat -d > /tmp/logcat.txt || true
+          grep -E "ukiyo|afterglow|lanternrun" /tmp/logcat.txt > renders/afterglow-android-logcat.txt || true
+          if [ -z "$pid" ]; then
+            echo "::error::the app is not running after launch; logcat tail:"
+            tail -40 /tmp/logcat.txt | while IFS= read -r line; do echo "::error::$line"; done
+            exit 1
+          fi
+          echo "app is running as pid $pid"
+          python3 tools/frame_check.py renders/afterglow-android.png
+
+      - name: Upload the Android frame
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: afterglow-android-frame
+          path: |
+            renders/afterglow-android.png
+            renders/afterglow-android-logcat.txt
+          if-no-files-found: warn
+
+  # The first game's frame comes from the gpu job, which is where a device exists, so it is published here rather than
+  # in the Linux job: the artifact is downloaded, copied into docs/ and committed the same way the hub screenshots are.
+  # A picture of the game in the repository is part of the deliverable; a frame inside an artifact nobody downloads is not.
+  publish-game-frame:
+    runs-on: ubuntu-latest
+    needs: [gpu, windows, android]
+    if: github.event_name == 'push'
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: lantern-run-frame
+          path: renders
+      - uses: actions/download-artifact@v4
+        with:
+          name: afterglow-frame
+          path: renders
+      - uses: actions/download-artifact@v4
+        with:
+          name: windows-frames
+          path: renders
+        continue-on-error: true
+      - uses: actions/download-artifact@v4
+        with:
+          name: afterglow-android-frame
+          path: renders
+        continue-on-error: true
+      - name: Publish the games' frames
+        run: |
+          test -f renders/lantern-run.png
+          test -f renders/afterglow.png
+          cp renders/lantern-run.png docs/lantern-run.png
+          cp renders/afterglow.png docs/afterglow.png
+          for f in lantern-run-windows.png afterglow-windows.png afterglow-android.png; do
+            # A platform CI could not photograph is not a failure of the publish: the desktop frames still travel.
+            [ -f "renders/$f" ] && cp "renders/$f" "docs/$f" || echo "no $f this run"
+          done
+          git config user.name "ukiyo-ci"
+          git config user.email "ci@ukiyo.invalid"
+          git add docs/lantern-run.png docs/afterglow.png docs/*-windows.png docs/afterglow-android.png 2>/dev/null || git add docs/
+          if git diff --cached --quiet; then echo "no change"; exit 0; fi
+          branch="${GITHUB_REF_NAME}"
+          git commit -m "Game frames from CI [skip ci]"
+          for attempt in 1 2 3; do
+            git fetch origin "+refs/heads/$branch:refs/remotes/origin/$branch"
+            git rebase "origin/$branch" || { git rebase --abort; exit 1; }
+            if git push origin "HEAD:$branch"; then exit 0; fi
+            sleep 5
+          done
+          echo "could not publish the frame; the artifact still has it" >&2
+          exit 1

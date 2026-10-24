@@ -1,10 +1,18 @@
+#include "engine/localisation.h"
+#include "engine/transform.h"
 #include "engine_session.h"
 
+#include "engine/script_project.h"
+
 #include "anim_file.h"
+#include "player/hud_layout.h"
 #include "scene_file.h"
 
 #include <algorithm>
+#include <cmath>
 #include <cstdlib>
+#include <limits>
+#include <cstdio>
 #include <cstring>
 
 #include <glm/gtc/matrix_transform.hpp>
@@ -31,9 +39,13 @@ constexpr uint32_t kIdleSeed = 7;
 } // namespace
 
 bool EngineSession::init(QString* error) {
-    // Point the Vulkan loader at the software driver when the environment has not set one.
+    // Point the Vulkan loader at the software driver when the environment has not set one. That driver is lavapipe,
+    // a Linux package with no Windows equivalent: on Windows the loader finds the installed GPU driver by itself, and
+    // the editor runs with a real device (the headless tests do not use this path).
+#ifndef _WIN32
     if (!std::getenv("VK_ICD_FILENAMES"))
         setenv("VK_ICD_FILENAMES", "/usr/share/vulkan/icd.d/lvp_icd.json", 0);
+#endif
 
     if (!glfwInit()) {
         if (error) *error = "glfwInit failed (is a display available? try xvfb-run)";
@@ -46,6 +58,7 @@ bool EngineSession::init(QString* error) {
         cfg.headless = true;
         device_ = rhi::createDevice(rhi::Backend::Vulkan, cfg, nullptr);
         renderer_ = std::make_unique<Renderer>(*device_);
+        renderer_->setSceneLights(sceneLights_);
     } catch (const std::exception& e) {
         if (error) *error = QString::fromStdString(e.what());
         return false;
@@ -76,11 +89,14 @@ void EngineSession::libraryData(ukiyo::SourceRig* rig, std::vector<ukiyo::AnimCl
 namespace {
 
 // Reads one model file and applies the editor's defaults. Returns null with `error` set on failure.
-std::unique_ptr<Model> readModelFile(rhi::Device& dev, const QString& path, bool smoothNormals, QString* error) {
+std::unique_ptr<Model> readModelFile(rhi::Device& dev, const QString& path, bool smoothNormals, bool preserveAlpha,
+                                   float alphaThreshold, QString* error) {
     std::unique_ptr<Model> m;
     try {
         ukiyo::ModelLoadOptions lo;
         lo.smoothNormals = smoothNormals;
+        lo.preserveAlphaTestCoverage = preserveAlpha;
+        lo.alphaTestThreshold = alphaThreshold;
         m = ukiyo::loadModel(dev, path.toStdString(), lo);
     } catch (const std::exception& e) {
         if (error) *error = QString::fromStdString(e.what());
@@ -92,14 +108,23 @@ std::unique_ptr<Model> readModelFile(rhi::Device& dev, const QString& path, bool
     }
     m->physics = true;
     m->armCollision = true;
+    // Cluster LODs for static meshes, cached beside the file. A skinned model returns at once (its error is measured on
+    // the rest pose), so the character costs nothing here; a static prop pays a few milliseconds once and then reads
+    // the sidecar. A read-only asset folder simply rebuilds.
+    ukiyo::buildModelVGeom(dev, *m, ukiyo::VGeomSettings{}, m->sourcePath + ".vgeom");
     return m;
 }
 
 } // namespace
 
-glm::mat4 EngineSession::placementOf(const glm::vec3& position, float yawDeg) {
-    return glm::translate(glm::mat4(1.0f), position) *
-           glm::rotate(glm::mat4(1.0f), glm::radians(yawDeg), glm::vec3(0.0f, 1.0f, 0.0f));
+glm::mat4 EngineSession::placementOf(const glm::vec3& position, const glm::vec3& eulerDeg, const glm::vec3& scale) {
+    // Scale, then turn, then place. The rotation is the engine's own Euler order (ZXY, transform.h), so an instance
+    // turned by a gizmo reads the same angles the Inspector shows and a script would get.
+    const glm::vec3 k(std::max(std::fabs(scale.x), 0.0001f),
+                      std::max(std::fabs(scale.y), 0.0001f),
+                      std::max(std::fabs(scale.z), 0.0001f));
+    return glm::translate(glm::mat4(1.0f), position) * ukiyo::rotationMatrix(eulerDeg) *
+           glm::scale(glm::mat4(1.0f), k);
 }
 
 Model* EngineSession::activeModel() const {
@@ -134,7 +159,7 @@ void EngineSession::clearInstances() {
 }
 
 bool EngineSession::loadModel(const QString& path, QString* error) {
-    std::unique_ptr<Model> m = readModelFile(*device_, path, smoothNormals_, error);
+    std::unique_ptr<Model> m = readModelFile(*device_, path, smoothNormals_, preserveAlphaCoverage_, alphaTestThreshold_, error);
     if (!m) return false;
     if (active_ < 0) {
         instances_.push_back(Instance{});
@@ -149,7 +174,7 @@ bool EngineSession::loadModel(const QString& path, QString* error) {
     in.terrainGpu.reset();
     in.model = std::move(m);
     in.path = path.toStdString();
-    in.model->placement = placementOf(in.position, in.yawDeg);
+    in.model->placement = placementOf(in.position, {in.pitchDeg, in.yawDeg, in.rollDeg}, in.scale);
     applyPlacement(*in.model);
     applyGraphMaterials();
     bindActive();
@@ -171,7 +196,7 @@ void EngineSession::attachModel(std::unique_ptr<Model> m, const QString& path, c
     in.path = path.toStdString();
     in.position = glm::vec3(position[0], position[1], position[2]);
     in.yawDeg = yawDeg;
-    in.model->placement = placementOf(in.position, in.yawDeg);
+    in.model->placement = placementOf(in.position, {in.pitchDeg, in.yawDeg, in.rollDeg}, in.scale);
     applyPlacement(*in.model);
     instances_.push_back(std::move(in));
     active_ = static_cast<int>(instances_.size()) - 1;
@@ -185,12 +210,14 @@ std::unique_ptr<Model> EngineSession::takeModel(const QString& path, QString* er
     if (it != staged_.end()) {
         // A staged model is used once. It is only used if the file and the normals setting still match.
         const bool fresh = it->second.smoothNormals == smoothNormals_ &&
+                           it->second.preserveAlphaCoverage == preserveAlphaCoverage_ &&
+                           it->second.alphaTestThreshold == alphaTestThreshold_ &&
                            it->second.modified == QFileInfo(path).lastModified().toMSecsSinceEpoch();
         std::unique_ptr<Model> m = std::move(it->second.model);
         staged_.erase(it);
         if (fresh) return m;
     }
-    return readModelFile(*device_, path, smoothNormals_, error);
+    return readModelFile(*device_, path, smoothNormals_, preserveAlphaCoverage_, alphaTestThreshold_, error);
 }
 
 bool EngineSession::preloadModel(const QString& path, QString* error) {
@@ -201,18 +228,22 @@ bool EngineSession::preloadModel(const QString& path, QString* error) {
     const std::string key = path.toStdString();
     const qint64 modified = QFileInfo(path).lastModified().toMSecsSinceEpoch();
     auto it = staged_.find(key);
-    if (it != staged_.end() && it->second.smoothNormals == smoothNormals_ && it->second.modified == modified)
+    if (it != staged_.end() && it->second.smoothNormals == smoothNormals_ &&
+        it->second.preserveAlphaCoverage == preserveAlphaCoverage_ && it->second.alphaTestThreshold == alphaTestThreshold_ &&
+        it->second.modified == modified)
         return true;
     if (it == staged_.end() && staged_.size() >= kMaxStaged) {
         if (error) *error = QStringLiteral("the preload cache is full (%1 models)").arg(kMaxStaged);
         return false;
     }
-    std::unique_ptr<Model> m = readModelFile(*device_, path, smoothNormals_, error);
+    std::unique_ptr<Model> m = readModelFile(*device_, path, smoothNormals_, preserveAlphaCoverage_, alphaTestThreshold_, error);
     if (!m) return false;
     StagedModel s;
     s.model = std::move(m);
     s.modified = modified;
     s.smoothNormals = smoothNormals_;
+    s.preserveAlphaCoverage = preserveAlphaCoverage_;
+    s.alphaTestThreshold = alphaTestThreshold_;
     staged_[key] = std::move(s);
     return true;
 }
@@ -235,12 +266,16 @@ bool EngineSession::setActiveInstance(int index) {
     return true;
 }
 
-bool EngineSession::setInstancePlacement(int index, const float position[3], float yawDeg) {
+bool EngineSession::setInstancePlacement(int index, const float position[3], float yawDeg, float pitchDeg,
+                                         float rollDeg, const float scale[3]) {
     if (index < 0 || index >= static_cast<int>(instances_.size())) return false;
     Instance& in = instances_[index];
     in.position = glm::vec3(position[0], position[1], position[2]);
     in.yawDeg = yawDeg;
-    in.model->placement = placementOf(in.position, in.yawDeg);
+    in.pitchDeg = pitchDeg;
+    in.rollDeg = rollDeg;
+    if (scale) in.scale = glm::vec3(scale[0], scale[1], scale[2]);
+    in.model->placement = placementOf(in.position, {in.pitchDeg, in.yawDeg, in.rollDeg}, in.scale);
     applyPlacement(*in.model);
     return true;
 }
@@ -360,6 +395,15 @@ EngineSession::TerrainEditState* EngineSession::ensureTerrainState(const ukiyo::
             held.densityDirty[t] = 0;
             held.densitySource[t] = ts.foliage[t].densityMap;
         }
+        if (ts.grass.densityMap != held.grassDensitySource) {
+            std::vector<uint8_t> field;
+            if (!readDensity(ts.grass.densityMap, ts.size, &field, &loadErr)) {
+                if (error) *error = QString::fromStdString(loadErr);
+                return nullptr;
+            }
+            held.grassDensity = std::move(field);
+            held.grassDensitySource = ts.grass.densityMap;
+        }
         return &held;
     }
     TerrainEditState st;
@@ -387,6 +431,11 @@ EngineSession::TerrainEditState* EngineSession::ensureTerrainState(const ukiyo::
         }
         st.densitySource[t] = ts.foliage[t].densityMap;
     }
+    if (!readDensity(ts.grass.densityMap, ts.size, &st.grassDensity, &loadErr)) {
+        if (error) *error = QString::fromStdString(loadErr);
+        return nullptr;
+    }
+    st.grassDensitySource = ts.grass.densityMap;
     return &terrainEdits_.emplace(ts.heightmap, std::move(st)).first->second;
 }
 
@@ -395,13 +444,20 @@ bool EngineSession::buildTerrainGpu(const ukiyo::TerrainSettings& ts, const Terr
                                     std::unique_ptr<ukiyo::TerrainGpu>* out, QString* error) {
     auto gpu = std::make_unique<ukiyo::TerrainGpu>();
     std::string uploadErr;
-    if (!ukiyo::uploadTerrain(*device_, st.map, ukiyo::kTerrainChunkCells, ts.layers, st.layerPaint, gpu.get(), &uploadErr)) {
+    if (!ukiyo::uploadTerrain(*device_, st.map, ukiyo::kTerrainChunkCells, ts.layers, st.layerPaint, ts.detail, gpu.get(),
+                              &uploadErr)) {
         if (error) *error = QString::fromStdString(uploadErr);
         return false;
     }
     std::vector<std::vector<uint8_t>> densities(ts.foliage.size());
     for (size_t t = 0; t < ts.foliage.size() && t < st.density.size(); ++t) densities[t] = st.density[t];
     if (!ukiyo::uploadFoliage(*device_, ts.foliage, densities, gpu.get(), &uploadErr)) {
+        if (error) *error = QString::fromStdString(uploadErr);
+        return false;
+    }
+    // Grass (item 19): the scatter reads the same layer masks the terrain shader blends, so blades grow on the layers
+    // the settings include and clear off the ones they exclude.
+    if (!ukiyo::uploadGrass(*device_, ts.layers, st.layerPaint, ts.grass, st.grassDensity, gpu.get(), &uploadErr)) {
         if (error) *error = QString::fromStdString(uploadErr);
         return false;
     }
@@ -706,6 +762,9 @@ EngineSession::PlacedModel EngineSession::instanceInfo(int index) const {
     p.position[1] = in.position.y;
     p.position[2] = in.position.z;
     p.yawDeg = in.yawDeg;
+    p.pitchDeg = in.pitchDeg;
+    p.rollDeg = in.rollDeg;
+    for (int k = 0; k < 3; ++k) p.scale[k] = in.scale[k];
     p.prefab = in.prefab;
     p.prefabId = in.prefabId;
     p.overrides = in.overrides;
@@ -945,6 +1004,28 @@ QImage EngineSession::render(const OrbitCamera& cam, float time, float dt, const
         }
     }
     renderer_->setTerrain(terrain);
+    // The GI pass needs the heightfield of the terrain under the camera. The first tile that has one is used; a scene
+    // with several tiles gives the estimator the nearest one, which is the only one its twelve-metre rays can reach.
+    {
+        HeightfieldGpu field;
+        float best = std::numeric_limits<float>::max();
+        for (const Instance& in : instances_) {
+            if (!in.terrainGpu || !in.terrainGpu->heightTexture) continue;
+            // The estimator reads the tile as an axis-aligned height function of world xz, so a rotated tile would
+            // light the wrong ground. Tiles are placed by translation in this editor; a yaw is not supported.
+            const float yaw = std::fmod(std::fabs(in.yawDeg), 360.0f);
+            if (yaw > 0.01f && yaw < 359.99f) continue;
+            const float d = glm::length(glm::vec2(in.position[0], in.position[2]) - glm::vec2(cam.eye().x, cam.eye().z));
+            if (d >= best) continue;
+            best = d;
+            field.height = in.terrainGpu->heightTexture.get();
+            field.size = in.terrainGpu->map.size;
+            field.cellSize = in.terrainGpu->map.cellSize;
+            field.heightScale = in.terrainGpu->map.heightScale;
+            field.origin = glm::vec3(in.position[0], in.position[1], in.position[2]);
+        }
+        renderer_->setHeightfield(field);
+    }
     std::vector<FoliageDraw> foliage;
     for (const Instance& in : instances_) {
         if (!in.terrainGpu) continue;
@@ -967,8 +1048,67 @@ QImage EngineSession::render(const OrbitCamera& cam, float time, float dt, const
         }
     }
     renderer_->setFoliage(foliage);
+    // Grass (item 19). One draw per batch; the shader's wind and distance bands read from the push block, so a batch
+    // needs nothing but its instance rows.
+    std::vector<GrassDraw> grass;
+    glm::vec4 pusher(0.0f);   // the active character standing in the grass: xy position, reach, push
+    for (const Instance& in : instances_) {
+        if (in.model.get() != active) continue;
+        pusher = glm::vec4(in.position.x, in.position.z, 1.6f, 0.30f);
+        break;
+    }
+    for (const Instance& in : instances_) {
+        if (!in.terrainGpu || !in.terrain) continue;
+        const glm::mat4 tile = glm::translate(glm::mat4(1.0f), in.position);
+        const ukiyo::TerrainGpu& g = *in.terrainGpu;
+        const ukiyo::GrassSettings& gs = in.terrain->grass;
+        for (const ukiyo::GrassBatchGpu& b : g.grass.batches) {
+            if (b.mesh >= g.grass.meshes.size()) continue;
+            const ukiyo::GrassMeshGpu& mesh = g.grass.meshes[b.mesh];
+            GrassDraw d;
+            d.vertices = mesh.vertices.get();
+            d.indices = mesh.indices.get();
+            d.instances = b.set.get();
+            d.indexCount = mesh.indexCount;
+            d.instanceCount = b.count;
+            d.model = tile;
+            d.boundsMin = b.boundsMin;
+            d.boundsMax = b.boundsMax;
+            d.bands = glm::vec3(gs.bandNear, gs.bandMid, gs.cullDistance);
+            d.wind = glm::vec4(gs.windStrength, gs.windFrequency, gs.windScale, gs.flutter);
+            d.windDir = gs.windDir;
+            d.pusher = pusher;
+            grass.push_back(d);
+        }
+    }
+    renderer_->setGrass(grass);
+    renderer_->setSceneLights(world_ ? world_->sceneLights() : sceneLights_);
     renderer_->render(cam, models, time, frame_++, s);
     drawParticleOverlay(cam);
+    if (playing() && hudVisible_) {
+        drawPlayHud();
+        // The player's layout reads the size from the canvas, so the screen is set here rather than at load time.
+        hudCanvas_.setScreen(float(device_->backbufferWidth()), float(device_->backbufferHeight()));
+        PlayerHudText text;
+        std::string title = "Play mode";
+        if (active_ >= 0 && active_ < static_cast<int>(instances_.size())) {
+            const Instance& act = instances_[static_cast<size_t>(active_)];
+            title = act.name.empty() ? "instance" + std::to_string(active_) : act.name;
+            title += "   play mode";
+        }
+        text.title = title;
+        char stats[160];
+        std::snprintf(stats, sizeof(stats), "%u draws   %.1fk tris   %d entities", renderer_->lastDrawCalls(),
+                      double(renderer_->lastTriangles()) / 1000.0, playingEntities());
+        text.stats = stats;
+        text.hint = "WASD walk   Space jump   Esc stop";
+        if (!playWarnings_.empty()) text.warning = playWarnings_.front();
+        drawPlayerHud(hudCanvas_, text, 1.0f);
+        if (const ukiyo::World* w = world_.get())
+            for (const ukiyo::World::HudQuad& q : w->hudQuads())
+                hudCanvas_.rect({q.x, q.y, q.w, q.h}, ukiyo::HudColor(q.r, q.g, q.b, q.a));
+        renderer_->drawHud(hudCanvas_.vertices(), device_->backbufferWidth(), device_->backbufferHeight());
+    }
     device_->endFrame(true);
     std::vector<uint8_t> px = device_->takeCapture();
 
@@ -1003,6 +1143,12 @@ bool EngineSession::bakeNavMesh(QString* error, int* triangles, std::atomic<int>
         // The rest pose is enough for navigation. updateModel also refreshes the node world matrices.
         updateModel(*in.model, 0.0f, glm::vec3(0.0f));
         worldTriangles(*in.model, &verts, &tris);
+        // A terrain tile has no mesh of its own: without its chunks the bake only sees the floor under the hills, and
+        // every path across a valley is a straight line at the floor's height. The collider adds the same chunks, so
+        // what an agent walks on and what a body falls onto are one surface.
+        if (in.terrainGpu) {
+            ukiyo::appendTerrainTriangles(in.terrainGpu->map, in.position, ukiyo::kTerrainChunkCells, &verts, &tris);
+        }
     }
     if (tris.empty()) {
         if (error) *error = QStringLiteral("The scene has no geometry to bake.");
@@ -1095,6 +1241,53 @@ bool EngineSession::checkScript(const std::string& path, QString* error) const {
     return false;
 }
 
+bool EngineSession::checkScriptText(const std::string& path, const std::string& text, QString* error) const {
+    ScriptHost host;
+    // The search paths are the ones Play uses, so a require() in the file resolves the same way here.
+    host.setSearchPaths({QDir(projectRoot_).filePath(QStringLiteral("Scripts")).toStdString(),
+                         QDir(projectRoot_).filePath(QStringLiteral("assets")).toStdString()});
+    std::string msg;
+    if (host.compileString(text, path, &msg)) return true;
+    if (error) *error = QString::fromStdString(msg);
+    return false;
+}
+
+bool EngineSession::writeScriptSupportFiles(std::vector<std::string>* written, QString* error) const {
+    std::string msg;
+    if (!script_project::writeSupportFiles(projectRoot_.toStdString(), written, &msg)) {
+        if (error) *error = QString::fromStdString(msg);
+        return false;
+    }
+    return true;
+}
+
+const std::vector<ukiyo::ScriptInfo>& EngineSession::playScripts() const {
+    static const std::vector<ukiyo::ScriptInfo> none;
+    return world_ ? world_->scripts.scripts() : none;
+}
+
+bool EngineSession::reloadScripts(QString* error) {
+    if (!world_) return false;
+    bool ok = true;
+    for (size_t i = 0; i < instances_.size(); ++i) {
+        const SystemsComponents& c = instances_[i].components;
+        if (!c.script.enabled || c.script.path.empty()) continue;
+        std::string err;
+        // reload() keeps the script's turn in the order and runs its onStart again with the new code.
+        if (!world_->scripts.reload(entityName(i), &err)) {
+            playWarnings_.push_back("script: " + err);
+            if (ok && error) *error = QString::fromStdString(err);
+            ok = false;
+            continue;
+        }
+        if (ScriptHost* host = world_->scripts.find(entityName(i)); host && host->hasFailed())
+            playWarnings_.push_back("script: " + entityName(i) + ": " + host->lastError());
+        // The reloaded chunk has to hear that the scene is already running, or onSceneLoaded never runs again.
+        if (ScriptHost* host = world_->scripts.find(entityName(i))) host->callSceneLoaded();
+    }
+    return ok;
+}
+
 bool EngineSession::startPlay(QString* error) {
     stopPlay();
     if (instances_.empty()) {
@@ -1102,24 +1295,27 @@ bool EngineSession::startPlay(QString* error) {
         return false;
     }
     bool anyAgent = false;
-    int scripts = 0;
-    size_t scriptOwner = 0;
-    for (size_t i = 0; i < instances_.size(); ++i) {
-        if (instances_[i].components.agent.enabled) anyAgent = true;
-        if (instances_[i].components.script.enabled) {
-            ++scripts;
-            scriptOwner = i;
-        }
-    }
-    // One script engine runs per scene in this version. Refuse rather than silently drop scripts.
-    if (scripts > 1) {
-        if (error) *error = QStringLiteral("Only one instance can run a script in play mode. Disable the others.");
-        return false;
-    }
+    for (const Instance& in : instances_)
+        if (in.components.agent.enabled) anyAgent = true;
     if (anyAgent && !navBaked_ && !bakeNavMesh(error, nullptr)) return false;
 
     auto world = std::make_unique<World>(false);   // silent when the machine has no audio device
     world->audio.setMasterVolume(audioMuted_ ? 0.0f : masterVolume_);
+    world->setProfiling(profiling_);
+    world->setProjectRoot(projectRoot_.toStdString());
+    world->setSaveDir(projectRoot_.toStdString() + "/saves");
+    world->setSceneLights(sceneLights_);
+    // The project's language, so ukiyo.tr in a script returns the same text the player would show.
+    if (!projectRoot_.isEmpty()) {
+        LocaleCatalog catalog;
+        std::string locErr;
+        const std::string base = ukiyo::baseLocale(projectRoot_.toStdString());
+        if (ukiyo::loadLocale(projectRoot_.toStdString(), base, &catalog, &locErr)) {
+            world->setLocale(std::move(catalog));
+        } else if (!locErr.empty()) {
+            playWarnings_.push_back(locErr);
+        }
+    }
     if (anyAgent) world->nav.build(navVerts_, navTris_);
     playWarnings_.clear();
 
@@ -1152,25 +1348,43 @@ bool EngineSession::startPlay(QString* error) {
     playStart_.clear();
     playLast_.clear();
     playSpeed_.clear();
+    playScale_.clear();
+    playTiming_ = ukiyo::FrameTiming();
     const int active = active_;
     for (size_t i = 0; i < instances_.size(); ++i) {
         Instance& in = instances_[i];
-        playStart_.push_back({in.position, in.yawDeg});
+        playStart_.push_back({in.position, in.yawDeg, in.pitchDeg, in.rollDeg});
         playLast_.push_back(in.position);
         playSpeed_.push_back(0.0f);
+        playScale_.push_back(in.scale);
         const SystemsComponents& c = in.components;
         if (!c.any()) continue;
 
         const std::string name = entityName(i);
         Entity& e = world->entity(name);
         e.position = in.position;
+        // The collider is turned the way the gizmo drew the instance: a ramp tilted about X or Z is a ramp to the
+        // physics too, which is the whole point of letting the gizmo turn those axes.
+        e.rotationDeg = glm::vec3(in.pitchDeg, in.yawDeg, in.rollDeg);
         if (c.body.enabled) {
             if (c.body.dynamic) {
-                if (c.body.box) world->attachDynamicBox(name, c.body.halfExtents, c.body.mass);
+                if (c.body.box) world->attachDynamicBox(name, c.body.halfExtents, c.body.mass, e.rotationDeg);
                 else world->attachDynamicSphere(name, c.body.radius, c.body.mass);
             } else {
-                e.body = world->physics.addStaticBox(in.position, c.body.box ? c.body.halfExtents : glm::vec3(c.body.radius));
+                e.body = world->physics.addStaticBox(in.position, c.body.box ? c.body.halfExtents : glm::vec3(c.body.radius),
+                                                    e.rotationDeg);
             }
+        }
+        if (c.character.enabled) {
+            // The capsule character (item 4). In play mode, WASD walks it relative to the game camera and Space jumps.
+            CharacterSettings cs;
+            cs.radius = c.character.radius;
+            cs.height = c.character.height;
+            cs.maxSlopeDeg = c.character.maxSlopeDeg;
+            cs.stepHeight = c.character.stepHeight;
+            cs.jumpSpeed = c.character.jumpSpeed;
+            world->attachCharacter(name, cs);
+            playCharacters_.push_back({static_cast<int>(i), c.character.speed});
         }
         if (c.agent.enabled) world->attachAgent(name, c.agent.maxSpeed);
         if (c.anim.enabled) {
@@ -1189,7 +1403,7 @@ bool EngineSession::startPlay(QString* error) {
             a.amplitude = c.action.amplitude;
             a.ease = c.action.ease;
             a.startOffset = c.action.startOffset;
-            world->setAction(name, a, in.position, world->entity(name).yawDeg);
+            world->setAction(name, a, in.position, in.yawDeg);
         }
         if (c.audio.enabled && c.audio.playOnStart) {
             if (c.audio.sound.empty()) {
@@ -1208,12 +1422,19 @@ bool EngineSession::startPlay(QString* error) {
     if (active >= 0 && active < static_cast<int>(instances_.size()))
         world->entity("listener").position = instances_[active].position;
 
-    if (scripts == 1) {
+    // One script per instance, all of them: a level with two actors runs two scripts. A script that does not compile
+    // is reported and the scene keeps running, as it does for a sound that will not load; the editor's Play page
+    // shows the warning, so a typo does not take the whole level down.
+    {
+        std::vector<std::string> roots{QDir(projectRoot_).filePath(QStringLiteral("Scripts")).toStdString(),
+                                       QDir(projectRoot_).filePath(QStringLiteral("assets")).toStdString()};
+        world->setScriptSearchPaths(roots);
+    }
+    for (size_t i = 0; i < instances_.size(); ++i) {
+        const SystemsComponents& c = instances_[i].components;
+        if (!c.script.enabled || c.script.path.empty()) continue;
         std::string err;
-        if (!world->loadScript(instances_[scriptOwner].components.script.path, &err)) {
-            if (error) *error = QString::fromStdString("Script: " + err);
-            return false;
-        }
+        if (!world->loadScriptFor(entityName(i), c.script.path, &err)) playWarnings_.push_back("script: " + err);
     }
 
     // Locomotion clips drive the active instance's model. Other instances keep their rest pose.
@@ -1235,7 +1456,7 @@ bool EngineSession::startPlay(QString* error) {
 
     // onSceneLoaded runs once the world is set up. Its errors are reported with the other play warnings.
     world->notifySceneLoaded();
-    if (world->script.hasFailed()) playWarnings_.push_back("onSceneLoaded: " + world->script.lastError());
+    if (world->scripts.anyFailed()) playWarnings_.push_back("script: " + world->scripts.lastError());
 
     world_ = std::move(world);
     world_->physics.setWater(water_ ? &*water_ : nullptr);
@@ -1245,20 +1466,28 @@ bool EngineSession::startPlay(QString* error) {
 
 void EngineSession::setKeyHeld(const QString& key, bool down) {
     if (world_) world_->setKeyHeld(key.toStdString(), down);
+    if (key.isEmpty()) return;
+    if (down) playKeys_.insert(key.toStdString());
+    else playKeys_.erase(key.toStdString());
 }
 
 void EngineSession::stopPlay() {
     if (!world_) return;
+    playCharacters_.clear();
+    playKeys_.clear();
     world_.reset();   // audio and physics go first
     const bool restored = restoreEditorScene();
     for (size_t i = 0; i < playStart_.size() && i < instances_.size(); ++i) {
         const Placement& p = playStart_[i];
+        const glm::vec3 sc = i < playScale_.size() ? playScale_[i] : glm::vec3(1.0f);
+        const float scf[3] = {sc.x, sc.y, sc.z};
         const float pos[3] = {p.position.x, p.position.y, p.position.z};
-        setInstancePlacement(static_cast<int>(i), pos, p.yawDeg);
+        setInstancePlacement(static_cast<int>(i), pos, p.yawDeg, p.pitchDeg, p.rollDeg, scf);
     }
     playStart_.clear();
     playLast_.clear();
     playSpeed_.clear();
+    playScale_.clear();
     playClip(clipBeforePlay_);
     clipBeforePlay_.clear();
     if (restored) noteScene("Back in the editor scene", true);
@@ -1291,15 +1520,6 @@ bool EngineSession::switchScene(const QString& path, QString* error) {
         if (error) *error = abs + QStringLiteral(" has no models");
         return false;
     }
-    // Same rule as Play: one script per scene.
-    int scripts = 0;
-    for (const scene_file::SceneEntry& e : contents.entries)
-        if (e.components.script.enabled) ++scripts;
-    if (scripts > 1) {
-        if (error) *error = QStringLiteral("Only one instance can run a script in play mode. Disable the others.");
-        return false;
-    }
-
     // Every model is read before anything changes, so a missing file leaves the running scene alone.
     std::vector<std::unique_ptr<Model>> models;
     for (const scene_file::SceneEntry& e : contents.entries) {
@@ -1325,6 +1545,7 @@ bool EngineSession::switchScene(const QString& path, QString* error) {
     playStart_.clear();
     playLast_.clear();
     playSpeed_.clear();
+    playScale_.clear();
     playWarnings_.clear();
     navVerts_.clear();
     navTris_.clear();
@@ -1384,6 +1605,36 @@ uint32_t EngineSession::lastDrawCalls() const {
     return renderer_ ? renderer_->lastDrawCalls() : 0;
 }
 
+void EngineSession::drivePlayCharacters(float dt) {
+    if (!world_ || playCharacters_.empty()) return;
+    // Camera-relative, the same convention as the player: yaw 0 looks from +Z, so forward is -Z. The game view owns the
+    // camera; its yaw is what the author is looking along.
+    const float yaw = playCamYaw_;
+    const glm::vec3 forward(-std::sin(yaw), 0.0f, -std::cos(yaw));
+    const glm::vec3 right(std::cos(yaw), 0.0f, -std::sin(yaw));
+    auto held = [this](const char* key) { return playKeys_.count(key) != 0; };
+    const bool w = held("W"), s = held("S"), d = held("D"), a = held("A");
+    glm::vec3 dir = forward * (w ? 1.0f : 0.0f) - forward * (s ? 1.0f : 0.0f) + right * (d ? 1.0f : 0.0f) -
+                    right * (a ? 1.0f : 0.0f);
+    const float len = glm::length(dir);
+    const bool jump = held("Space");
+    for (const PlayCharacter& pc : playCharacters_) {
+        if (pc.instance < 0 || pc.instance >= static_cast<int>(instances_.size())) continue;
+        const glm::vec3 v = len > 1e-4f ? dir / len * pc.speed : glm::vec3(0.0f);
+        world_->setCharacterVelocity(entityName(static_cast<size_t>(pc.instance)), v, jump);
+    }
+    (void)dt;
+}
+
+ukiyo::FrameTiming EngineSession::playTiming() {
+    return world_ ? playTiming_ : ukiyo::FrameTiming();
+}
+
+void EngineSession::setProfiling(bool on) {
+    profiling_ = on;
+    if (world_) world_->setProfiling(on);
+}
+
 void EngineSession::tickPlay(float dt) {
     if (!world_ || dt <= 0.0f) return;
     // Adding or removing instances during play would desynchronise the per-instance state.
@@ -1396,7 +1647,9 @@ void EngineSession::tickPlay(float dt) {
         const SystemsComponents& c = instances_[i].components;
         if (c.anim.enabled) world_->setParam(entityName(i), "speed", playSpeed_[i]);
     }
+    drivePlayCharacters(dt);
     world_->tick(dt);
+    if (profiling_) playTiming_ = world_->lastTiming();
     // Preloads that scripts asked for. A failed one is reported and the scene keeps running.
     for (const std::string& path : world_->takePreloads()) {
         QString err;
@@ -1416,7 +1669,12 @@ void EngineSession::tickPlay(float dt) {
         if (!e) continue;
         if (c.body.enabled || c.agent.enabled) {
             const float pos[3] = {e->position.x, e->position.y, e->position.z};
-            setInstancePlacement(static_cast<int>(i), pos, instances_[i].yawDeg);
+            // A body owns its rotation too: a box that lands on a tilted plank is drawn lying along it. An agent has
+            // no rotation of its own, so its yaw stays as authored.
+            const bool bodyOwns = c.body.enabled;
+            setInstancePlacement(static_cast<int>(i), pos, bodyOwns ? e->rotationDeg.y : instances_[i].yawDeg,
+                                 bodyOwns ? e->rotationDeg.x : instances_[i].pitchDeg,
+                                 bodyOwns ? e->rotationDeg.z : instances_[i].rollDeg);
         }
         const glm::vec3 moved = e->position - playLast_[i];
         playSpeed_[i] = std::sqrt(moved.x * moved.x + moved.z * moved.z) / dt;
@@ -1439,6 +1697,20 @@ int EngineSession::liveParticles() const {
     std::vector<ParticleInstance> list;
     world_->vfx.instances(&list);
     return static_cast<int>(list.size());
+}
+
+void EngineSession::drawPlayHud() {
+    // The atlas loads once, from the editor's own font. Without it the HUD still draws its bands, just no words; the
+    // glyphs a frame needs are rasterised on first use, so leaving this on costs nothing per frame.
+    if (!hudFontTried_) {
+        hudFontTried_ = true;
+        const std::string path = std::string(UKIYO_ROOT) + "/editor/res/fonts/IBMPlexSansJP-Regular.ttf";
+        if (hudFont_.loadFromFile(path, 18.0f, 1024)) {
+            hudFont_.preloadAscii();
+            hudCanvas_.setFont(&hudFont_);
+            if (renderer_) renderer_->setHudAtlas(&hudFont_);
+        }
+    }
 }
 
 void EngineSession::drawParticleOverlay(const OrbitCamera& cam) {

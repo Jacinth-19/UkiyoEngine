@@ -1,0 +1,19 @@
+{
+  "format": "ukiyo-build",
+  "version": 1,
+  "name": "Ukiyo Player Fixture",
+  "versionName": "1.0.0",
+  "startScene": "Scenes/Main.ukscene",
+  "font": "",
+  "hudScale": 1.0,
+  "window": {
+    "width": 960,
+    "height": 540,
+    "fullscreen": false,
+    "vsync": true
+  },
+  "scenes": [
+    "Scenes/Main.ukscene",
+    "Scenes/Second.ukscene"
+  ]
+}

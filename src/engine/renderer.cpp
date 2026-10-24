@@ -2,12 +2,20 @@
 #include "engine/vfs.h"
 #include "engine/renderer.h"
 
+#include <fstream>
+#include <iterator>
+
+#include "stb_image.h"
+
+#include "engine/hud_renderer.h"
+
 #include <glm/gtc/matrix_transform.hpp>
 #include <glm/gtc/packing.hpp>
 
 #include <algorithm>
 #include <cmath>
 #include <cstring>
+#include <deque>
 #include <fstream>
 #include <sstream>
 
@@ -70,11 +78,14 @@ float packBits(const glm::vec3& rgb) {
     return out;
 }
 
-PushConstants pcWith(const glm::mat4& model, glm::vec4 p0, glm::vec4 p1 = glm::vec4(0.0f)) {
+PushConstants pcWith(const glm::mat4& model, glm::vec4 p0, glm::vec4 p1 = glm::vec4(0.0f),
+                     glm::vec4 p2 = glm::vec4(0.0f), glm::vec4 p3 = glm::vec4(0.0f)) {
     PushConstants pc{};
     pc.model = model;
     pc.p0 = p0;
     pc.p1 = p1;
+    pc.p2 = p2;
+    pc.p3 = p3;
     return pc;
 }
 
@@ -82,6 +93,7 @@ PushConstants pcWith(const glm::mat4& model, glm::vec4 p0, glm::vec4 p1 = glm::v
 
 Renderer::Renderer(rhi::Device& device) : dev_(device) {
     frameUbo_ = dev_.createBuffer(rhi::BufferUsage::Uniform, sizeof(FrameUBO));
+    contactUbo_ = dev_.createBuffer(rhi::BufferUsage::Uniform, sizeof(glm::vec4));
 
     rhi::TextureDesc sd;
     sd.width = kShadowAtlas;
@@ -95,17 +107,30 @@ Renderer::Renderer(rhi::Device& device) : dev_(device) {
     dd.width = 1;
     dd.height = 1;
     dd.format = rhi::Format::RGBA8;
+    const uint8_t transparent[4] = {0, 0, 0, 0};
+    noAlbedo_ = dev_.createTexture(dd, transparent);
     const uint8_t white[4] = {255, 255, 255, 255};
     dummyTex_ = dev_.createTexture(dd, white);
+
+    // The Frame set's binding 8 carries the environment cubemap (docs/IBL.md); a 1x1 white cube stands in until a
+    // scene asks for one, so every pipeline's descriptor is always satisfied and sampling it is harmless.
+    rhi::TextureDesc cd;
+    cd.width = 1;
+    cd.height = 1;
+    cd.format = rhi::Format::RGBA8;
+    cd.faces = 6;
+    dummyCube_ = dev_.createTexture(cd, white);
 
     frameSet_ = dev_.createDescriptorSet(rhi::SetType::Frame);
     frameSet_->setBuffer(0, frameUbo_.get());
     frameSet_->setTexture(1, shadowAtlas_.get());
+    frameSet_->setTexture(8, dummyCube_.get());
 
     // The shadow pass renders into the atlas, so it must not also sample it.
     shadowFrameSet_ = dev_.createDescriptorSet(rhi::SetType::Frame);
     shadowFrameSet_->setBuffer(0, frameUbo_.get());
     shadowFrameSet_->setTexture(1, dummyTex_.get());
+    shadowFrameSet_->setTexture(8, dummyCube_.get());
 
     buildPipelines();
 }
@@ -145,6 +170,10 @@ void Renderer::buildPipelines() {
         d.blend = blend;
         d.colorFormats = std::move(colors);
         d.hasDepth = hasDepth;
+        // A wireframe view turns the geometry passes into their edges and leaves every fullscreen pass alone: a post
+        // shader in line mode would draw two long triangles. The shadow map stays solid, so the picture keeps its
+        // contact shadows where a surface is shaded at all.
+        d.wireframe = wireframe_ && std::string(vs) != "fullscreen" && std::string(vs) != "shadow";
         return dev_.createPipeline(d);
     };
     using S = rhi::SetType;
@@ -196,10 +225,22 @@ void Renderer::buildPipelines() {
                  rhi::Blend::None, {F::RGBA16F}, false);
     pVelocity_ = make("velocity", "velocity", {S::Frame, S::Material, S::Skin, S::Motion}, true,
                       rhi::Cull::Back, true, false, rhi::Blend::None, {F::RGBA16F}, true);
+    // The normal pass writes two targets: view-space normals, and the base colour the multi-bounce AO fit needs.
     pNormal_ = make("normal", "normal", {S::Frame, S::Material, S::Skin}, true,
-                    rhi::Cull::Back, true, false, rhi::Blend::None, {F::RGBA8}, true);
+                    rhi::Cull::Back, true, false, rhi::Blend::None, {F::RGBA8, F::RGBA8}, true);
     pEffects_ = make("fullscreen", "effects", {S::Post}, false, rhi::Cull::None, false, false,
                      rhi::Blend::None, {F::RGBA16F}, false);
+    // Real-time GI: the trace pass needs the Frame set (camera basis, ambient colours, projection) *and* the Post set
+    // (heightmap, raster, depth, normals). The Frame set must be set 0 and the Post set 1, because the shader includes
+    // frame.glsl, whose uniforms live in set 0 on Vulkan; the renderer binds the sets in this order.
+    pGiTrace_ = make("fullscreen", "gi_trace", {S::Frame, S::Post}, false, rhi::Cull::None, false, false,
+                     rhi::Blend::None, {F::RGBA16F}, false);
+    pGiAccum_ = make("fullscreen", "gi_accum", {S::Post}, false, rhi::Cull::None, false, false,
+                     rhi::Blend::None, {F::RGBA16F}, false);
+    // The denoiser: two à-trous iterations at half resolution. It is the iGPU answer to the reference's DLSS Ray
+    // Reconstruction — an edge-aware filter in place of a network, so it needs no tensor cores.
+    pGiDenoise_ = make("fullscreen", "gi_denoise", {S::Post}, false, rhi::Cull::None, false, false,
+                       rhi::Blend::None, {F::RGBA16F}, false);
     pExpo_ = make("fullscreen", "expo_reduce", {S::Post}, false, rhi::Cull::None, false, false,
                   rhi::Blend::None, {F::RGBA8}, false);
     pPresent_ = make("fullscreen", "present", {S::Post}, false, rhi::Cull::None, false, false,
@@ -212,8 +253,130 @@ void Renderer::buildPipelines() {
                      {F::RGBA16F}, true);
     pFoliage_ = make("foliage", "foliage", {S::Frame, S::ShaderMaterial}, true, rhi::Cull::None, true, true,
                      rhi::Blend::None, {F::RGBA16F}, true);
+    pGrass_ = make("grass", "grass", {S::Frame, S::ShaderMaterial}, true, rhi::Cull::None, true, true,
+                   rhi::Blend::None, {F::RGBA16F}, true);
+    pTerrainShadow_ = make("terrain_shadow", "shadow_empty", {S::Frame}, true, rhi::Cull::None, true, true,
+                           rhi::Blend::None, {}, true);
     pUnderwater_ = make("fullscreen", "underwater", {S::Post}, false, rhi::Cull::None, false, false,
                         rhi::Blend::Alpha, {F::RGBA16F}, false);
+
+    // The virtual-geometry cut runs on the compute queue when its shader is built (docs/VGEOM.md §7). A missing
+    // or failing vgeom_cut.comp is not an error — a tool or test harness may run without the shaderc output — so
+    // the failure keeps the CPU walk: vgGpu_ only picks between two paths that select the same clusters.
+    if (!pVGeomCut_) {
+        try {
+            rhi::PipelineDesc c;
+            c.computeShader = "vgeom_cut";
+            c.sets = {rhi::SetType::Compute};
+            pVGeomCut_ = dev_.createPipeline(c);
+            vgGpu_ = true;
+        } catch (...) {
+            pVGeomCut_.reset();
+            vgGpu_ = false;
+        }
+    }
+}
+
+void Renderer::setSceneLights(std::vector<SceneLight> lights) {
+    sceneLights_ = std::move(lights);
+}
+
+// The environment bake (docs/IBL.md). Everything happens here, once per scene load: the cubemap from the procedural
+// sky or a panorama PNG, the prefiltered mip chain for the reflection, the probe volumes with the scene's lights
+// baked in, and the whole-scene fallback probe. Per frame, render() only interpolates the volumes and packs.
+bool Renderer::setEnvironment(const RenderSettings& settings, std::string* error) {
+    envIntensity_ = 0.0f;
+    envVolumes_.clear();
+    envWholeScene_ = env::Sh::zero();
+    const bool hadCube = envCube_ != nullptr;
+    envCube_.reset();
+    frameSet_->setTexture(8, dummyCube_.get());
+    shadowFrameSet_->setTexture(8, dummyCube_.get());
+
+    const env::Settings& e = settings.environment;
+    (void)hadCube;   // the binding above already reverted any previous environment
+    if (!e.enabled) return true;
+
+    // The key light the sky is baked with: the same pick render() makes, so the environment and the direct sun agree.
+    glm::vec3 sunDir{0.5f, 0.6f, 0.4f};
+    for (const SceneLight& sl : sceneLights_) {
+        if (!sl.enabled || sl.type != LightType::Directional) continue;
+        const float len = glm::length(sl.direction);
+        if (len < 1e-5f) continue;
+        sunDir = -sl.direction / len;
+        break;
+    }
+
+    env::Cubemap cube;
+    if (e.fromSky || e.panorama.empty()) {
+        cube = env::bakeSkyCubemap(settings.skyZenith, settings.skyHorizon, sunDir,
+                                   std::clamp(settings.sunDisc, 0.0f, 1.0f),
+                                   std::clamp(settings.cloudCover, 0.0f, 1.0f), e.cubeSize);
+    } else {
+        std::ifstream in(e.panorama, std::ios::binary);
+        if (!in) {
+            if (error) *error = "environment panorama could not be opened: " + e.panorama;
+            return false;
+        }
+        std::vector<uint8_t> bytes((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+        int w = 0, h = 0, comp = 0;
+        stbi_uc* px = stbi_load_from_memory(bytes.data(), static_cast<int>(bytes.size()), &w, &h, &comp, 4);
+        if (!px) {
+            if (error) *error = "environment panorama is not a readable image: " + e.panorama;
+            return false;
+        }
+        cube = env::fromEquirect(px, w, h, e.cubeSize);
+        stbi_image_free(px);
+    }
+
+    // The reflection chain: level 0 plus one prefiltered GGX level per mip, packed face-major RGBA8.
+    const std::vector<env::Cubemap> chain = env::prefilteredChain(cube);
+    const std::vector<std::vector<uint8_t>> mipBytes = env::packMipChain(cube, chain);
+    rhi::TextureDesc td;
+    td.width = static_cast<uint32_t>(cube.size);
+    td.height = static_cast<uint32_t>(cube.size);
+    td.format = rhi::Format::RGBA8;
+    td.mipmaps = true;
+    td.filter = rhi::Filter::Linear;
+    td.wrap = rhi::Wrap::Clamp;
+    td.faces = 6;
+    envCube_ = dev_.createTexture(td, nullptr, &mipBytes);
+    envMips_ = static_cast<int>(mipBytes.size());
+    frameSet_->setTexture(8, envCube_.get());
+    shadowFrameSet_->setTexture(8, envCube_.get());
+
+    // The lights, in bake terms. The sun is one of them: a probe in the open must shade brighter towards it, the
+    // same way the direct light does.
+    std::vector<env::EnvLight> lights;
+    for (const SceneLight& sl : sceneLights_) {
+        if (!sl.enabled) continue;
+        env::EnvLight el;
+        el.type = static_cast<int>(sl.type);
+        el.position = sl.position;
+        el.direction = sl.direction;
+        el.color = sl.color;
+        el.intensity = sl.intensity;
+        el.radius = sl.radius;
+        el.spotAngleDeg = sl.spotAngleDeg;
+        el.spotSoftness = sl.spotSoftness;
+        lights.push_back(el);
+    }
+
+    envWholeScene_ = env::irradianceFromCubemap(cube);
+    for (const env::EnvLight& el : lights) addLightToSh(&envWholeScene_, glm::vec3(0.0f), el);
+    for (const auto& vd : e.volumes) {
+        env::ProbeVolume pv;
+        pv.center = vd.center;
+        pv.halfExtent = glm::max(vd.size * 0.5f, glm::vec3(0.05f));
+        pv.divX = std::max(1, vd.divX);
+        pv.divY = std::max(1, vd.divY);
+        pv.divZ = std::max(1, vd.divZ);
+        env::bakeVolume(&pv, env::irradianceFromCubemap(cube), lights);
+        envVolumes_.push_back(std::move(pv));
+    }
+
+    envIntensity_ = std::max(e.intensity, 0.0f);
+    return true;
 }
 
 void Renderer::setWater(const WaterVolume* volume) {
@@ -295,7 +458,14 @@ void Renderer::rebuildTargets(uint32_t scale) {
     velocity_ = color(intW_, intH_, rhi::Format::RGBA16F);
     refr_ = color(std::max(1u, intW_ / 2), std::max(1u, intH_ / 2), rhi::Format::RGBA16F);
     normal_ = color(intW_, intH_, rhi::Format::RGBA8);
+    albedo_ = color(intW_, intH_, rhi::Format::RGBA8);
     fxHdr_ = color(intW_, intH_, rhi::Format::RGBA16F);
+    // GI targets at half resolution. The trace reads the previous frame's raster, the depth and the normals, and the
+    // heightmap at binding 5; the accumulator reads the trace and its own history; the composite is folded into the
+    // effects pass, which reads the accumulator at binding 5 on a frame where GI is on.
+    gi_ = color(std::max(1u, intW_ / 2), std::max(1u, intH_ / 2), rhi::Format::RGBA16F);
+    giDenoise_ = color(std::max(1u, intW_ / 2), std::max(1u, intH_ / 2), rhi::Format::RGBA16F);
+    for (auto& h : giHist_) h = color(std::max(1u, intW_ / 2), std::max(1u, intH_ / 2), rhi::Format::RGBA16F);
     for (auto& e : expo_) {   // 1x1 state, starts at 0.5 = exposure multiplier 1
         rhi::TextureDesc d;
         d.width = 1;
@@ -497,6 +667,39 @@ void Renderer::buildPostSets() {
     setEffects_->setTexture(2, normal_.get());
     setEffects_->setTexture(3, velocity_.get());
     setEffects_->setTexture(4, depth_.get());
+    // GI is composited at binding 5. The effects pass binds it every frame it runs; when GI is off the slot still has
+    // to hold a valid image, because a sampled binding cannot be left empty.
+    setEffects_->setTexture(5, blueNoise_.get());
+    // Binding 6 is the albedo for the multi-bounce AO fit. It is rebound per frame to either the G-buffer target or a
+    // 1x1 transparent texture, which is how the shader is told the approximation is off (alpha 0 = no albedo).
+    setEffects_->setTexture(6, noAlbedo_.get());
+    setEffects_->setBuffer(7, contactUbo_.get());
+    setGiTrace_ = dev_.createDescriptorSet(rhi::SetType::Post);
+    // Unit 1 is the Frame set's shadow atlas on the shared GL texture-unit space; 2 is the heightmap (bound per frame,
+    // because the terrain under the camera can change), 3 the raster, 4 depth, 5 normals.
+    setGiTrace_->setTexture(3, hdr_.get());
+    setGiTrace_->setTexture(4, depth_.get());
+    setGiTrace_->setTexture(5, normal_.get());
+    for (int i = 0; i < 2; ++i) {
+        setGiAccum_[i] = dev_.createDescriptorSet(rhi::SetType::Post);
+        setGiAccum_[i]->setTexture(1, gi_.get());
+        setGiAccum_[i]->setTexture(2, giHist_[1 - i].get());
+        setGiAccum_[i]->setTexture(4, depth_.get());
+        setGiAccum_[i]->setTexture(5, velocity_.get());   // reprojects the history with the engine's motion vectors
+        setGiDenoise_[i] = dev_.createDescriptorSet(rhi::SetType::Post);
+        setGiDenoise_[i]->setTexture(1, giHist_[i].get());
+        setGiDenoise_[i]->setTexture(4, depth_.get());
+        setGiDenoise_[i]->setTexture(5, normal_.get());
+    }
+    {
+        setGiDenoiseB_ = dev_.createDescriptorSet(rhi::SetType::Post);
+        setGiDenoiseB_->setTexture(1, giDenoise_.get());
+        setGiDenoiseB_->setTexture(4, depth_.get());
+        setGiDenoiseB_->setTexture(5, normal_.get());
+    }
+    giFrame_ = 0;
+    giWrite_ = 0;
+
     setExpoReduce_ = make(fxHdr_.get(), expo_[1].get());   // reads the previous state in tex 2
     setExpoCopy_ = make(expo_[0].get());
 }
@@ -520,10 +723,66 @@ glm::vec2 haltonJitter(uint32_t frame) {
 
 } // namespace
 
+void Renderer::setTrails(const std::vector<const Trail*>& alpha, const std::vector<const Trail*>& additive)
+{
+    trailAlpha_ = alpha;
+    trailAdditive_ = additive;
+}
+
+namespace {
+
+// The storage-buffer form of VGeomView for the compute cut: five normalized frustum planes (Gribb-Hartmann, the
+// same rows and normalization selectVGeom uses), then the eye, the pixel scale, the error budget, the cull flag.
+// std430 — five vec4s, one vec4 of eye+scale, four floats — 112 bytes, matching shaders/vgeom_cut.comp.
+struct VgGpuView {
+    glm::vec4 planes[5];
+    glm::vec4 eyePixel;   // eye.xyz, pixelScale in w
+    float errorPixels = 1.0f;
+    float cullOn = 1.0f;
+    float pad0 = 0.0f, pad1 = 0.0f;
+};
+static_assert(sizeof(VgGpuView) == 112, "VgGpuView must match the cut shader's std430 block");
+
+// The push block for one cut item: the instance's world matrix and its work-buffer region. A mat4 followed by
+// four consecutive uints lands at the same offsets (64..76) under both the scalar and std140 layouts, so one
+// definition serves both backends' PUSH macros. 80 bytes, inside the 128-byte push limit.
+struct VgPush {
+    glm::mat4 model{1.0f};
+    uint32_t idBase = 0, cmdBase = 0, pow2 = 0, root = 0;
+};
+static_assert(sizeof(VgPush) == 80, "VgPush must match the cut shader's push block");
+
+void fillVgView(const VGeomView& view, float errorPixels, VgGpuView* out) {
+    const glm::mat4& m = view.viewProj;
+    auto row = [&m](int i) { return glm::vec4(m[0][i], m[1][i], m[2][i], m[3][i]); };
+    const glm::vec4 r3 = row(3);
+    glm::vec4 planes[5] = {r3 + row(0), r3 - row(0), r3 + row(1), r3 - row(1), r3 - row(2)};
+    for (glm::vec4& p : planes) p /= std::max(glm::length(glm::vec3(p)), 1e-6f);
+    for (int i = 0; i < 5; ++i) out->planes[i] = planes[i];
+    out->eyePixel = glm::vec4(view.eye, view.pixelScale);
+    out->errorPixels = errorPixels;
+    out->cullOn = view.cull ? 1.0f : 0.0f;
+}
+
+uint32_t ceilPow2(uint32_t v) {
+    uint32_t p = 1;
+    while (p < v) p <<= 1;
+    return p;
+}
+
+}  // namespace
+
 void Renderer::render(const OrbitCamera& cam, const std::vector<Model*>& models,
                       float time, uint32_t frameIndex, const RenderSettings& s) {
     drawCalls_ = 0;
     triangles_ = 0;
+    trailTriangles_ = 0;
+    vgeomStats_ = VGeomStats{};
+    // The wireframe view is pipeline state, so the pipelines are built once per change rather than once per frame.
+    if (wireframe_ != s.wireframe) {
+        wireframe_ = s.wireframe;
+        buildPipelines();
+    }
     // Smear input: each model's hips displacement since the last render call (world units). The hips
     // carry the animated motion; the root only moves when the app moves the model.
     motionDisp_.clear();
@@ -564,23 +823,84 @@ void Renderer::render(const OrbitCamera& cam, const std::vector<Model*>& models,
     const glm::mat4 viewProjUnjittered = projUnjittered * f.view;
     glm::vec3 eye = cam.eye();
     f.camPos = glm::vec4(eye, 1.0f);
-    f.sunDir = glm::vec4(L, 0.0f);
-    f.sunColor = glm::vec4(glm::vec3(1.0f, 0.95f, 0.88f) * s.sunIntensity, 1.0f);
-    f.skyColor = glm::vec4(0.62f, 0.72f, 0.92f, 1.0f) * 0.9f;
-    f.groundColor = glm::vec4(0.50f, 0.45f, 0.48f, 1.0f);
+    // Selection view for virtual geometry (item 21). pixelScale is world metres at one metre of depth in pixels, which
+    // for a perspective projection is height * P11 / 2; with it, a cluster's error converts straight to pixels.
+    VGeomView vgView;
+    vgView.viewProj = viewProjUnjittered;
+    vgView.eye = eye;
+    vgView.pixelScale = 0.5f * float(intH_) * projUnjittered[1][1];
+    // The key light. A scene that authors a directional light turns it into the sun: its direction, colour and
+    // intensity replace the built-in one, so a key light in the Inspector is the light that casts the cascades.
+    glm::vec3 sunDir = L;
+    glm::vec3 sunColor = glm::vec3(1.0f, 0.95f, 0.88f) * s.sunIntensity;
+    lastKeyFromScene_ = false;
+    for (const SceneLight& sl : sceneLights_) {
+        if (!sl.enabled || sl.type != LightType::Directional) continue;
+        const float len = glm::length(sl.direction);
+        if (len < 1e-5f) continue;
+        sunDir = -sl.direction / len;   // authored as the direction it shines, used as the direction towards it
+        sunColor = sl.color * sl.intensity;
+        lastKeyFromScene_ = true;
+        break;
+    }
+    const glm::vec3 Lsun = sunDir;
+    f.sunDir = glm::vec4(Lsun, 0.0f);
+    f.sunColor = glm::vec4(sunColor, 1.0f);
+    // The scene's sky and ambient. These were two hardcoded constants until a game needed a night: the sky shader reads
+    // the two colours, and every shaded surface reads the hemisphere below. The 0.9 on the sky ambient is the old
+    // constant's own scale, kept so the daytime defaults render unchanged.
+    f.skyColor = glm::vec4(s.ambientSky, 1.0f) * 0.9f;
+    f.groundColor = glm::vec4(s.ambientGround, 1.0f);
+    f.skyZenith = glm::vec4(s.skyZenith, std::clamp(s.cloudCover, 0.0f, 1.0f));
+    f.skyHorizon = glm::vec4(s.skyHorizon, std::clamp(s.stars, 0.0f, 1.0f));
+    f.skyParams = glm::vec4(std::clamp(s.sunDisc, 0.0f, 1.0f), 0.0f, 0.0f, 0.0f);
+    // The environment probe (docs/IBL.md), interpolated at the camera's focus — the same pick the light ranking
+    // makes. envParams.x = 0 leaves the hemisphere ambient path in the shader untouched.
+    if (envIntensity_ > 0.0f) {
+        const env::FrameEnv fe = env::packFrameEnv(envVolumes_, envWholeScene_, cam.target, envIntensity_,
+                                                   envCube_ != nullptr, envMips_);
+        for (int i = 0; i < 9; ++i) f.envSH[i] = fe.sh[i];
+        f.envParams = fe.params;
+    } else {
+        f.envParams = glm::vec4(0.0f);
+    }
 
     // Cascade ranges: [near, 8], [8, 25], [25, 80].
     const float ranges[4] = {cam.nearZ, kSplits[0], kSplits[1], kSplits[2]};
-    for (int c = 0; c < 3; ++c) f.shadowMatrix[c] = fitCascade(cam, aspect, ranges[c], ranges[c + 1], L);
+    for (int c = 0; c < 3; ++c) f.shadowMatrix[c] = fitCascade(cam, aspect, ranges[c], ranges[c + 1], Lsun);
     f.cascadeSplits = glm::vec4(kSplits[0], kSplits[1], kSplits[2], 0.0f);
     f.shadowParams = glm::vec4(s.shadows ? 1.0f : 0.0f, 1.0f / float(kShadowAtlas), 0.02f, 0.0008f);
+    // Percentage-closer soft shadows ride in their own vec4: the sun's angular radius, the switch, the search radius and
+    // the cap. Left zero when the feature is off, which is the shader's test (docs/PCSS.md).
+    f.shadowSoft = (s.shadows && s.pcss)
+                        ? glm::vec4(std::max(s.pcssSunTanRadius, 1e-4f), 1.0f, std::max(s.pcssSearchRadius, 1e-3f),
+                                    std::max(s.pcssMaxPenumbra, 1e-3f))
+                        : glm::vec4(0.0f);
     f.screenParams = glm::vec4(float(intW_), float(intH_), time, float(frameIndex));
 
-    // Two soft coloured point lights for the anime rim/fill look.
+    // Scene lights: rank the point and spot lights against the camera's focus and pack the best ones. A camera looking
+    // at a lantern gets the lantern, not the two lights furthest away. Directional lights were taken above.
+    {
+        std::vector<SceneLight> local;
+        local.reserve(sceneLights_.size());
+        for (const SceneLight& sl : sceneLights_)
+            if (sl.type != LightType::Directional) local.push_back(sl);
+        const glm::vec3 focus = cam.target;
+        const glm::vec3 forward = cam.eye() - cam.target;   // the direction the camera looks
+        lastSceneLightCount_ = packSceneLights(local, focus, glm::length(forward) > 1e-5f ? glm::normalize(forward)
+                                                                                         : glm::vec3(0, 0, -1),
+                                               kFrameLights, f.lights);
+        f.lightParams = glm::vec4(float(lastSceneLightCount_), lastKeyFromScene_ ? 1.0f : 0.0f, 0.0f, 0.0f);
+    }
+    // Two soft coloured point lights for the anime rim/fill look, used only by a scene that authors no lights.
     f.pointPos[0] = glm::vec4(1.4f, 1.6f, 1.2f, 3.0f);
     f.toonA = glm::vec4(s.hairHighlight, s.hairShift, s.hairExponent, s.selfShadow ? 1.0f : 0.0f);
     f.toonB = glm::vec4(s.selfThreshold, s.selfHardness, s.gloss, s.glossPower);
-    f.toonC = glm::vec4(s.celBand ? 1.0f : 0.0f, s.normalMap, s.outlineMatNoise, s.reflection);
+    // A scene with an environment may override the reflection strength without touching the project default
+    // (environment.reflectionStrength < 0 keeps `reflection`).
+    const float reflectionStrength = s.environment.reflectionStrength >= 0.0f ? s.environment.reflectionStrength
+                                                                              : s.reflection;
+    f.toonC = glm::vec4(s.celBand ? 1.0f : 0.0f, s.normalMap, s.outlineMatNoise, reflectionStrength);
     if (s.faceShadow && !models.empty() && models[0]) {
         // Head forward: the model's facing turned by its root transform, flattened to the ground plane.
         glm::vec3 fw = glm::vec3(models[0]->root * glm::vec4(models[0]->facing, 0.0f));
@@ -623,6 +943,8 @@ void Renderer::render(const OrbitCamera& cam, const std::vector<Model*>& models,
     // the colour passes. Skinned draws are never frustum-culled, because the rest bounds do not follow the animation.
     constexpr float kCullMargin = 0.25f;   // metres, covers morph targets that move past the rest bounds
     std::vector<Rec> opaque, colorOpaque, blended, outlined, mmdEdges, graph, graphBlend, graphOutlined;
+    std::deque<VGeomCut> vgeomCuts;   // stable addresses: Rec keeps a pointer into this
+    uint32_t vgWorkU = 0;             // frame work-buffer cursor in uints (GPU cut only)
     for (Model* m : models) {
         if (!m) continue;
         const glm::vec3 centre = glm::vec3(m->root * glm::vec4(0.5f * (m->boundsMin + m->boundsMax), 1.0f));
@@ -636,6 +958,44 @@ void Renderer::render(const OrbitCamera& cam, const std::vector<Model*>& models,
             // Opt-in LOD (item 15): static draws pick their level by distance from the eye to the model centre.
             if (d.skin < 0 && !m->lodSwitch.empty())
                 r.lod = lodForDistance(glm::length(cam.eye() - centre), m->lodSwitch);
+            // Virtual geometry: choose the cut once per draw, before the lists copy the record, so every pass this
+            // frame draws the same clusters. Runs of adjacent clusters collapse into one indexed draw.
+            if (s.vgeom && prim->hasVGeom()) {
+                vgeomCuts.emplace_back();
+                VGeomCut& cut = vgeomCuts.back();
+                if (vgGpu_) {
+                    // Compute cut: this draw becomes one dispatch. Its region of the frame work buffer, in
+                    // uints: [idCount, cmdCount][ids pow2][commands cap*5] — headers and command tail are
+                    // zeroed by the upload below; the kernel rewrites everything it uses.
+                    const uint32_t count = uint32_t(prim->vgeom.clusters.size());
+                    cut.gpu = true;
+                    cut.prim = prim;
+                    cut.model = m->nodes[d.node].world;
+                    cut.pow2 = ceilPow2(count);
+                    cut.idBase = vgWorkU + 2;
+                    cut.cmdBase = cut.idBase + cut.pow2;
+                    cut.cmdCap = count;
+                    vgWorkU = cut.cmdBase + count * 5;
+                } else {
+                    VGeomStats stats;
+                    selectVGeom(prim->vgeom, m->nodes[d.node].world, vgView, s.vgeomPixels, cut.clusters, &stats);
+                    vgeomStats_.clusters += stats.clusters;
+                    vgeomStats_.leaves += stats.leaves;
+                    vgeomStats_.triangles += stats.triangles;
+                    vgeomStats_.culled += stats.culled;
+                    std::sort(cut.clusters.begin(), cut.clusters.end(), [&](uint32_t a, uint32_t b) {
+                        return prim->vgeom.clusters[a].firstIndex < prim->vgeom.clusters[b].firstIndex;
+                    });
+                    for (uint32_t id : cut.clusters) {
+                        const VGeomCluster& cl = prim->vgeom.clusters[id];
+                        if (!cut.runs.empty() && cut.runs.back().first + cut.runs.back().second == cl.firstIndex)
+                            cut.runs.back().second += cl.indexCount;
+                        else
+                            cut.runs.emplace_back(cl.firstIndex, cl.indexCount);
+                    }
+                }
+                r.vgeomCut = &cut;
+            }
             if (graphMaterials_.count(prim)) {
                 GraphMaterial* gm = graphMaterials_.at(prim);
                 (gm->transparent() ? graphBlend : graph).push_back(r);
@@ -660,6 +1020,48 @@ void Renderer::render(const OrbitCamera& cam, const std::vector<Model*>& models,
         }
     }
 
+    // The compute cut (docs/VGEOM.md §7): upload the frame's work buffer — zeroed headers and command tails, since
+    // the kernel fills what it uses and the draws read every other slot as a zero command that draws nothing —
+    // upload the selection view, then dispatch one thread per vgeom item. Device::dispatch brackets every call
+    // with barriers, so the next item's atomics and the indirect draws below both see each region's writes. The
+    // work buffer only ever grows, and a growth waits for idle first: the sets bind it by pointer.
+    if (vgGpu_ && !vgeomCuts.empty()) {
+        const size_t workBytes = size_t(vgWorkU) * 4;
+        if (!vgWork_ || vgWork_->size() < workBytes) {
+            dev_.waitIdle();
+            vgWork_ = dev_.createBuffer(rhi::BufferUsage::Storage, workBytes);
+            vgSets_.clear();
+        }
+        if (!vgView_) vgView_ = dev_.createBuffer(rhi::BufferUsage::Storage, sizeof(VgGpuView));
+        std::vector<uint8_t> zeros(workBytes, 0);
+        vgWork_->upload(zeros.data(), workBytes);
+        VgGpuView view{};
+        fillVgView(vgView, s.vgeomPixels, &view);
+        vgView_->upload(&view, sizeof(view));
+        dev_.bindPipeline(pVGeomCut_.get());
+        for (VGeomCut& cut : vgeomCuts) {
+            if (!cut.gpu) continue;
+            auto it = vgSets_.find(cut.prim);
+            if (it == vgSets_.end()) {
+                auto set = dev_.createDescriptorSet(rhi::SetType::Compute);
+                set->setBuffer(0, cut.prim->vgeomClusters.get());
+                set->setBuffer(1, cut.prim->vgeomChildren.get());
+                set->setBuffer(2, vgWork_.get());
+                set->setBuffer(3, vgView_.get());
+                it = vgSets_.emplace(cut.prim, std::move(set)).first;
+            }
+            dev_.bindDescriptorSet(0, it->second.get());
+            VgPush push;
+            push.model = cut.model;
+            push.idBase = cut.idBase;
+            push.cmdBase = cut.cmdBase;
+            push.pow2 = cut.pow2;
+            push.root = cut.prim->vgeom.root;
+            dev_.pushConstants(&push, sizeof(push));
+            dev_.dispatch(1, 1, 1);
+        }
+    }
+
     auto drawWith = [&](const Rec& r, rhi::Pipeline* pipe, rhi::DescriptorSet* frameSet,
                         rhi::DescriptorSet* materialSet, glm::vec4 p0) {
         const bool skinned = r.skin >= 0;
@@ -678,18 +1080,46 @@ void Renderer::render(const OrbitCamera& cam, const std::vector<Model*>& models,
         uint32_t ic = 0;
         lodIndices(*r.prim, r.lod, &ib, &ic);
         dev_.bindVertexBuffer(r.prim->vertices.get());
-        dev_.bindIndexBuffer(ib);
+        // A cut replaces the distance LOD in every pass except the shadow one: a shadow keeps the classic index
+        // buffer, so a coarse parent can never open a gap in a shadow map.
+        const bool vgeom = r.vgeomCut != nullptr && pipe != pShadow_.get();
+        dev_.bindIndexBuffer(vgeom ? r.prim->vgeomIndices.get() : ib);
         dev_.pushConstants(&pc, sizeof(pc));
-        dev_.drawIndexed(ic);
-        ++drawCalls_;
-        triangles_ += ic / 3;
+        if (vgeom) {
+            if (r.vgeomCut->gpu) {
+                // One indirect draw over the region the kernel wrote: each entry is a merged run of clusters,
+                // every unwritten slot a zero command. Triangle totals would need a readback we will not pay
+                // for mid-frame, so this path counts the call and leaves triangles_ to the CPU path's numbers.
+                dev_.drawIndexedIndirect(vgWork_.get(), size_t(r.vgeomCut->cmdBase) * 4, r.vgeomCut->cmdCap);
+                ++drawCalls_;
+            } else {
+                for (const auto& run : r.vgeomCut->runs) {
+                    dev_.drawIndexed(run.second, run.first);
+                    ++drawCalls_;
+                    triangles_ += run.second / 3;
+                }
+            }
+        } else {
+            dev_.drawIndexed(ic);
+            ++drawCalls_;
+            triangles_ += ic / 3;
+        }
     };
     auto bindAndDraw = [&](const Rec& r, rhi::Pipeline* pipe, rhi::DescriptorSet* frameSet, glm::vec4 p0) {
         drawWith(r, pipe, frameSet, r.prim->material->set.get(), p0);
     };
 
+    // The GPU brackets the device resolved when this frame began: one frame behind, never a wait (docs/PROFILER.md).
+    gpuStats_.clear();
+    if (const std::vector<float> gpu = dev_.gpuTimesMs(); !gpu.empty()) {
+        static const char* kGpuNames[] = {"shadows", "depth", "scene", "post", "hud"};
+        const size_t n = std::min(gpu.size(), sizeof(kGpuNames) / sizeof(kGpuNames[0]));
+        for (size_t i = 0; i < n; ++i) gpuStats_.push_back({kGpuNames[i], gpu[i]});
+    }
+
     // 1. Cascaded shadow atlas. The pass always runs so the atlas is cleared.
     {
+        dev_.beginGpuTime(0);
         rhi::PassDesc sp;
         sp.colors.clear();
         sp.depth = shadowAtlas_.get();
@@ -701,11 +1131,27 @@ void Renderer::render(const OrbitCamera& cam, const std::vector<Model*>& models,
                 dev_.setViewport((c % 2) * kCascadeSize, (c / 2) * kCascadeSize, kCascadeSize, kCascadeSize);
                 for (const Rec& r : opaque)   // blended materials do not cast shadows
                     bindAndDraw(r, pShadow_.get(), shadowFrameSet_.get(), glm::vec4(0.0f, float(c), 0.0f, 0.0f));
+                // Terrain casts too (item 19): without it a hillside has no shadow of its own, and grass on the dark
+                // side of a ridge stays lit. Chunks outside this cascade's light frustum are skipped.
+                if (!terrain_.empty()) {
+                    dev_.bindPipeline(pTerrainShadow_.get());
+                    dev_.bindDescriptorSet(0, shadowFrameSet_.get());
+                    for (const TerrainDraw& t : terrain_) {
+                        if (boxOutsideFrustum(f.shadowMatrix[c], t.model, t.boundsMin, t.boundsMax, kCullMargin)) continue;
+                        PushConstants pc = pcWith(t.model, glm::vec4(float(c), 0.0f, 0.0f, 0.0f));
+                        dev_.bindVertexBuffer(t.vertices);
+                        dev_.bindIndexBuffer(t.indices);
+                        dev_.pushConstants(&pc, sizeof(pc));
+                        dev_.drawIndexed(t.indexCount);
+                    }
+                }
             }
         }
         dev_.endPass();
+        dev_.endGpuTime(0);
     }
 
+    dev_.beginGpuTime(1);
     // 2a. Depth prepass: the in-view opaque toon draws write depth first, so the colour pass shades each pixel once
     // (its depth test is LESS_OR_EQUAL, so equal depths pass). The depth shader runs the colour shaders' discards.
     if (s.depthPrepass) {
@@ -718,6 +1164,8 @@ void Renderer::render(const OrbitCamera& cam, const std::vector<Model*>& models,
             bindAndDraw(r, pDepth_[r.prim->material->doubleSided ? 1 : 0].get(), frameSet_.get(), glm::vec4(0.0f));
         dev_.endPass();
     }
+
+    dev_.endGpuTime(1);
 
     // Blended draws. Without water they follow the opaque draws in the scene pass. With water they run after the
     // water surface, in a pass of their own.
@@ -732,6 +1180,23 @@ void Renderer::render(const OrbitCamera& cam, const std::vector<Model*>& models,
                      graphMaterials_.at(r.prim)->set(), glm::vec4(0.0f));
     };
 
+    // Trails (item 27): one indexed draw for the alpha list and one for the additive list, over the geometry the CPU
+    // already built. Created on first use so a scene with no trails pays nothing; both target the HDR colourbuffer
+    // with the scene depth attached, which is the pass this is called from.
+    auto drawTrails = [&]() {
+        if (trailAlpha_.empty() && trailAdditive_.empty()) return;
+        if (!trailAlphaRenderer_)
+            trailAlphaRenderer_ = std::make_unique<TrailRenderer>(dev_, rhi::Format::RGBA16F, true, TrailBlend::Alpha);
+        if (!trailAdditiveRenderer_)
+            trailAdditiveRenderer_ = std::make_unique<TrailRenderer>(dev_, rhi::Format::RGBA16F, true, TrailBlend::Additive);
+        const uint32_t alphaTris = trailAlphaRenderer_->draw(dev_, *frameSet_, eye, trailAlpha_);
+        if (alphaTris > 0) { ++drawCalls_; triangles_ += alphaTris; }
+        const uint32_t addTris = trailAdditiveRenderer_->draw(dev_, *frameSet_, eye, trailAdditive_);
+        if (addTris > 0) { ++drawCalls_; triangles_ += addTris; }
+        trailTriangles_ = alphaTris + addTris;
+    };
+
+    dev_.beginGpuTime(2);
     // 2. Scene: sky, infinite grid, toon materials, outlines, then blended materials.
     {
         rhi::PassDesc hp;
@@ -783,6 +1248,29 @@ void Renderer::render(const OrbitCamera& cam, const std::vector<Model*>& models,
                 triangles_ += (f.indexCount / 3) * f.instanceCount;
             }
         }
+        // Grass (item 19). The same culls as foliage: the batch's chunk against the frustum, and the whole chunk
+        // against the distance where the last blade has faded. Inside a batch the vertex shader thins blades by
+        // distance and bends them in the wind.
+        if (!grass_.empty()) {
+            dev_.bindPipeline(pGrass_.get());
+            dev_.bindDescriptorSet(0, frameSet_.get());
+            for (const GrassDraw& g : grass_) {
+                const glm::vec3 centre = glm::vec3(g.model * glm::vec4((g.boundsMin + g.boundsMax) * 0.5f, 1.0f));
+                const float radius = glm::length(g.boundsMax - g.boundsMin) * 0.5f;
+                if (glm::distance(eye, centre) - radius > g.bands.z) continue;
+                if (boxOutsideFrustum(viewProjUnjittered, g.model, g.boundsMin, g.boundsMax, kCullMargin)) continue;
+                PushConstants pc = pcWith(g.model, glm::vec4(g.bands, 0.0f), g.wind);
+                pc.p2 = g.pusher;
+                pc.p3 = glm::vec4(g.windDir, 0.0f, 0.0f);
+                dev_.bindDescriptorSet(1, g.instances);
+                dev_.bindVertexBuffer(g.vertices);
+                dev_.bindIndexBuffer(g.indices);
+                dev_.pushConstants(&pc, sizeof(pc));
+                dev_.drawIndexedInstanced(g.indexCount, g.instanceCount);
+                ++drawCalls_;
+                triangles_ += (g.indexCount / 3) * g.instanceCount;
+            }
+        }
         if (s.grid) {
             dev_.bindPipeline(hasWater ? pGridWater_.get() : pGrid_.get());
             dev_.bindDescriptorSet(0, frameSet_.get());
@@ -805,6 +1293,7 @@ void Renderer::render(const OrbitCamera& cam, const std::vector<Model*>& models,
         for (const Rec& r : mmdEdges)
             bindAndDraw(r, pMmdEdge_.get(), frameSet_.get(), glm::vec4(0.0f, s.outlineScale, 0.0f, 0.0f));
         if (!hasWater) drawBlended();
+        drawTrails();
         dev_.endPass();
     }
 
@@ -853,6 +1342,7 @@ void Renderer::render(const OrbitCamera& cam, const std::vector<Model*>& models,
             dev_.beginPass(bp);
             dev_.setViewport(0, 0, intW_, intH_);
             drawBlended();
+            drawTrails();
             dev_.endPass();
         }
         if (underWater) {
@@ -888,7 +1378,8 @@ void Renderer::render(const OrbitCamera& cam, const std::vector<Model*>& models,
         dev_.endPass();
     };
 
-    // 2a. Per-object motion vectors (TAA or motion blur). Opaque geometry is drawn again against the scene depth
+    // 2a. Per-object motion vectors (TAA, motion blur, or the GI history). Opaque geometry is drawn again against the
+    // scene depth
     // with this frame's transforms and last frame's (joint palette, or model matrix, plus the previous
     // unjittered viewProj). Camera motion is included, so a still object reprojects as the camera does.
     // Pixels with no opaque geometry keep a zero vector and fall back to camera reprojection in TAA.
@@ -897,7 +1388,9 @@ void Renderer::render(const OrbitCamera& cam, const std::vector<Model*>& models,
         prevViewProj_ = viewProjUnjittered;
         prevViewReady_ = true;
     }
-    const bool needVelocity = taaOn || s.motionBlur > 0.0f;
+    // The GI accumulator reprojects its history with this buffer, so GI needs it even when TAA and motion blur are
+    // both off — otherwise it would read whatever the last frame that had TAA left behind.
+    const bool needVelocity = taaOn || s.motionBlur > 0.0f || s.gi > 0.0f;
     if (needVelocity) {
         if (taaReset)   // no valid history (first frame, or TAA just switched on): no previous transforms
             for (auto& entry : motion_) entry.second.last.clear();
@@ -970,13 +1463,13 @@ void Renderer::render(const OrbitCamera& cam, const std::vector<Model*>& models,
         }
     }
 
-    // 2a'. View-space normals for SSAO, SSR and the depth-normal outline. The same draws as the velocity
+    // 2a'. View-space normals for SSAO, SSR, contact shadows and the depth-normal outline. The same draws as the velocity
     // pass, against the scene depth. Pixels with no opaque surface keep alpha 0.
     const bool needNormals = s.ssao > 0.0f || s.ssr > 0.0f || s.depthNormalOutline > 0.0f || s.screenRim > 0.0f
-                              || s.depthEdgeRim > 0.0f;
+                              || s.depthEdgeRim > 0.0f || s.gi > 0.0f || s.contactShadows > 0.0f;
     if (needNormals) {
         rhi::PassDesc np;
-        np.colors = {normal_.get()};
+        np.colors = {normal_.get(), albedo_.get()};
         np.depth = depth_.get();
         np.clearColor = true;
         np.clearValue = glm::vec4(0.5f, 0.5f, 0.5f, 0.0f);
@@ -1005,6 +1498,74 @@ void Renderer::render(const OrbitCamera& cam, const std::vector<Model*>& models,
         dev_.endPass();
     }
 
+    dev_.endGpuTime(2);
+    dev_.beginGpuTime(3);
+
+    // 2b2. Real-time GI (the iGPU path tracer, docs/PATHTRACE.md §4). Two passes at half resolution: trace one bounce
+    // per half-res pixel against the heightfield, accumulate it over frames, and leave the result in a texture the
+    // effects pass composites at full resolution with a depth-guided bilateral filter. The rays read this frame's
+    // raster (hdr_, before the effects pass runs), so the estimator never feeds its own output back into itself.
+    const bool giOn = s.gi > 0.0f && heightfield_.height != nullptr && hdr_ && depth_ && normal_;
+    bool giComposite = false;
+    if (giOn) {
+        const uint32_t gw = std::max(1u, intW_ / 2), gh = std::max(1u, intH_ / 2);
+        // The trace's push constants: inverse viewProj in `model`, the heightfield and ray parameters, and the tile
+        // origin (the shader works in metres from the tile's first sample).
+        glm::mat4 invVP = glm::inverse(f.viewProj);
+        PushConstants tp = pcWith(invVP, glm::vec4(heightfield_.cellSize, heightfield_.heightScale, s.giRadius, 0.05f),
+                                  glm::vec4(std::clamp(s.giRays, 1.0f, 8.0f), 0.0f, 0.0f, 0.0f),
+                                  glm::vec4(heightfield_.origin.x, heightfield_.origin.z, heightfield_.origin.y,
+                                            float(giFrame_)));
+        // The trace needs the Frame set too, so it is bound by hand rather than through post(), which binds only set 0.
+        // The heightmap is pointer-stable for a tile but the camera can move to another tile, so it is (re)bound here.
+        setGiTrace_->setTexture(2, heightfield_.height);
+        {
+            rhi::PassDesc pd;
+            pd.colors = {gi_.get()};
+            pd.clearColor = true;
+            pd.clearValue = glm::vec4(0.0f);
+            dev_.beginPass(pd);
+            dev_.setViewport(0, 0, gw, gh);
+            dev_.bindPipeline(pGiTrace_.get());
+            dev_.bindDescriptorSet(0, frameSet_.get());
+            dev_.bindDescriptorSet(1, setGiTrace_.get());
+            dev_.pushConstants(&tp, sizeof(tp));
+            dev_.drawFullscreen();
+            dev_.endPass();
+        }
+        // Accumulate into the write history, reading the other one. The first frame and every tenth after it take the
+        // trace as is, so a moving camera never lags more than a few frames of light.
+        const float weight = (giFrame_ % 10 == 0) ? 1.0f : std::max(0.03125f, s.giHistory);
+        // prevViewProj_ is still last frame's here: section 2b advances it after this pass. The gatherer needs it to
+        // reproject the history of surfaces the velocity pass does not draw — the terrain, which is the scene.
+        const glm::mat4 giReproj = prevViewProj_ * glm::inverse(f.viewProj);
+        post(giHist_[giWrite_].get(), true, pGiAccum_.get(), setGiAccum_[giWrite_].get(),
+             pcWith(giReproj, glm::vec4(weight, 0, 0, 0),
+                    glm::vec4(1.0f / float(intW_), 1.0f / float(intH_), 0, 0)),
+             int(intW_) / 2, int(intH_) / 2);
+        // Denoise what the accumulator produced, into gi_ (the trace's own target, free until next frame). The
+        // accumulation history itself stays unfiltered, so the filter can never feed its own output back into the
+        // samples it is filtering; only the image the frame displays is denoised.
+        rhi::Texture* giFinal = giHist_[giWrite_].get();
+        if (s.giDenoise) {
+            post(giDenoise_.get(), false, pGiDenoise_.get(), setGiDenoise_[giWrite_].get(),
+                 pcWith(glm::mat4(1.0f), glm::vec4(1.0f, 0.02f, 16.0f, 0.0f)), gw, gh);
+            post(gi_.get(), false, pGiDenoise_.get(), setGiDenoiseB_.get(),
+                 pcWith(glm::mat4(1.0f), glm::vec4(2.0f, 0.02f, 16.0f, 0.0f)), gw, gh);
+            giFinal = gi_.get();
+        }
+        // The effects pass composites it: binding 5 carries the accumulated GI, and p3.w its strength.
+        setEffects_->setTexture(5, giFinal);
+        giComposite = true;
+        giWrite_ ^= 1;
+        ++giFrame_;
+    } else {
+        giFrame_ = 0;
+    }
+    // Binding 6: the albedo the multi-bounce AO fit reads. Off, or unavailable this frame, the slot holds a 1x1
+    // transparent texture and effects.frag falls back to single-bounce AO.
+    setEffects_->setTexture(6, s.multiBounceAO && s.ssao > 0.0f ? albedo_.get() : noAlbedo_.get());
+
     // 2c. Screen-space effects on the HDR frame (shaders/effects.frag): motion blur, SSAO, depth-normal
     // outline, SSR, fog with sun in-scatter, lens flare. Runs before TAA, bloom and tonemap, which read
     // fxHdr_. With everything at its default the pass copies the frame.
@@ -1022,13 +1583,21 @@ void Renderer::render(const OrbitCamera& cam, const std::vector<Model*>& models,
             sunVisible = 1.0f;
         }
         e[3] = glm::vec4(sunUV, s.flare * sunVisible, s.ssao);
+        // p1: SSAO radius (m), rim, outline noise, depth-edge rim. The traced GI strength rides in p3.w, the one slot
+        // the split line leaves free: it is written before the split block below and that block preserves it.
         PushConstants ep = pcWith(e, glm::vec4(s.ssr, s.depthNormalOutline, s.motionBlur, aspect),
-                                  glm::vec4(0.5f, s.screenRim, s.outlineNoise, s.depthEdgeRim));   // p1: SSAO radius (m), rim, outline noise, depth-edge rim
+                                  glm::vec4(0.5f, s.screenRim, s.outlineNoise, s.depthEdgeRim));
         // SplitScreen line: p2 = (dir, offset px, width px); p3 = tints and line colour as packed RGBA8 bits.
+        ep.p3.w = giComposite ? s.gi : 0.0f;
+        // Contact-shadow parameters: Post binding 7, uploaded here because the push block has no free slot.
+        const glm::vec4 contactParams(s.contactShadowLength, s.contactShadowThickness, s.contactShadows,
+                                      float(s.contactShadowSteps));
+        contactUbo_->upload(&contactParams, sizeof(contactParams));
         if (glm::dot(s.splitDir, s.splitDir) > 1e-8f) {
             const glm::vec2 dir = glm::normalize(s.splitDir);
             ep.p2 = glm::vec4(dir, s.splitOffsetPx, s.splitLineWidthPx);
-            ep.p3 = glm::vec4(packBits(s.splitNprTint), packBits(s.splitPbrTint), packBits(s.splitLineColor), 0.0f);
+            const float keepGi = ep.p3.w;
+            ep.p3 = glm::vec4(packBits(s.splitNprTint), packBits(s.splitPbrTint), packBits(s.splitLineColor), keepGi);
         }
         post(fxHdr_.get(), true, pEffects_.get(), setEffects_.get(), ep, intW_, intH_);
     }
@@ -1164,6 +1733,35 @@ void Renderer::render(const OrbitCamera& cam, const std::vector<Model*>& models,
         dev_.drawFullscreen();
         dev_.endPass();
     }
+    dev_.endGpuTime(3);
+}
+
+void Renderer::setHudAtlas(FontAtlas* atlas) {
+    hudAtlas_ = atlas;
+    hud_.reset();   // the texture is created lazily from the atlas on the next draw
+}
+
+uint32_t Renderer::drawHud(const std::vector<HudVertex>& vertices, uint32_t screenW, uint32_t screenH) {
+    // One GPU bracket for the whole call (docs/PROFILER.md): it opens before the early-out, so the slot's pair is
+    // written on every path and the empty-HUD frame measures zero instead of leaving a dangling timestamp.
+    dev_.beginGpuTime(4);
+    uint32_t drawn = 0;
+    if (hudAtlas_ && hudAtlas_->loaded() && !vertices.empty()) {
+        if (!hud_) hud_ = std::make_unique<HudRenderer>(dev_, rhi::Format::Backbuffer);
+        hud_->syncAtlas(dev_, *hudAtlas_);
+        rhi::PassDesc pass;
+        pass.backbuffer = true;
+        pass.clearColor = false;   // load the finished frame
+        pass.clearDepth = false;
+        dev_.beginPass(pass);
+        const uint32_t w = dev_.backbufferWidth();
+        const uint32_t h = dev_.backbufferHeight();
+        dev_.setViewport(0, 0, static_cast<int>(w), static_cast<int>(h));
+        drawn = hud_->draw(dev_, vertices, screenW ? screenW : w, screenH ? screenH : h);
+        dev_.endPass();
+    }
+    dev_.endGpuTime(4);
+    return drawn;
 }
 
 } // namespace ukiyo

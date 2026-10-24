@@ -1,5 +1,17 @@
 #include "main_window.h"
 
+#include "lua_editor.h"
+
+#include "scripting_tools.h"
+
+#include "engine/json_patch.h"
+#include "engine/localisation.h"
+#include "engine/vcs.h"
+#include "pack/pack_cli.h"
+#include "engine/asset_db.h"
+#include "engine/property_search.h"
+#include "engine/script_project.h"
+
 #include <algorithm>
 #include <functional>
 
@@ -17,6 +29,7 @@
 #include <QKeySequence>
 #include <QLineEdit>
 #include <QPlainTextEdit>
+#include <QProcess>
 #include <QSpinBox>
 #include <QTableWidget>
 #include <QTextEdit>
@@ -28,13 +41,18 @@
 #include "anim_file.h"
 #include "anim_panel.h"
 #include "engine/anim.h"
+#include "engine/build_manifest.h"
+#include "engine/browser_zoom.h"
 #include "engine/cull.h"
+#include "engine/search.h"
 #include "engine/terrain.h"
 
 #include <QTemporaryDir>
 #include "foldout.h"
+#include "inspector_filter.h"
 #include "inspector_ui.h"
 #include "prefs_dialog.h"
+#include "input/rebind.h"
 #include "prefab_file.h"
 #include "systems_json.h"
 #include "scene_file.h"
@@ -50,6 +68,8 @@
 #include <glm/gtc/matrix_transform.hpp>
 #include <functional>
 #include <memory>
+#include <string>
+#include <string_view>
 #include <atomic>
 #include <cmath>
 #include <functional>
@@ -112,6 +132,7 @@
 #include <QFileInfo>
 #include <QDirIterator>
 #include <QFileSystemModel>
+#include <QSortFilterProxyModel>
 #include <QFileSystemWatcher>
 #include <QFormLayout>
 #include <QFrame>
@@ -147,6 +168,7 @@
 #include <QKeyEvent>
 #include <QToolButton>
 #include <QTreeView>
+#include <QTextCursor>
 #include <QTreeWidget>
 #include <QVBoxLayout>
 #include <QWheelEvent>
@@ -169,6 +191,12 @@
 #define UKIYO_ROOT "."
 #endif
 
+namespace {
+// Content that ships with the engine (the animation library, the starter character, the LUTs) is
+// looked up beside the executable's source checkout, not in the project folder.
+QString engineAssetsRoot() { return QStringLiteral(UKIYO_ROOT) + QStringLiteral("/assets"); }
+} // namespace
+
 namespace editor {
 
 using scene_file::emptyModelPath;
@@ -184,9 +212,17 @@ constexpr int kMaxLogLines = 2000;
 // Hierarchy item kinds. Scene nodes use their index (>= 0).
 constexpr int kItemMainCamera = -1;
 constexpr int kItemScene = -2;
-constexpr int kItemLight = -4;
+constexpr int kItemLight = -4;       // the project's sun, which always exists
 // Instance i is listed as kItemInstanceBase - i. Node rows use their index (>= 0).
 constexpr int kItemInstanceBase = -100;
+// Authored light i (item 6) is listed as kItemLightBase - i, so a row can be told from an instance row. The two
+// ranges must never touch: an instance is (kItemLightBase, kItemInstanceBase], a light is <= kItemLightBase, and a
+// hundred thousand instances before they meet is five figures of headroom. They are read through these two helpers
+// because the first version of the light code tested "kind > kItemLightBase" wherever it meant "is an instance",
+// which is true of every instance and made a model row open the Delete Light menu.
+constexpr int kItemLightBase = -100000;
+constexpr bool isInstanceRow(int kind) { return kind <= kItemInstanceBase && kind > kItemLightBase; }
+constexpr bool isLightRow(int kind) { return kind <= kItemLightBase; }
 // Holds the label a Hierarchy row was built with, so a real edit can be told apart from a restyle.
 constexpr int kRowLabelRole = Qt::UserRole + 1;
 // Blue for prefab instances in the Hierarchy and Inspector.
@@ -232,6 +268,122 @@ public:
             return QStringLiteral("Kind");
         return QFileSystemModel::headerData(section, orientation, role);
     }
+};
+
+// The Project browser's filter. Godot 4.8's glob search (GH-119103) is a different rule from the model's own wildcard
+// list: a query is split into words, a word without wildcards is a substring, a word with them is a glob matched against
+// the whole name, and every word has to match. It also has to see the path inside the current folder, so a query can
+// name the folder ("props *.png"). The grammar itself lives in engine/search (tested there); this class is the model
+// adapter that feeds it QString paths and keeps the kind button's extension lists in one place.
+class BrowserFilterModel : public QSortFilterProxyModel {
+public:
+    explicit BrowserFilterModel(QObject* parent = nullptr) : QSortFilterProxyModel(parent) {}
+
+    // The search box's text, as typed. Empty shows everything the kind allows.
+    void setQuery(const QString& text) {
+        const std::string next = text.toUtf8().toStdString();
+        if (next == query_) return;
+        query_ = next;
+        invalidateFilter();
+    }
+    // 0 all, 1 models, 2 textures, 3 audio, 4 folders: the same list the filter button has offered all along.
+    void setKind(int kind) {
+        if (kind == kind_) return;
+        kind_ = kind;
+        invalidateFilter();
+    }
+    // The folder the browser is showing: queries match a path relative to it, so "sword" also finds a file inside a
+    // folder called Swords, and "props/*.png" is a pattern rather than a file name.
+    void setRootFolder(const QString& path) {
+        const QString next = QDir::cleanPath(path);
+        if (next == root_) return;
+        root_ = next;
+        invalidateFilter();
+    }
+
+    static bool extensionAllowed(int kind, const QString& suffix) {
+        static const QStringList modelExt{"vrm", "glb", "gltf"};
+        static const QStringList textureExt{"png", "jpg", "jpeg", "bmp", "tga", "webp", "gif", "tif", "tiff"};
+        static const QStringList audioExt{"wav", "mp3", "ogg", "flac", "opus", "m4a"};
+        switch (kind) {
+        case 1: return modelExt.contains(suffix);
+        case 2: return textureExt.contains(suffix);
+        case 3: return audioExt.contains(suffix);
+        default: return true;
+        }
+    }
+
+protected:
+    bool filterAcceptsRow(int row, const QModelIndex& parent) const override {
+        auto* fs = qobject_cast<QFileSystemModel*>(sourceModel());
+        if (!fs) return true;
+        const QModelIndex index = fs->index(row, 0, parent);
+        if (!index.isValid()) return true;
+        const QString path = fs->filePath(index);
+        const bool isDir = fs->isDir(index);
+        // The folder the browser is showing, and every folder above it, is never filtered away. Two reasons, and the
+        // second one is not obvious: a view whose root row is hidden shows nothing at all, and a proxy model has no
+        // row for the children of a rejected parent -- so filtering "assets" out on a query like "sword" took the
+        // folder being shown with it and the grid went empty for every query typed inside a subfolder. The chain is
+        // kept unconditionally; only the rows below the folder are the query's business.
+        if (!root_.isEmpty()) {
+            const QString clean = QDir::cleanPath(path);
+            if (clean == root_) return true;
+            if (isDir) {
+                const QString below = QDir(clean).relativeFilePath(root_);
+                if (!below.startsWith(QStringLiteral("..")) && !QDir::isAbsolutePath(below)) return true;
+            }
+        }
+        if (kind_ == 4 && !isDir) return false;                     // Folders: folders only
+        if ((kind_ >= 1 && kind_ <= 3) && isDir) return false;      // a type filter is about files
+        if (!isDir && !extensionAllowed(kind_, QFileInfo(path).suffix().toLower())) return false;
+        if (query_.empty()) return true;
+        const QString rel = root_.isEmpty() ? fs->fileName(index) : QDir(root_).relativeFilePath(path);
+        const QByteArray utf8 = rel.toUtf8();
+        return ukiyo::matchesNameTokens(std::string_view(utf8.constData(), static_cast<size_t>(utf8.size())), query_);
+    }
+
+    // Folders first, then names the way a file browser compares them. QFileSystemModel sorts that way itself, but a
+    // proxy sorts by QVariant and would mix folders into the files; the details view is sorted, so it would show at once.
+    bool lessThan(const QModelIndex& left, const QModelIndex& right) const override {
+        auto* fs = qobject_cast<QFileSystemModel*>(sourceModel());
+        if (!fs || left.column() != 0) return QSortFilterProxyModel::lessThan(left, right);
+        const bool leftDir = fs->isDir(left), rightDir = fs->isDir(right);
+        if (leftDir != rightDir) return leftDir;
+        const QString a = left.data(Qt::DisplayRole).toString();
+        const QString b = right.data(Qt::DisplayRole).toString();
+        return QString::compare(a, b, Qt::CaseInsensitive) < 0;
+    }
+
+private:
+    std::string query_;   // UTF-8, the form the engine's matcher reads
+    QString root_;
+    int kind_ = 0;
+};
+
+// Ctrl + the wheel over the browser zooms the thumbnails instead of scrolling (GH-119103). There is no modifier on the
+// event that a QListView would act on, so the filter answers the wheel before the view does and leaves every other
+// wheel to it: a plain scroll still scrolls, and Shift + wheel still scrolls sideways.
+class WheelZoomFilter : public QObject {
+public:
+    WheelZoomFilter(QObject* parent, std::function<void(int)> onNotches)
+        : QObject(parent), onNotches_(std::move(onNotches)) {}
+
+protected:
+    bool eventFilter(QObject* watched, QEvent* e) override {
+        if (e->type() != QEvent::Wheel) return QObject::eventFilter(watched, e);
+        auto* we = static_cast<QWheelEvent*>(e);
+        if (!(we->modifiers() & (Qt::ControlModifier | Qt::MetaModifier))) return QObject::eventFilter(watched, e);
+        const QPoint delta = we->angleDelta();
+        const int d = delta.y() != 0 ? delta.y() : delta.x();
+        if (d == 0) return QObject::eventFilter(watched, e);   // a trackpad's pixel scroll with no angle: not a notch
+        onNotches_(d > 0 ? 1 : -1);
+        we->accept();
+        return true;
+    }
+
+private:
+    std::function<void(int)> onNotches_;
 };
 
 // Key commands on a view: F2 and Delete in the Project browser, Ctrl+C in the console. `handle(key, perform)` answers for the key and,
@@ -549,8 +701,8 @@ void RenderView::wheelEvent(QWheelEvent* e) {
 // ---------------------------------------------------------------------------------------------
 // MainWindow: construction
 
-MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent) {
-    projectRoot_ = QStringLiteral(UKIYO_ROOT);
+MainWindow::MainWindow(const QString& projectRoot, QWidget* parent) : QMainWindow(parent) {
+    projectRoot_ = projectRoot.trimmed().isEmpty() ? QStringLiteral(UKIYO_ROOT) : QDir::cleanPath(projectRoot);
     resize(1568, 843);
 
     worker_ = new RenderWorker;
@@ -579,6 +731,9 @@ MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent) {
     QTimer::singleShot(0, this, [this] {
         factoryLayout_ = saveState();
         restoreStartupLayout();
+        // Plugins load after the window is up, so a plugin that logs while loading has a console to log into and a
+        // broken one cannot stop the editor from appearing.
+        loadPlugins();
     });
 }
 
@@ -594,7 +749,12 @@ void MainWindow::postToWorker(std::function<void()> fn) {
     QMetaObject::invokeMethod(worker_, std::move(fn), Qt::QueuedConnection);
 }
 
-bool MainWindow::bootstrap(QString* error) {
+bool MainWindow::bootstrap(QString* error, const LoadProgress& progress) {
+    auto stage = [&progress](const QString& text, float fraction) {
+        if (progress) progress(text, fraction);
+    };
+
+    stage(QStringLiteral("Starting the render device"), 0.10f);
     QString err;
     bool ok = false;
     runOnWorker([&] { ok = worker_->init(&err); });
@@ -603,13 +763,27 @@ bool MainWindow::bootstrap(QString* error) {
         return false;
     }
 
-    loadAnimLibrary(projectRoot_ + "/assets/anim/UAL1_Standard.glb");
+    stage(QStringLiteral("Reading the animation library"), 0.45f);
+    loadAnimLibrary(engineAssetsRoot() + QStringLiteral("/anim/UAL1_Standard.glb"));
+
+    // A project reopens its own last scene, never another project's.
+    const QString mainScene = QDir(projectRoot_).absoluteFilePath(QStringLiteral("Scenes/Main.ukscene"));
     bool openedLast = false;
     if (editor::prefs::boolean("general/reopenLast", true)) {
         const QString last = editor::prefs::text("scene/last", QString());
-        if (!last.isEmpty() && QFileInfo::exists(last)) openedLast = readScene(last);
+        const QString relative = QDir(projectRoot_).relativeFilePath(last);
+        const bool insideProject = !relative.startsWith(QStringLiteral(".."));
+        if (!last.isEmpty() && insideProject && QFileInfo::exists(last)) openedLast = readScene(last);
     }
-    if (!openedLast) loadModel(projectRoot_ + "/assets/Seed-san.vrm");
+    if (!openedLast && QFileInfo::exists(mainScene)) {
+        stage(QStringLiteral("Opening %1").arg(QFileInfo(mainScene).fileName()), 0.72f);
+        openedLast = readScene(mainScene);
+    }
+    if (!openedLast) {
+        stage(QStringLiteral("Loading the starter character"), 0.72f);
+        loadModel(engineAssetsRoot() + QStringLiteral("/Seed-san.vrm"));
+    }
+    stage(QStringLiteral("Laying out the editor"), 0.94f);
     return modelReady_;
 }
 
@@ -640,15 +814,37 @@ void MainWindow::buildCentral() {
     });
     connect(viewport_, &RenderView::sized, this, &MainWindow::updateRenderSize);
     connect(preview_, &RenderView::sized, this, &MainWindow::updateRenderSize);
+    // The Game view's camera. Dragging it is looking around while the game is paused; it never writes the Scene view.
+    connect(preview_, &RenderView::orbitDragged, this, [this](float dx, float dy) {
+        playCam_.orbit(dx, dy);
+        playCamFollows_ = false;
+        preview_->update();
+    });
+    connect(preview_, &RenderView::panDragged, this, [this](float dx, float dy, float h) {
+        playCam_.pan(dx, dy, h);
+        playCamFollows_ = false;
+        preview_->update();
+    });
+    connect(preview_, &RenderView::zoomed, this, [this](float steps) {
+        playCam_.zoom(steps);
+        playCamFollows_ = false;
+        preview_->update();
+    });
 
-    viewport_->onPress = [this](QPointF p) { return gizmoPress(p); };
+    // The view gizmo is checked first: it sits on top of the view, so a click in its corner turns the view rather than
+    // starting a drag on whatever is behind it.
+    viewport_->onPress = [this](QPointF p) { return viewGizmoPress(p) || gizmoPress(p); };
     viewport_->onDrag = [this](QPointF p) { gizmoDrag(p); };
     viewport_->onRelease = [this](QPointF) { gizmoRelease(); };
-    viewport_->onHover = [this](QPointF p) { gizmoHover(p); };
+    viewport_->onHover = [this](QPointF p) {
+        viewGizmoHover(p);
+        gizmoHover(p);
+    };
     viewport_->onPaint = [this](QPainter& p) {
         paintColliders(p);
         paintNavPreview(p);
         paintGizmo(p);
+        paintViewGizmo(p);
     };
     buildGizmoToolbar();
 }
@@ -771,7 +967,7 @@ void MainWindow::buildDocks() {
         const QVariant built = item->data(0, kRowLabelRole);
         if (!built.isValid() || item->text(0) == built.toString()) return;
         const int kind = item->data(0, Qt::UserRole).toInt();
-        if (kind <= kItemInstanceBase) renameInstance(kItemInstanceBase - kind, item->text(0));
+        if (isInstanceRow(kind)) renameInstance(kItemInstanceBase - kind, item->text(0));
     });
     hierarchy_->setContextMenuPolicy(Qt::CustomContextMenu);
     connect(hierarchy_, &QWidget::customContextMenuRequested, this, [this](const QPoint& pos) {
@@ -806,6 +1002,23 @@ void MainWindow::buildDocks() {
     QVBoxLayout* inspectorLayout = new QVBoxLayout(inspectorHolder);
     inspectorLayout->setContentsMargins(0, 0, 0, 0);
     inspectorLayout->setSpacing(0);
+    QHBoxLayout* filterRow = new QHBoxLayout;
+    filterRow->setContentsMargins(6, 3, 6, 0);
+    inspectorFilter_ = new QLineEdit;
+    inspectorFilter_->setObjectName(QStringLiteral("inspectorFilter"));
+    inspectorFilter_->setPlaceholderText(QStringLiteral("Filter properties"));
+    inspectorFilter_->setClearButtonEnabled(true);
+    inspectorFilter_->setToolTip(QStringLiteral("Narrows the Inspector to rows whose label, section or value matches "
+                                                "every word. Glob patterns work, and -word removes what it matches."));
+    filterRow->addWidget(inspectorFilter_);
+    inspectorLayout->addLayout(filterRow);
+    inspectFilter_.setBox(inspectorFilter_);
+    connect(inspectorFilter_, &QLineEdit::textChanged, this, [this](const QString&) { applyInspectorFilter(); });
+    // Escape empties the box from inside it, which is where the hand already is.
+    auto* clearFilter = new QShortcut(QKeySequence(Qt::Key_Escape), inspectorFilter_);
+    clearFilter->setContext(Qt::WidgetShortcut);
+    connect(clearFilter, &QShortcut::activated, inspectorFilter_, &QLineEdit::clear);
+
     QHBoxLayout* lockRow = new QHBoxLayout;
     lockRow->setContentsMargins(6, 3, 6, 3);
     lockRow->addStretch(1);
@@ -958,6 +1171,22 @@ QWidget* MainWindow::buildProjectSettings() {
         form->addRow(label, cb);
     };
 
+    auto intNumber = [this](QFormLayout* form, const QString& label, int* field, int lo, int hi) {
+        QSpinBox* sp = new QSpinBox;
+        sp->setRange(lo, hi);
+        sp->setValue(*field);
+        connect(sp, QOverload<int>::of(&QSpinBox::valueChanged), this, [this, field](int val) {
+            *field = val;
+            markDirty();
+            refresh();
+        });
+        settingSyncers_.push_back([sp, field] {
+            QSignalBlocker b(sp);
+            sp->setValue(*field);
+        });
+        form->addRow(label, sp);
+    };
+
     auto number = [this](QFormLayout* form, const QString& label, float* field, double lo, double hi, double step) {
         QDoubleSpinBox* sp = new QDoubleSpinBox;
         sp->setRange(lo, hi);
@@ -1002,6 +1231,8 @@ QWidget* MainWindow::buildProjectSettings() {
         QFormLayout* q = addSection(v, "Quality");
         combo(q, "Anti-aliasing", &settings_.aaMode, {"Off", "FXAA", "SSAA 2x", "SSAA 2x + FXAA", "TAA (FXAA on reset frames)"});
         check(q, "Shadows", &settings_.shadows);
+        check(q, "Virtual geometry", &settings_.vgeom);
+        number(q, "VGeom error (px)", &settings_.vgeomPixels, 0.25, 8.0, 0.25);
         check(q, "Outlines", &settings_.outlines);
         number(q, "Outline scale", &settings_.outlineScale, 0.0, 3.0, 0.05);
     });
@@ -1133,10 +1364,31 @@ QWidget* MainWindow::buildProjectSettings() {
         number(toon, "Eye: matcap strength (needs a matcap texture)", &settings_.eyeMatcap, 0.0, 1.0, 0.05);
         number(toon, "Eye: highlight map strength (needs a highlight texture)", &settings_.eyeHighlight, 0.0, 1.0, 0.05);
         check(toon, "Smooth object normals (applies on model load)", &settings_.smoothNormals);
+        // Alpha-coverage-preserving mips (GH-104289): keep a cut-out's coverage through its mip chain so it does not
+        // dissolve at distance. Load-time, like the normals option above.
+        check(toon, "Preserve alpha-test coverage in mipmaps (on load)", &settings_.preserveAlphaCoverage);
+        number(toon, "Alpha-test cutoff for mip coverage", &settings_.alphaTestThreshold, 0.05, 0.95, 0.05);
         QFormLayout* fx = addSection(v, "Screen Effects");
         number(fx, "Fog density (per metre)", &settings_.fogDensity, 0.0, 0.1, 0.001);
         number(fx, "Fog sun in-scatter", &settings_.fogSun, 0.0, 1.0, 0.05);
         number(fx, "Ambient occlusion", &settings_.ssao, 0.0, 1.0, 0.05);
+        // Multi-bounce AO: restores the light that bounces between the surfaces doing the occluding, weighted by each
+        // surface's albedo, so a corner of a coloured room no longer reads as grey.
+        check(fx, "Ambient occlusion: multi-bounce (albedo-weighted)", &settings_.multiBounceAO);
+        // Screen-space contact shadows (GH-118045): the short shadows a cascaded shadow map cannot resolve. The length and
+        // thickness are metres; the step count is the depth fetches per pixel.
+        number(fx, "Contact shadows", &settings_.contactShadows, 0.0, 1.0, 0.05);
+        number(fx, "Contact shadow length (m)", &settings_.contactShadowLength, 0.02, 2.0, 0.01);
+        number(fx, "Contact shadow thickness (m)", &settings_.contactShadowThickness, 0.01, 1.0, 0.01);
+        intNumber(fx, "Contact shadow steps", &settings_.contactShadowSteps, 4, 64);
+        // The iGPU path tracer: traced diffuse bounce light. Needs a terrain heightfield and the normal pre-pass,
+        // which it turns on itself.
+        number(fx, "Traced bounce light (GI)", &settings_.gi, 0.0, 1.0, 0.05);
+        number(fx, "GI ray distance (m)", &settings_.giRadius, 2.0, 40.0, 1.0);
+        number(fx, "GI rays per half-res pixel", &settings_.giRays, 1, 8, 1);
+        // The denoiser is what makes a low ray count look like a high one: two à-trous passes over the accumulated
+        // GI, in place of the reference's DLSS Ray Reconstruction.
+        check(fx, "GI denoiser (à-trous, iGPU)", &settings_.giDenoise);
         number(fx, "Screen-space reflections", &settings_.ssr, 0.0, 1.0, 0.05);
         number(fx, "Depth-normal outline", &settings_.depthNormalOutline, 0.0, 1.0, 0.05);
         number(fx, "Lens flare", &settings_.flare, 0.0, 1.0, 0.05);
@@ -1173,10 +1425,10 @@ QWidget* MainWindow::buildProjectSettings() {
             QSignalBlocker b(lut);
             lut->clear();
             lut->addItem(QStringLiteral("None"), QString());
-            if (!projectRoot_.isEmpty()) {
-                const QDir d(projectRoot_ + QStringLiteral("/assets/LUTs"));
+            const QDir d(engineAssetsRoot() + QStringLiteral("/LUTs"));
+            if (d.exists()) {
                 for (const QString& f : d.entryList({QStringLiteral("*.png"), QStringLiteral("*.cube")}, QDir::Files, QDir::Name))
-                    lut->addItem(QFileInfo(f).completeBaseName(), QStringLiteral("assets/LUTs/") + f);
+                    lut->addItem(QFileInfo(f).completeBaseName(), d.absoluteFilePath(f));
             }
             const int idx = lut->findData(gradingLut_);
             lut->setCurrentIndex(idx < 0 ? 0 : idx);
@@ -1230,6 +1482,11 @@ QWidget* MainWindow::buildProjectSettings() {
     addPage("layers", QStringLiteral("Tags and Layers"), [&](QVBoxLayout* v) { fillTagsPage(v); });
     addPage("timeline", QStringLiteral("Time"), [&](QVBoxLayout* v) { fillTimePage(v); });
     addPage("open_with", QStringLiteral("Physics"), [&](QVBoxLayout* v) { fillPhysicsPage(v); });
+    addPage("inventory_2", QStringLiteral("Assets"), [&](QVBoxLayout* v) { fillAssetsPage(v); });
+    addPage("translate", QStringLiteral("Localisation"), [&](QVBoxLayout* v) { fillLocalisationPage(v); });
+    addPage("fork_left", QStringLiteral("Version Control"), [&](QVBoxLayout* v) { fillVcsPage(v); });
+    // "deployed_code" is the icon material_icons.h actually has — "extension" has no glyph there and rendered blank.
+    addPage("deployed_code", QStringLiteral("Plugins"), [&](QVBoxLayout* v) { fillPluginsPage(v); });
     addPage("space_dashboard", QStringLiteral("Build"), [&](QVBoxLayout* v) { fillBuildPage(v); });
 
     QLineEdit* search = new QLineEdit;
@@ -1278,6 +1535,13 @@ QWidget* MainWindow::buildProjectBrowser() {
     fsModel_->setIconProvider(&assetIconProvider());
     fsModel_->setRootPath(assets);
 
+    // The grid and the details view look through the search filter, which speaks the engine's query grammar. The tree
+    // keeps the folder model: it is navigation, not a place to search.
+    auto* filter = new BrowserFilterModel(this);
+    filter->setSourceModel(fsModel_);
+    filter->setRootFolder(assets);
+    fsFilter_ = filter;
+
     fsTree_ = new QTreeView;
     fsTree_->setObjectName("projectTree");
     fsTree_->setModel(fsDirs_);
@@ -1289,7 +1553,7 @@ QWidget* MainWindow::buildProjectBrowser() {
     fsList_ = new QListView;
     fsList_->setObjectName("projectGrid");
     fsList_->setDragEnabled(true);
-    fsList_->setModel(fsModel_);
+    fsList_->setModel(fsFilter_);
     fsList_->setViewMode(QListView::IconMode);
     fsList_->setResizeMode(QListView::Adjust);
     fsList_->setMovement(QListView::Static);
@@ -1304,8 +1568,8 @@ QWidget* MainWindow::buildProjectBrowser() {
     fsDetail_ = new QTreeView;
     fsDetail_->setDragEnabled(true);
     fsDetail_->setObjectName("projectDetails");
-    fsDetail_->setModel(fsModel_);
-    fsDetail_->setRootIndex(fsModel_->index(assets));
+    fsDetail_->setModel(fsFilter_);
+    fsDetail_->setRootIndex(fsFilter_->mapFromSource(fsModel_->index(assets)));
 
     // A .ukmat thumbnail is drawn with its shader, so editing a shader repaints the grid. The
     // thumbnail cache sees the new shader time on the next paint.
@@ -1322,8 +1586,9 @@ QWidget* MainWindow::buildProjectBrowser() {
     watchShaders();
     connect(shaderWatch, &QFileSystemWatcher::fileChanged, this, [this, shaderWatch, watchShaders](const QString&) {
         watchShaders();   // editors that replace a file drop the old watch
-        // QFileSystemModel keeps its decorations, so the visible rows are told they changed.
-        const QModelIndex root = fsList_->rootIndex();
+        // QFileSystemModel keeps its decorations, so the visible rows are told they changed. The grid's root is a
+        // filter index, so the source folder is said by name.
+        const QModelIndex root = fsModel_->index(browserDir_);
         const int n = fsModel_->rowCount(root);
         if (n > 0) emit fsModel_->dataChanged(fsModel_->index(0, 0, root), fsModel_->index(n - 1, 0, root),
                                               {Qt::DecorationRole});
@@ -1332,6 +1597,24 @@ QWidget* MainWindow::buildProjectBrowser() {
         updateBrowserDetails(fsList_->currentIndex());   // the details pane draws its preview once per selection
     });
     connect(shaderWatch, &QFileSystemWatcher::directoryChanged, this, [watchShaders] { watchShaders(); });
+    // Scripts, wherever they are saved from: this editor, an external IDE, or git. A save during Play reloads every
+    // script; the engine keeps each script's place in the frame, so the level carries on. The pause keeps a burst of
+    // saves (an IDE writing a file twice) to one reload.
+    auto* scriptWatch = new QFileSystemWatcher(this);
+    scriptReload_ = new QTimer(this);
+    scriptReload_->setSingleShot(true);
+    scriptReload_->setInterval(250);
+    connect(scriptReload_, &QTimer::timeout, this, [this] { reloadPlayingScripts(); });
+    auto watchScripts = [scriptWatch, assets, this] {
+        const QStringList dirs{assets, projectRoot_ + QStringLiteral("/Scripts")};
+        for (const QString& dir : dirs)
+            if (QFileInfo(dir).isDir() && !scriptWatch->directories().contains(dir)) scriptWatch->addPath(dir);
+    };
+    watchScripts();
+    connect(scriptWatch, &QFileSystemWatcher::directoryChanged, this, [this, watchScripts](const QString&) {
+        watchScripts();   // a folder created after startup joins the watch
+        scriptReload_->start();
+    });
     // Shader edits reach the scene: changed shaders and materials are rebuilt on the worker.
     connect(shaderWatch, &QFileSystemWatcher::fileChanged, this, [this](const QString&) {
         RenderWorker* w = worker_;
@@ -1367,14 +1650,16 @@ QWidget* MainWindow::buildProjectBrowser() {
     fsPath_ = new QLabel;
     fsPath_->setObjectName("breadcrumb");
     fsSearch_ = new QLineEdit;
-    fsSearch_->setPlaceholderText("Search assets");
+    fsSearch_->setPlaceholderText(QStringLiteral("Search assets, *.vrm, Sword*"));
     fsSearch_->setClearButtonEnabled(true);
     fsSearch_->setFixedWidth(170);
     fsSize_ = new QSlider(Qt::Horizontal);
-    fsSize_->setRange(48, 192);
-    fsSize_->setValue(editor::prefs::integer(QStringLiteral("browser/thumb"), 96));
+    fsSize_->setRange(ukiyo::kThumbMin, ukiyo::kThumbMax);
+    fsSize_->setSingleStep(ukiyo::kThumbStep);
+    fsSize_->setPageStep(ukiyo::kThumbStep * 2);
+    fsSize_->setValue(ukiyo::thumbSliderValue(editor::prefs::integer(QStringLiteral("browser/thumb"), ukiyo::kThumbDefault)));
     fsSize_->setFixedWidth(90);
-    fsSize_->setToolTip("Thumbnail size");
+    fsSize_->setToolTip(QStringLiteral("Thumbnail size (Ctrl + wheel over the browser)"));
     browserFilterBtn_ = new QToolButton;
     browserFilterBtn_->setObjectName("toolButton");
     browserFilterBtn_->setIcon(uiIcon("filter_list"));
@@ -1466,6 +1751,7 @@ QWidget* MainWindow::buildProjectBrowser() {
     materialInspector_ = new MaterialInspector;
     // A finished live render (material sphere or 3D model) redraws that file's icon and details.
     connect(&assets::previewHub(), &assets::PreviewHub::ready, this, [this](const QString& path) {
+        // A source-model index: the filter forwards the signal, and a proxy index here would name the wrong row.
         const QModelIndex idx = fsModel_->index(path);
         if (idx.isValid()) emit fsModel_->dataChanged(idx, idx, {Qt::DecorationRole});
         fsList_->viewport()->update();
@@ -1521,12 +1807,17 @@ QWidget* MainWindow::buildProjectBrowser() {
             view->viewport(), [this](QWidget* w, const QPoint& p, const QStringList& paths) { browserDrop(w, p, paths); }));
     }
     connect(fsSearch_, &QLineEdit::textChanged, this, &MainWindow::updateBrowserFilter);
-    connect(fsSize_, &QSlider::valueChanged, this, [this](int v) {
-        fsList_->setIconSize(QSize(v, v));
-        fsList_->setGridSize(QSize(v + 24, v + 44));
-    });
-    fsList_->setIconSize(QSize(fsSize_->value(), fsSize_->value()));
-    fsList_->setGridSize(QSize(fsSize_->value() + 24, fsSize_->value() + 44));
+    // One handler for both ways of changing the size: the slider and the wheel. It applies the size, keeps the slider
+    // on the ladder, and asks for the preference to be written once the hand stops.
+    connect(fsSize_, &QSlider::valueChanged, this, &MainWindow::applyThumbSize);
+    fsSizeSave_ = new QTimer(this);
+    fsSizeSave_->setSingleShot(true);
+    fsSizeSave_->setInterval(1500);
+    connect(fsSizeSave_, &QTimer::timeout, this, &MainWindow::saveBrowserThumb);
+    // Ctrl + wheel over the grid: nine notches from 32 to 224, the same ladder the slider has.
+    fsList_->viewport()->installEventFilter(new WheelZoomFilter(
+        fsList_->viewport(), [this](int notches) { zoomBrowserThumb(notches); }));
+    applyThumbSize(fsSize_->value());
 
     navigateTo(assets);
     setBrowserView(editor::prefs::integer(QStringLiteral("browser/view"), 0));
@@ -1705,6 +1996,11 @@ void MainWindow::buildMenus() {
     edit->addSeparator();
     add(edit, "Preferences...", QKeySequence(), uiIcon("settings"), &MainWindow::openPreferences);
     add(edit, "Find and Replace...", QKeySequence(Qt::CTRL | Qt::Key_H), uiIcon("edit"), &MainWindow::openFindReplace);
+    add(edit, "Find in Inspector", QKeySequence(QStringLiteral("Ctrl+Shift+F")), uiIcon("search"), [this] {
+        if (!inspectorFilter_) return;
+        inspectorFilter_->setFocus(Qt::ShortcutFocusReason);
+        inspectorFilter_->selectAll();
+    });
     add(edit, "Project Settings...", QKeySequence(), uiIcon("tune"), &MainWindow::openProjectSettings);
     edit->addSeparator();
     add(edit, "Reset Camera", QKeySequence("R"), uiIcon("home"), &MainWindow::resetViewportCamera);
@@ -1735,6 +2031,30 @@ void MainWindow::buildMenus() {
     add(view, "Play / Pause", QKeySequence(Qt::Key_Space), uiIcon("play_arrow"), &MainWindow::togglePlayback);
     add(view, "Back to Start", QKeySequence(Qt::Key_Home), uiIcon("skip_previous"), &MainWindow::resetTime);
     view->addSeparator();
+    // Wireframe (Flax 1.13's view): the geometry passes drawn as their edges. A view setting, so it is not written into
+    // the scene and does not follow the project; the render worker reads it from the settings it is handed each frame.
+    wireframeAction_ = view->addAction(uiIcon("grid_4x4"), "Wireframe", this, [this](bool on) {
+        settings_.wireframe = on;
+        statusBar()->showMessage(on ? QStringLiteral("Wireframe view") : QStringLiteral("Shaded view"), 3000);
+        renderWanted_ = true;
+    });
+    wireframeAction_->setCheckable(true);
+    wireframeAction_->setShortcut(QKeySequence(QStringLiteral("Ctrl+Shift+W")));
+    shortcuts_.push_back(ShortcutEntry{QStringLiteral("view.wireframe"), QStringLiteral("Wireframe"), wireframeAction_,
+                                       QKeySequence(QStringLiteral("Ctrl+Shift+W"))});
+    // The Scene view's own camera: orthographic for blocking out a level, and arrow keys to fly, so building does not
+    // mean dragging an orbit target across a map.
+    orthoAction_ = view->addAction(uiIcon("crop_square"), "Orthographic Scene View", this, [this](bool on) {
+        gameCam_.orthographic = on;
+        statusBar()->showMessage(on ? QStringLiteral("Scene view: orthographic") : QStringLiteral("Scene view: perspective"),
+                                 3000);
+        refresh();
+    });
+    orthoAction_->setCheckable(true);
+    orthoAction_->setShortcut(QKeySequence(QStringLiteral("Ctrl+Shift+O")));
+    add(view, "Fly Camera: Arrows", QKeySequence(), uiIcon("flight"),
+        [this] { statusBar()->showMessage(QStringLiteral("Arrow keys fly the Scene view; Page Up and Page Down rise and drop."), 5000); });
+    view->addSeparator();
     QMenu* browserMenu = view->addMenu(uiIcon("folder"), "Content Browser");
     add(browserMenu, "Icon View", QKeySequence(), uiIcon("grid_view"), [this] { setBrowserView(0); });
     add(browserMenu, "List View", QKeySequence(), uiIcon("view_list"), [this] { setBrowserView(1); });
@@ -1742,10 +2062,20 @@ void MainWindow::buildMenus() {
 
     QMenu* tools = menuBar()->addMenu("&Tools");
     tools->addAction("Benchmark Scene", this, &MainWindow::startBenchmark);
+    tools->addSeparator();
+    // Rewrites the files every Lua editor reads: the API stub, .luarc.json, the formatter and linter config, and the
+    // extension recommendations. Also runs by itself the first time a script is opened.
+    tools->addAction(uiIcon("language"), "Scripting Tools...", this, &MainWindow::showScriptingTools);
+    tools->addAction(uiIcon("deployed_code"), "Write Script Support Files", this, &MainWindow::writeScriptSupportFiles);
     add(tools, "Clear Console", QKeySequence("Ctrl+L"), uiIcon("delete"), [this] {
         logs_.clear();
         rebuildConsole();
     });
+
+    // The Plugins menu is filled by loadPlugins(): until one is loaded it holds the reload and folder actions, so the
+    // menu is never empty and a user who has never written a plugin can still find out where they go.
+    pluginsMenu_ = menuBar()->addMenu("&Plugins");
+    rebuildPluginsMenu();
 
     QMenu* window = menuBar()->addMenu("&Window");
     QMenu* layoutMenu = window->addMenu(uiIcon("dashboard"), "Layout");
@@ -1821,7 +2151,14 @@ void MainWindow::loadModel(const QString& path) {
     ModelInfo info;
     bool ok = false;
     const bool smoothNow = settings_.smoothNormals;
-    runOnWorker([&] { worker_->setSmoothNormals(smoothNow); ok = worker_->loadModel(path, &err, &info); });
+    const bool preserveNow = settings_.preserveAlphaCoverage;
+    const float cutoffNow = settings_.alphaTestThreshold;
+    runOnWorker([&] {
+        worker_->setSmoothNormals(smoothNow);
+        worker_->setPreserveAlphaCoverage(preserveNow);
+        worker_->setAlphaTestThreshold(cutoffNow);
+        ok = worker_->loadModel(path, &err, &info);
+    });
     if (!ok) {
         log("error: " + err);
         return;
@@ -2010,11 +2347,17 @@ void MainWindow::editActiveTransform() {
     QDoubleSpinBox* sy = spin(cur.position[1], -1000.0, 1000.0);
     QDoubleSpinBox* sz = spin(cur.position[2], -1000.0, 1000.0);
     QDoubleSpinBox* syaw = spin(cur.yawDeg, -360.0, 360.0);
+    QDoubleSpinBox* spitch = spin(cur.pitchDeg, -360.0, 360.0);
+    QDoubleSpinBox* sroll = spin(cur.rollDeg, -360.0, 360.0);
     syaw->setSingleStep(5.0);
+    spitch->setSingleStep(5.0);
+    sroll->setSingleStep(5.0);
     form->addRow(QStringLiteral("X (m)"), sx);
     form->addRow(QStringLiteral("Y (m)"), sy);
     form->addRow(QStringLiteral("Z (m)"), sz);
     form->addRow(QStringLiteral("Yaw (deg)"), syaw);
+    form->addRow(QStringLiteral("Pitch (deg)"), spitch);
+    form->addRow(QStringLiteral("Roll (deg)"), sroll);
     auto* buttons = new QDialogButtonBox(QDialogButtonBox::Ok | QDialogButtonBox::Cancel, &dlg);
     connect(buttons, &QDialogButtonBox::accepted, &dlg, &QDialog::accept);
     connect(buttons, &QDialogButtonBox::rejected, &dlg, &QDialog::reject);
@@ -2022,42 +2365,106 @@ void MainWindow::editActiveTransform() {
     if (dlg.exec() != QDialog::Accepted) return;
 
     const float pos[3] = {float(sx->value()), float(sy->value()), float(sz->value())};
-    setInstanceTransform(index, pos, float(syaw->value()));
+    const float sc[3] = {cur.scale.x, cur.scale.y, cur.scale.z};
+    setInstanceTransform(index, pos, float(syaw->value()), float(spitch->value()), float(sroll->value()), sc);
 }
 
-void MainWindow::setInstanceTransform(int index, const float position[3], float yawDeg) {
+void MainWindow::setInstanceTransform(int index, const float position[3], float yawDeg, float pitchDeg,
+                                      float rollDeg, const float scale[3]) {
     beginEdit(QStringLiteral("instance-transform:%1").arg(index));
-    applyInstanceTransform(index, position, yawDeg);
+    applyInstanceTransform(index, position, yawDeg, pitchDeg, rollDeg, scale);
 }
 
-// Writes a transform without an undo step. Gizmo drags call this, with one step taken at the start.
-void MainWindow::applyInstanceTransform(int index, const float position[3], float yawDeg) {
+// The inspector's position and yaw rows, which do not touch the other components of the rotation or the scale. The
+// current values come from the scene, so editing X does not silently reset a pitch set with the gizmo.
+void MainWindow::setInstanceTransform(int index, const float position[3], float yawDeg) {
     std::vector<InstanceInfo> list;
     runOnWorker([&] { list = worker_->instances(); });
     if (index < 0 || index >= static_cast<int>(list.size())) return;
-    const InstanceInfo cur = list[index];
+    const InstanceInfo& cur = list[index];
+    const float sc[3] = {cur.scale.x, cur.scale.y, cur.scale.z};
+    setInstanceTransform(index, position, yawDeg, cur.pitchDeg, cur.rollDeg, sc);
+}
 
-    // A linked instance records an override for a key only while its value differs from the prefab's.
-    // Setting a value back to the prefab's makes that key inherit again.
-    QStringList overrides = cur.overrides;
-    overrides.removeAll(QStringLiteral("translation"));
-    overrides.removeAll(QStringLiteral("yawDeg"));
-    if (!cur.prefab.isEmpty()) {
-        prefab::Pose world;
-        QString err;
-        if (!linkedNodeWorld(projectRoot_, cur.prefab, cur.prefabId, &world, &err)) {
-            log("error: " + err);
-            return;
+// Writes a transform without an undo step. Gizmo drags call this, with one step taken at the start.
+void MainWindow::applyInstanceTransform(int index, const float position[3], float yawDeg, float pitchDeg,
+                                        float rollDeg, const float scale[3]) {
+    applyInstanceTransforms({{index,
+                              glm::vec3(position[0], position[1], position[2]),
+                              glm::vec3(pitchDeg, yawDeg, rollDeg),
+                              glm::vec3(scale[0], scale[1], scale[2])}});
+}
+
+// Writes a transform without an undo step, for every instance in one go. The list form is what a multi-object drag
+// needs: one read of the instances, one write, one refresh, however many objects the hand is moving.
+void MainWindow::applyInstanceTransforms(const std::vector<PlacementWrite>& writes) {
+    if (writes.empty()) return;
+    std::vector<InstanceInfo> list;
+    runOnWorker([&] { list = worker_->instances(); });
+
+    struct Job {
+        int index = -1;
+        glm::vec3 position{0.0f};
+        float yawDeg = 0.0f, pitchDeg = 0.0f, rollDeg = 0.0f;
+        glm::vec3 scale{1.0f};
+        QString prefab;
+        QString prefabId;
+        QStringList overrides;
+        bool linked = false;
+    };
+    std::vector<Job> jobs;
+    for (const PlacementWrite& w : writes) {
+        if (w.index < 0 || w.index >= static_cast<int>(list.size())) continue;
+        const InstanceInfo cur = list[static_cast<size_t>(w.index)];
+        const float position[3] = {w.position.x, w.position.y, w.position.z};
+        const float scale[3] = {w.scale.x, w.scale.y, w.scale.z};
+        Job j;
+        j.index = w.index;
+        j.position = w.position;
+        j.yawDeg = w.rotationDeg.y;
+        j.pitchDeg = w.rotationDeg.x;
+        j.rollDeg = w.rotationDeg.z;
+        j.scale = w.scale;
+
+        // A linked instance records an override for a key only while its value differs from the prefab's.
+        // Setting a value back to the prefab's makes that key inherit again.
+        QStringList overrides = cur.overrides;
+        overrides.removeAll(QStringLiteral("translation"));
+        overrides.removeAll(QStringLiteral("yawDeg"));
+        overrides.removeAll(QStringLiteral("scale"));
+        overrides.removeAll(QStringLiteral("pitchDeg"));
+        overrides.removeAll(QStringLiteral("rollDeg"));
+        if (!cur.prefab.isEmpty()) {
+            prefab::Pose world;
+            QString err;
+            if (!linkedNodeWorld(projectRoot_, cur.prefab, cur.prefabId, &world, &err)) {
+                log("error: " + err);
+                continue;
+            }
+            const bool moved = std::fabs(position[0] - world.pos[0]) > 1e-5f ||
+                               std::fabs(position[1] - world.pos[1]) > 1e-5f ||
+                               std::fabs(position[2] - world.pos[2]) > 1e-5f;
+            if (moved) overrides << QStringLiteral("translation");
+            if (std::fabs(j.yawDeg - world.yaw) > 1e-4f) overrides << QStringLiteral("yawDeg");
+            // A prefab node has no scale of its own yet, so any scale is the instance's and is written as an override.
+            if (std::fabs(scale[0] - 1.0f) > 1e-4f || std::fabs(scale[1] - 1.0f) > 1e-4f ||
+                std::fabs(scale[2] - 1.0f) > 1e-4f)
+                overrides << QStringLiteral("scale");
+            j.prefab = cur.prefab;
+            j.prefabId = cur.prefabId;
+            j.overrides = overrides;
+            j.linked = true;
         }
-        const bool moved = std::fabs(position[0] - world.pos[0]) > 1e-5f ||
-                           std::fabs(position[1] - world.pos[1]) > 1e-5f ||
-                           std::fabs(position[2] - world.pos[2]) > 1e-5f;
-        if (moved) overrides << QStringLiteral("translation");
-        if (std::fabs(yawDeg - world.yaw) > 1e-4f) overrides << QStringLiteral("yawDeg");
+        jobs.push_back(std::move(j));
     }
+    if (jobs.empty()) return;
     runOnWorker([&] {
-        worker_->setInstancePlacement(index, position, yawDeg);
-        if (!cur.prefab.isEmpty()) worker_->setInstanceLink(index, cur.prefab, cur.prefabId, overrides);
+        for (const Job& j : jobs) {
+            const float position[3] = {j.position.x, j.position.y, j.position.z};
+            const float scale[3] = {j.scale.x, j.scale.y, j.scale.z};
+            worker_->setInstancePlacement(j.index, position, j.yawDeg, j.pitchDeg, j.rollDeg, scale);
+            if (j.linked) worker_->setInstanceLink(j.index, j.prefab, j.prefabId, j.overrides);
+        }
     });
     markDirty();
     refresh();
@@ -2116,6 +2523,8 @@ void MainWindow::applyOverridesFor(int index, const QStringList& keys) {
     if (applied.contains(QStringLiteral("translation")))
         for (int k = 0; k < 3; ++k) world.pos[k] = cur.position[k];
     if (applied.contains(QStringLiteral("yawDeg"))) world.yaw = cur.yawDeg;
+    // A prefab node has a position and a yaw only: pitch, roll and scale cannot be pushed into it, so they stay with
+    // the instance and never appear in `applied`.
     // The node's world is compose(compose(parent, local), inner). Solve for the local value that gives it.
     const prefab::Pose local = prefab::localOf(parentWorldOf(nodes, *node),
                                                prefab::compose(world, prefab::inverse(node->inner)));
@@ -2144,6 +2553,9 @@ void MainWindow::syncLinkedInstances() {
         int index;
         float pos[3];
         float yaw;
+        float pitch;
+        float roll;
+        float scale[3];
     };
     std::vector<Update> updates;
     QHash<QString, std::vector<prefab::FlatNode>> cache;
@@ -2167,13 +2579,19 @@ void MainWindow::syncLinkedInstances() {
         u.index = i;
         const bool ownPos = in.overrides.contains(QStringLiteral("translation"));
         const bool ownYaw = in.overrides.contains(QStringLiteral("yawDeg"));
+        const bool ownScale = in.overrides.contains(QStringLiteral("scale"));
         for (int k = 0; k < 3; ++k) u.pos[k] = ownPos ? in.position[k] : node->world.pos[k];
         u.yaw = ownYaw ? in.yawDeg : node->world.yaw;
+        // A prefab node has neither a pitch nor a roll, and no scale; those are the instance's own values, kept as they
+        // are unless the instance overrides the scale.
+        u.pitch = in.pitchDeg;
+        u.roll = in.rollDeg;
+        for (int k = 0; k < 3; ++k) u.scale[k] = ownScale ? in.scale[k] : 1.0f;
         updates.push_back(u);
     }
     if (updates.empty()) return;
     runOnWorker([&] {
-        for (const Update& u : updates) worker_->setInstancePlacement(u.index, u.pos, u.yaw);
+        for (const Update& u : updates) worker_->setInstancePlacement(u.index, u.pos, u.yaw, u.pitch, u.roll, u.scale);
     });
 }
 
@@ -2743,6 +3161,18 @@ void MainWindow::setInspectorPage(QWidget* page) {
         return;
     }
     inspector_->setWidget(page);
+    // A page rebuilt under an active query stays narrowed, which is what makes the box usable while clicking around.
+    if (inspectorFilter_ && !inspectorFilter_->text().isEmpty()) applyInspectorFilter();
+}
+
+void MainWindow::applyInspectorFilter() {
+    QWidget* page = inspector_->widget();
+    if (!page) return;
+    // The walk over the page's rows is editor::InspectorFilter: one implementation, shared with the screenshot mode.
+    const size_t shown = inspectFilter_.apply(page);
+    if (inspectFilter_.query().isEmpty()) return;
+    if (shown == 0)
+        statusBar()->showMessage(QStringLiteral("No property matches \"%1\"").arg(inspectFilter_.query()), 4000);
 }
 
 void MainWindow::setInspectorLocked(bool on) {
@@ -2799,7 +3229,8 @@ void MainWindow::showMultiInstances(const std::vector<int>& indices) {
             if (idx >= static_cast<int>(now.size())) continue;
             const float pos[3] = {now[idx].position[0] + float(dx), now[idx].position[1] + float(dy),
                                   now[idx].position[2] + float(dz)};
-            applyInstanceTransform(idx, pos, now[idx].yawDeg + float(dyaw));
+            const float scv[3] = {now[idx].scale.x, now[idx].scale.y, now[idx].scale.z};
+            applyInstanceTransform(idx, pos, now[idx].yawDeg + float(dyaw), now[idx].pitchDeg, now[idx].rollDeg, scv);
         }
         // The deltas are used once, so the spin boxes go back to zero without emitting again.
         for (QDoubleSpinBox* sp : {move[0], move[1], move[2], turn}) {
@@ -2911,10 +3342,47 @@ void MainWindow::showInstanceProperties(int index) {
     }
     t->addRow(yawLabel, yawRow);
 
+    // Pitch and roll are the rest of the rotation. Yaw alone cannot lie a prop on its side, which a level needs.
+    QWidget* tiltRow = new QWidget;
+    QHBoxLayout* th = new QHBoxLayout(tiltRow);
+    th->setContentsMargins(0, 0, 0, 0);
+    QDoubleSpinBox* pitch = makeSpin(-360.0, 360.0, 5.0, 1, cur.pitchDeg);
+    QDoubleSpinBox* roll = makeSpin(-360.0, 360.0, 5.0, 1, cur.rollDeg);
+    pitch->setToolTip(QStringLiteral("Rotation about X"));
+    roll->setToolTip(QStringLiteral("Rotation about Z"));
+    th->addWidget(pitch, 1);
+    th->addWidget(roll, 1);
+    t->addRow(QStringLiteral("Pitch / Roll (deg)"), tiltRow);
+
+    // Scale, one box per axis. A prefab instance scales through the `scale` override; an unlinked one stores the vector.
+    QWidget* scaleRow = new QWidget;
+    QHBoxLayout* sh = new QHBoxLayout(scaleRow);
+    sh->setContentsMargins(0, 0, 0, 0);
+    std::vector<QDoubleSpinBox*> scl;
+    for (int k = 0; k < 3; ++k) {
+        scl.push_back(makeSpin(0.01, 100.0, 0.05, 3, cur.scale[k]));
+        sh->addWidget(scl.back(), 1);
+    }
+    QFont scaleFont = scaleRow->font();
+    scaleFont.setBold(linked && cur.overrides.contains(QStringLiteral("scale")));
+    scaleRow->setFont(scaleFont);
+    if (linked) {
+        QPushButton* revertScale = new QPushButton(QStringLiteral("Revert"));
+        revertScale->setEnabled(cur.overrides.contains(QStringLiteral("scale")));
+        revertScale->setToolTip(QStringLiteral("Restore the prefab's scale"));
+        sh->addWidget(revertScale);
+        connect(revertScale, &QPushButton::clicked, this, [this, index] {
+            revertOverridesFor(index, {QStringLiteral("scale")});
+            scheduleInstanceRefresh(index);
+        });
+    }
+    t->addRow(QStringLiteral("Scale"), scaleRow);
+
     // Any change writes the whole transform. setInstanceTransform works out which keys differ from the prefab.
-    auto write = [this, index, pos, yaw] {
+    auto write = [this, index, pos, yaw, pitch, roll, scl] {
         const float v[3] = {float(pos[0]->value()), float(pos[1]->value()), float(pos[2]->value())};
-        setInstanceTransform(index, v, float(yaw->value()));
+        const float sc[3] = {float(scl[0]->value()), float(scl[1]->value()), float(scl[2]->value())};
+        setInstanceTransform(index, v, float(yaw->value()), float(pitch->value()), float(roll->value()), sc);
     };
     auto writeAndMark = [this, index, write] {
         write();
@@ -2925,8 +3393,14 @@ void MainWindow::showInstanceProperties(int index) {
         // Rebuild the page when editing ends, so the Overrides list and Revert buttons match the new values.
         connect(s, &QAbstractSpinBox::editingFinished, this, [this, index] { scheduleInstanceRefresh(index); });
     }
-    connect(yaw, QOverload<double>::of(&QDoubleSpinBox::valueChanged), this, writeAndMark);
-    connect(yaw, &QAbstractSpinBox::editingFinished, this, [this, index] { scheduleInstanceRefresh(index); });
+    for (QDoubleSpinBox* s : {yaw, pitch, roll}) {
+        connect(s, QOverload<double>::of(&QDoubleSpinBox::valueChanged), this, writeAndMark);
+        connect(s, &QAbstractSpinBox::editingFinished, this, [this, index] { scheduleInstanceRefresh(index); });
+    }
+    for (QDoubleSpinBox* s : scl) {
+        connect(s, QOverload<double>::of(&QDoubleSpinBox::valueChanged), this, writeAndMark);
+        connect(s, &QAbstractSpinBox::editingFinished, this, [this, index] { scheduleInstanceRefresh(index); });
+    }
 
     // Terrain (item 18): the file and sizes are fixed when the tile is created. The brush, erosion, layers and foliage are below.
     if (cur.terrain) {
@@ -3116,6 +3590,18 @@ void MainWindow::rebuildHierarchy() {
     light->setData(0, Qt::UserRole, kItemLight);
     light->setIcon(0, uiIcon("light_mode"));
 
+    // The scene's own lights (item 6), one row each.
+    for (int i = 0; i < static_cast<int>(lights_.size()); ++i) {
+        const ukiyo::SceneLight& l = lights_[static_cast<size_t>(i)];
+        const bool spot = l.type == ukiyo::LightType::Spot;
+        const bool key = l.type == ukiyo::LightType::Directional;
+        QTreeWidgetItem* row = new QTreeWidgetItem(
+            hierarchy_, QStringList{QStringLiteral("%1 Light %2").arg(key ? "Key" : spot ? "Spot" : "Point").arg(i + 1)});
+        row->setData(0, Qt::UserRole, kItemLightBase - i);
+        row->setIcon(0, uiIcon(key ? "wb_sunny" : spot ? "light_mode" : "lightbulb"));
+        if (!l.enabled) row->setForeground(0, QBrush(QColor(0x80, 0x80, 0x80)));
+    }
+
     if (modelReady_) {
         QTreeWidgetItem* root = new QTreeWidgetItem(hierarchy_, QStringList{sceneName_});
         root->setData(0, Qt::UserRole, kItemScene);
@@ -3195,7 +3681,7 @@ void MainWindow::updateInstanceRowMarkers() {
     QTreeWidgetItemIterator it(hierarchy_);
     while (*it) {
         const int kind = (*it)->data(0, Qt::UserRole).toInt();
-        if (kind <= kItemInstanceBase) {
+        if (isInstanceRow(kind)) {
             const int index = kItemInstanceBase - kind;
             if (index < static_cast<int>(list.size())) {
                 QFont f = (*it)->font(0);
@@ -3212,6 +3698,17 @@ void MainWindow::selectInstanceRow(int index) {
     QTreeWidgetItemIterator it(hierarchy_);
     while (*it) {
         if ((*it)->data(0, Qt::UserRole).toInt() == kItemInstanceBase - index) {
+            hierarchy_->setCurrentItem(*it);
+            return;
+        }
+        ++it;
+    }
+}
+
+void MainWindow::selectLightRow(int index) {
+    QTreeWidgetItemIterator it(hierarchy_);
+    while (*it) {
+        if ((*it)->data(0, Qt::UserRole).toInt() == kItemLightBase - index) {
             hierarchy_->setCurrentItem(*it);
             return;
         }
@@ -3243,7 +3740,7 @@ void MainWindow::showPropertiesFor(QTreeWidgetItem* item) {
         bool allInstances = true;
         for (QTreeWidgetItem* sel : hierarchy_->selectedItems()) {
             const int k = sel->data(0, Qt::UserRole).toInt();
-            if (k <= kItemInstanceBase) picked.push_back(kItemInstanceBase - k);
+            if (isInstanceRow(k)) picked.push_back(kItemInstanceBase - k);
             else allInstances = false;
         }
         if (allInstances) {
@@ -3262,6 +3759,8 @@ void MainWindow::showPropertiesFor(QTreeWidgetItem* item) {
         showCameraProperties(&gameCam_, "Main Camera", "photo_camera");
     } else if (kind == kItemLight) {
         showLightProperties();
+    } else if (isLightRow(kind)) {
+        showSceneLightProperties(kItemLightBase - kind);
     } else if (kind == kItemScene) {
         showSceneProperties();
     } else if (kind <= kItemInstanceBase) {
@@ -3426,6 +3925,8 @@ private:
 struct SystemsForm {
     QPointer<QComboBox> instance;
     QPointer<QCheckBox> bodyOn, bodyDynamic, agentOn, audioOn, audioLoop, audioStart, animOn, scriptOn, emitOn;
+    QPointer<QCheckBox> charOn;
+    QPointer<QDoubleSpinBox> charRadius, charHeight, charSlope, charStep, charJump, charSpeed;
     QPointer<QDoubleSpinBox> bodyRadius, bodyMass, agentSpeed, animWalkSpeed, animRunSpeed, emitRate, emitLife,
         emitSizeStart, emitSizeEnd;
     QPointer<QSpinBox> emitMax;
@@ -3438,7 +3939,7 @@ struct SystemsForm {
     QPointer<QDoubleSpinBox> actSpeed, actAmp, actOffset;
     std::array<QPointer<QDoubleSpinBox>, 3> actAxis;
     QPointer<QDoubleSpinBox> bodyHalf[3], audioVolume;
-    QPointer<QPushButton> previewSound, pathButton, reloadScript;
+    QPointer<QPushButton> previewSound, pathButton, reloadScript, editScript;
     QPointer<QLabel> pathStatus;
     QPointer<QProgressBar> bakeBar;
     QPointer<QListWidget> scriptErrors;
@@ -3464,6 +3965,13 @@ bool sameBody(const ukiyo::SystemsComponents& a, const ukiyo::SystemsComponents&
     return a.body.enabled == b.body.enabled && a.body.dynamic == b.body.dynamic &&
            a.body.radius == b.body.radius && a.body.mass == b.body.mass &&
            a.body.box == b.body.box && a.body.halfExtents == b.body.halfExtents;
+}
+bool sameCharacter(const ukiyo::SystemsComponents& a, const ukiyo::SystemsComponents& b) {
+    const ukiyo::CharacterComponent& x = a.character;
+    const ukiyo::CharacterComponent& y = b.character;
+    return x.enabled == y.enabled && x.radius == y.radius && x.height == y.height &&
+           x.maxSlopeDeg == y.maxSlopeDeg && x.stepHeight == y.stepHeight && x.jumpSpeed == y.jumpSpeed &&
+           x.speed == y.speed;
 }
 bool sameAgent(const ukiyo::SystemsComponents& a, const ukiyo::SystemsComponents& b) {
     return a.agent.enabled == b.agent.enabled && a.agent.maxSpeed == b.agent.maxSpeed;
@@ -3519,6 +4027,15 @@ void fillForm(SystemsForm& f, const ukiyo::SystemsComponents& c) {
         f.bodyShape->setCurrentIndex(c.body.box ? 1 : 0);
     }
     for (int k = 0; k < 3; ++k) set(f.bodyHalf[k].data(), double(c.body.halfExtents[k]));
+    if (f.charOn) {
+        check(f.charOn, c.character.enabled);
+        set(f.charRadius.data(), double(c.character.radius));
+        set(f.charHeight.data(), double(c.character.height));
+        set(f.charSlope.data(), double(c.character.maxSlopeDeg));
+        set(f.charStep.data(), double(c.character.stepHeight));
+        set(f.charJump.data(), double(c.character.jumpSpeed));
+        set(f.charSpeed.data(), double(c.character.speed));
+    }
     check(f.agentOn, c.agent.enabled);
     set(f.agentSpeed.data(), double(c.agent.maxSpeed));
     check(f.audioOn, c.audio.enabled);
@@ -3566,6 +4083,15 @@ ukiyo::SystemsComponents readForm(const SystemsForm& f) {
     c.body.mass = float(f.bodyMass->value());
     c.body.box = f.bodyShape->currentIndex() == 1;
     c.body.halfExtents = glm::vec3(float(f.bodyHalf[0]->value()), float(f.bodyHalf[1]->value()), float(f.bodyHalf[2]->value()));
+    if (f.charOn) {
+        c.character.enabled = f.charOn->isChecked();
+        c.character.radius = float(f.charRadius->value());
+        c.character.height = float(f.charHeight->value());
+        c.character.maxSlopeDeg = float(f.charSlope->value());
+        c.character.stepHeight = float(f.charStep->value());
+        c.character.jumpSpeed = float(f.charJump->value());
+        c.character.speed = float(f.charSpeed->value());
+    }
     c.agent.enabled = f.agentOn->isChecked();
     c.agent.maxSpeed = float(f.agentSpeed->value());
     c.audio.enabled = f.audioOn->isChecked();
@@ -3659,6 +4185,7 @@ void MainWindow::addSystemsSections(QVBoxLayout* v, const std::vector<int>& mult
             } else {
                 // Only the systems the user changed are copied. Every other system keeps this object's own values.
                 if (!sameBody(was, after)) cur.body = after.body;
+                if (!sameCharacter(was, after)) cur.character = after.character;
                 if (!sameAgent(was, after)) cur.agent = after.agent;
                 if (!sameAudio(was, after)) cur.audio = after.audio;
                 if (!sameScript(was, after)) cur.script = after.script;
@@ -3710,7 +4237,8 @@ void MainWindow::addSystemsSections(QVBoxLayout* v, const std::vector<int>& mult
     f->status = new QLabel("Stopped");
     f->status->setWordWrap(true);
     QPushButton* bake = new QPushButton("Bake Navmesh");
-    bake->setToolTip("Builds a navmesh from the geometry of every instance. Play builds it too when an agent needs it.");
+    bake->setToolTip("Builds a navmesh from the geometry of every instance, terrain tiles included, at their own "
+                     "heights. Play builds it too when an agent needs it.");
     play->addRow(f->playButton);
     play->addRow(bake);
     f->bakeBar = new QProgressBar;
@@ -3781,6 +4309,32 @@ void MainWindow::addSystemsSections(QVBoxLayout* v, const std::vector<int>& mult
         viewport_->update();
     });
     addRemove(body, QStringLiteral("body"), [](ukiyo::SystemsComponents& c) { c.body = ukiyo::SystemsComponents{}.body; });
+
+    // The capsule character (item 4). A separate section from Physics because it replaces the rigid body: a character
+    // is kinematic, so a player would not enable both on one instance.
+    QFormLayout* character = addSection(v, "Character");
+    f->charOn = enableRow(character);
+    f->charOn->setToolTip(QStringLiteral("A capsule controller the player walks with: steps up ledges, slides along walls, "
+                                         "stands on slopes. It replaces the rigid body for this instance."));
+    f->charRadius = makeSpin(0.15, 2.0, 0.05, 2, 0.3);
+    resetRow(character, QStringLiteral("Radius (m)"), QStringLiteral("charRadius"), f->charRadius,
+             [f, defaults] { f->charRadius->setValue(defaults.character.radius); });
+    f->charHeight = makeSpin(0.5, 4.0, 0.1, 2, 1.8);
+    resetRow(character, QStringLiteral("Height (m)"), QStringLiteral("charHeight"), f->charHeight,
+             [f, defaults] { f->charHeight->setValue(defaults.character.height); });
+    f->charSlope = makeSpin(5.0, 89.0, 1.0, 0, 50.0);
+    resetRow(character, QStringLiteral("Max slope (deg)"), QStringLiteral("charSlope"), f->charSlope,
+             [f, defaults] { f->charSlope->setValue(defaults.character.maxSlopeDeg); });
+    f->charStep = makeSpin(0.0, 1.0, 0.05, 2, 0.4);
+    resetRow(character, QStringLiteral("Step height (m)"), QStringLiteral("charStep"), f->charStep,
+             [f, defaults] { f->charStep->setValue(defaults.character.stepHeight); });
+    f->charJump = makeSpin(0.0, 15.0, 0.5, 2, 5.0);
+    resetRow(character, QStringLiteral("Jump speed (m/s)"), QStringLiteral("charJump"), f->charJump,
+             [f, defaults] { f->charJump->setValue(defaults.character.jumpSpeed); });
+    f->charSpeed = makeSpin(0.5, 20.0, 0.5, 2, 4.0);
+    resetRow(character, QStringLiteral("Walk speed (m/s)"), QStringLiteral("charSpeed"), f->charSpeed,
+             [f, defaults] { f->charSpeed->setValue(defaults.character.speed); });
+    addRemove(character, QStringLiteral("character"), [](ukiyo::SystemsComponents& c) { c.character = ukiyo::SystemsComponents{}.character; });
 
     QFormLayout* nav = addSection(v, "Navigation");
     f->agentOn = enableRow(nav);
@@ -3875,14 +4429,25 @@ void MainWindow::addSystemsSections(QVBoxLayout* v, const std::vector<int>& mult
     f->scriptPick->addItem(QStringLiteral("Pick a script..."));
     {
         QStringList found;
-        QDirIterator it(projectRoot_ + QStringLiteral("/assets"), {QStringLiteral("*.lua")}, QDir::Files,
-                        QDirIterator::Subdirectories);
-        while (it.hasNext()) found << it.next();
+        // Scripts/ first: that is where a project's own code lives and what require() looks in. assets/ is scanned too,
+        // because a script that travels with a model or a prefab can sit beside it.
+        for (const QString& root : {projectRoot_ + QStringLiteral("/Scripts"), projectRoot_ + QStringLiteral("/assets")}) {
+            QDirIterator it(root, {QStringLiteral("*.lua")}, QDir::Files, QDirIterator::Subdirectories);
+            while (it.hasNext()) found << it.next();
+        }
         found.sort();
-        for (const QString& p : found) f->scriptPick->addItem(QDir(projectRoot_).relativeFilePath(p), p);
-        if (found.isEmpty()) f->scriptPick->setItemText(0, QStringLiteral("No scripts in Assets"));
+        for (const QString& p : found) {
+            // The hidden support folder is for editors, not for attaching to an object.
+            if (p.contains(QStringLiteral("/.ukiyo/"))) continue;
+            f->scriptPick->addItem(QDir(projectRoot_).relativeFilePath(p), p);
+        }
+        if (f->scriptPick->count() == 1) f->scriptPick->setItemText(0, QStringLiteral("No scripts in Scripts or Assets"));
     }
     script->addRow(QStringLiteral("Pick"), f->scriptPick);
+    f->editScript = new QPushButton(QStringLiteral("Edit Script"));
+    f->editScript->setObjectName(QStringLiteral("editScript"));
+    f->editScript->setToolTip(QStringLiteral("Opens the script in the built-in editor: Lua highlighting, Check, and Open in External Editor"));
+    script->addRow(f->editScript);
     f->reloadScript = new QPushButton(QStringLiteral("Check and Reload Script"));
     f->reloadScript->setObjectName(QStringLiteral("reloadScript"));
     f->reloadScript->setToolTip(QStringLiteral("Compiles the script and lists any errors with their lines. If Play is running, it restarts so the new script runs."));
@@ -3977,7 +4542,8 @@ void MainWindow::addSystemsSections(QVBoxLayout* v, const std::vector<int>& mult
     addComponent->setToolTip(QStringLiteral("Turns on a system for this instance"));
     QMenu* addMenu = new QMenu(addComponent);
     const std::vector<std::pair<QString, QCheckBox*>> systems = {
-        {QStringLiteral("Physics"), f->bodyOn}, {QStringLiteral("Navigation"), f->agentOn},
+        {QStringLiteral("Physics"), f->bodyOn}, {QStringLiteral("Character"), f->charOn},
+        {QStringLiteral("Navigation"), f->agentOn},
         {QStringLiteral("Audio"), f->audioOn}, {QStringLiteral("Animation"), f->animOn},
         {QStringLiteral("Script"), f->scriptOn}, {QStringLiteral("Particles"), f->emitOn}, {QStringLiteral("Actions"), f->actOn}};
     for (const auto& [label, box] : systems) {
@@ -4009,6 +4575,10 @@ void MainWindow::addSystemsSections(QVBoxLayout* v, const std::vector<int>& mult
     auto write = [apply] { apply(nullptr); };
     // Every control writes on change. Anything that changes the scene is undone by Play's stop anyway.
     auto onChange = [write] { write(); };
+    connect(f->charOn, &QCheckBox::toggled, this, onChange);
+    for (QDoubleSpinBox* w : {f->charRadius.data(), f->charHeight.data(), f->charSlope.data(), f->charStep.data(),
+                              f->charJump.data(), f->charSpeed.data()})
+        connect(w, QOverload<double>::of(&QDoubleSpinBox::valueChanged), this, onChange);
     for (QCheckBox* w : {f->bodyOn.data(), f->bodyDynamic.data(), f->agentOn.data(), f->audioOn.data(),
                          f->audioLoop.data(), f->audioStart.data(), f->animOn.data(), f->scriptOn.data(),
                          f->emitOn.data(), f->actOn.data(), f->actEase.data()})
@@ -4116,6 +4686,18 @@ void MainWindow::addSystemsSections(QVBoxLayout* v, const std::vector<int>& mult
         });
         f->status->setText(started ? QStringLiteral("Script checked and reloaded. Playing.") : perr);
         f->playButton->setText(started ? QStringLiteral("Stop Systems") : QStringLiteral("Play Systems"));
+    });
+    connect(f->editScript, &QPushButton::clicked, this, [this, f] {
+        QString path = f->scriptPath->text().trimmed();
+        if (path.isEmpty()) {
+            // Nothing chosen yet: edit whatever the picker names, or say so.
+            path = f->scriptPick->currentData().toString();
+            if (path.isEmpty()) {
+                statusBar()->showMessage(QStringLiteral("Choose a script first"), 4000);
+                return;
+            }
+        }
+        openScriptEditor(path);
     });
     connect(browseScript, &QPushButton::clicked, this, [this, f] {
         const QString path = QFileDialog::getOpenFileName(this, "Choose a script", projectRoot_, "Lua (*.lua)");
@@ -4355,6 +4937,118 @@ void MainWindow::applyLightSpins() {
     refresh();
 }
 
+void MainWindow::pushLights() {
+    const std::vector<ukiyo::SceneLight> copy = lights_;
+    runOnWorker([&] { worker_->setSceneLights(copy); });
+}
+
+// One authored light (item 6). The sun is a different page - it edits the project's key light and always exists - so
+// this page is about the lights a scene adds: position, colour, reach, and for a spot the cone.
+void MainWindow::showSceneLightProperties(int index) {
+    if (index < 0 || index >= static_cast<int>(lights_.size())) return;
+    const ukiyo::SceneLight& l = lights_[static_cast<size_t>(index)];
+    const bool spot = l.type == ukiyo::LightType::Spot;
+    Page p = makePage(QStringLiteral("%1 Light").arg(spot ? "Spot" : "Point"),
+                      spot ? "light_mode" : "lightbulb");
+
+    QFormLayout* f = addSection(p.layout, "Light");
+    auto* type = new QComboBox;
+    type->setObjectName("lightType");
+    type->addItems({"Point", "Spot"});
+    type->setCurrentIndex(spot ? 1 : 0);
+    f->addRow("Type", type);
+    const float pos[3] = {l.position.x, l.position.y, l.position.z};
+    std::vector<QDoubleSpinBox*> position = vec3Row(f, "Position", pos, -500.0, 500.0, 0.1, 3);
+    const float dir[3] = {l.direction.x, l.direction.y, l.direction.z};
+    std::vector<QDoubleSpinBox*> direction = vec3Row(f, "Direction", dir, -1.0, 1.0, 0.01, 3);
+    const float col[3] = {l.color.r, l.color.g, l.color.b};
+    std::vector<QDoubleSpinBox*> color = vec3Row(f, "Colour", col, 0.0, 1.0, 0.01, 3);
+    QDoubleSpinBox* intensity = makeSpin(0.0, 64.0, 0.05, 3, l.intensity);
+    intensity->setObjectName("lightIntensity");
+    f->addRow("Intensity", intensity);
+    QDoubleSpinBox* radius = makeSpin(0.05, 200.0, 0.1, 3, l.radius);
+    radius->setObjectName("lightRadius");
+    f->addRow("Reach (m)", radius);
+    QDoubleSpinBox* angle = makeSpin(1.0, 179.0, 1.0, 1, l.spotAngleDeg);
+    angle->setObjectName("lightAngle");
+    f->addRow("Cone (deg)", angle);
+    QDoubleSpinBox* soft = makeSpin(0.0, 0.95, 0.01, 2, l.spotSoftness);
+    soft->setObjectName("lightSoftness");
+    f->addRow("Cone softness", soft);
+    QCheckBox* on = new QCheckBox("On");
+    on->setChecked(l.enabled);
+    f->addRow(on);
+
+    auto apply = [this, index, position, direction, color, intensity, radius, angle, soft, on, type] {
+        if (index < 0 || index >= static_cast<int>(lights_.size())) return;
+        ukiyo::SceneLight& w = lights_[static_cast<size_t>(index)];
+        w.type = type->currentIndex() == 1 ? ukiyo::LightType::Spot : ukiyo::LightType::Point;
+        w.position = glm::vec3(float(position[0]->value()), float(position[1]->value()), float(position[2]->value()));
+        w.direction = glm::vec3(float(direction[0]->value()), float(direction[1]->value()), float(direction[2]->value()));
+        w.color = glm::vec3(float(color[0]->value()), float(color[1]->value()), float(color[2]->value()));
+        w.intensity = float(intensity->value());
+        w.radius = float(radius->value());
+        w.spotAngleDeg = float(angle->value());
+        w.spotSoftness = float(soft->value());
+        w.enabled = on->isChecked();
+        markDirty();
+        pushLights();
+        refresh();
+    };
+    for (QDoubleSpinBox* sp : position) connect(sp, QOverload<double>::of(&QDoubleSpinBox::valueChanged), this, apply);
+    for (QDoubleSpinBox* sp : direction) connect(sp, QOverload<double>::of(&QDoubleSpinBox::valueChanged), this, apply);
+    for (QDoubleSpinBox* sp : color) connect(sp, QOverload<double>::of(&QDoubleSpinBox::valueChanged), this, apply);
+    connect(intensity, QOverload<double>::of(&QDoubleSpinBox::valueChanged), this, apply);
+    connect(radius, QOverload<double>::of(&QDoubleSpinBox::valueChanged), this, apply);
+    connect(angle, QOverload<double>::of(&QDoubleSpinBox::valueChanged), this, apply);
+    connect(soft, QOverload<double>::of(&QDoubleSpinBox::valueChanged), this, apply);
+    connect(on, &QCheckBox::toggled, this, apply);
+    connect(type, QOverload<int>::of(&QComboBox::currentIndexChanged), this, apply);
+
+    QLabel* hint = new QLabel("Reach is where the light has fallen to nothing. A scene with lights is lit by them "
+                              "instead of the engine's two fill lights; one directional light in a scene becomes the "
+                              "sun and casts the shadows.");
+    hint->setWordWrap(true);
+    hint->setObjectName("hint");
+    f->addRow(hint);
+
+    QPushButton* del = new QPushButton(uiIcon("delete"), QStringLiteral("Delete Light"));
+    del->setObjectName("lightDelete");
+    connect(del, &QPushButton::clicked, this, [this, index] { deleteLight(index); });
+    p.layout->addWidget(del);
+    p.layout->addStretch(1);
+    setInspectorPage(p.widget);
+}
+
+void MainWindow::addLight(int type) {
+    ukiyo::SceneLight l;
+    l.type = type == 2 ? ukiyo::LightType::Spot : ukiyo::LightType::Point;
+    // In front of the camera, at eye height: a light added from the menu is visible where the author is looking.
+    const glm::vec3 eye = gameCam_.eye();
+    const glm::vec3 fwd = glm::normalize(gameCam_.target - eye + glm::vec3(0.0f, 1e-4f, 0.0f));
+    l.position = eye + fwd * 2.0f;
+    l.direction = fwd;
+    l.color = type == 2 ? glm::vec3(1.0f, 0.92f, 0.78f) : glm::vec3(0.55f, 0.75f, 1.0f);
+    l.intensity = 3.0f;
+    l.radius = 6.0f;
+    lights_.push_back(l);
+    beginEdit();
+    markDirty();
+    pushLights();
+    rebuildHierarchy();
+    selectLightRow(static_cast<int>(lights_.size()) - 1);
+}
+
+void MainWindow::deleteLight(int index) {
+    if (index < 0 || index >= static_cast<int>(lights_.size())) return;
+    beginEdit();
+    lights_.erase(lights_.begin() + index);
+    markDirty();
+    pushLights();
+    rebuildHierarchy();
+    showPropertiesFor(nullptr);
+}
+
 // Writes the camera values into the spin boxes. Blocked so it does not feed back into the camera.
 void MainWindow::syncCameraSpins() {
     if (!inspectedCam_ || camSpins_.size() != 9) return;
@@ -4556,11 +5250,32 @@ void MainWindow::togglePlay(bool playing) {
     playBtn_->setChecked(playing);
     pauseBtn_->setChecked(!playing);
     if (playing) {
+        // One Play button. It starts the clock *and* the world, from whichever tab is open: the button is the game
+        // starting, not a preview of a systems page. A scene that cannot play still plays back its animation, and the
+        // reason is logged, so the editor does not refuse to start over a missing navmesh.
+        flushEdit();   // play starts from a recorded state, so Stop cannot lose an edit to undo
+        if (playCamFollows_) playCam_ = gameCam_;
+        bool already = false;
+        runOnWorker([&] { already = worker_->playing(); });
+        if (!already) {
+            QString err;
+            bool ok = false;
+            std::vector<std::string> warnings;
+            runOnWorker([&] {
+                ok = worker_->startPlay(&err);
+                if (ok) warnings = worker_->playWarnings();
+            });
+            if (!ok) log(QStringLiteral("play: ") + err);
+            for (const std::string& w : warnings) log(QStringLiteral("play: ") + QString::fromStdString(w));
+        }
+        runOnWorker([&] { worker_->setProfiling(true); });
         enterMaximizedGame();
         clock_.restart();
         timer_.start();
     } else {
         timer_.stop();
+        runOnWorker([&] { worker_->stopPlay(); });   // puts every instance back where Play found it
+        playCamFollows_ = true;
         leaveMaximizedGame();
     }
     updateRenderSize();
@@ -4770,17 +5485,49 @@ void MainWindow::paintGameOverlay(QPainter& p) {
         InstanceInfo info;
         if (selectionTarget(&index, &info)) {
             const glm::vec3 origin(info.position[0], info.position[1], info.position[2]);
-            gizmo::paint(p, gameCam_, frame.width(), frame.height(), gizmoTool_, origin,
+            gizmo::paint(p, playCam_, frame.width(), frame.height(), gizmoTool_, origin,
                          gizmo::Part::None, gizmo::Part::None);
         }
     }
     if (stats) {
-        const QStringList lines{
+        QStringList lines{
             QStringLiteral("FPS: %1").arg(fps_, 0, 'f', 0),
             QStringLiteral("Frame: %1 ms").arg(lastRenderMs_, 0, 'f', 1),
             QStringLiteral("Draw calls: %1").arg(lastDrawCalls_),
             QStringLiteral("Render: %1 x %2").arg(renderSize_.width()).arg(renderSize_.height()),
         };
+        // What the game's own update cost this frame, measured inside World::tick on the render thread. The render
+        // time above is the whole frame; this is the part the game's systems own.
+        ukiyo::FrameTiming timing;
+        if (playing_) runOnWorker([&] { timing = worker_->playTiming(); });
+        if (timing.total > 0.0f) {
+            lines << QStringLiteral("Update: %1 ms").arg(double(timing.total), 0, 'f', 2);
+            const struct { const char* name; float ms; } stages[] = {
+                {"physics", timing.physics},     {"scripts", timing.scripts},
+                {"animation", timing.animation}, {"navigation", timing.navigation},
+                {"particles", timing.particles}, {"entities", timing.entities},
+            };
+            QStringList ranked;
+            for (const auto& st : stages) {
+                if (st.ms <= 0.0f) continue;
+                ranked << QStringLiteral("%1 %2").arg(QString::fromLatin1(st.name)).arg(double(st.ms), 0, 'f', 2);
+            }
+            if (!ranked.isEmpty()) lines << QStringLiteral("  ") + ranked.join(QStringLiteral(" · "));
+        }
+        // The GPU's share of the same frame, one frame behind by design: the device resolves its timestamp queries
+        // when the next frame begins, so reading them never waits for the GPU (docs/PROFILER.md).
+        std::vector<ukiyo::Renderer::GpuStat> gpu;
+        if (playing_) runOnWorker([&] { gpu = worker_->gpuStats(); });
+        if (!gpu.empty()) {
+            float total = 0.0f;
+            QStringList ranked;
+            for (const auto& g : gpu) {
+                total += g.ms;
+                ranked << QStringLiteral("%1 %2").arg(QString::fromLatin1(g.name)).arg(double(g.ms), 0, 'f', 2);
+            }
+            lines << QStringLiteral("GPU: %1 ms").arg(double(total), 0, 'f', 2);
+            lines << QStringLiteral("  ") + ranked.join(QStringLiteral(" · "));
+        }
         const QFontMetrics fm(p.font());
         int textW = 0;
         for (const QString& line : lines) textW = std::max(textW, fm.horizontalAdvance(line));
@@ -4844,7 +5591,12 @@ void MainWindow::pumpRender() {
 
     RenderRequest req;
     req.game = gameViewActive();
-    req.cam = req.game ? gameCam_ : gameCam_;
+    // Until the Game view has been moved or played, it shows what the Scene view shows: the first press of Play then
+    // starts from the view the author was working in rather than from a camera they have never seen.
+    if (req.game && !playing_ && playCamFollows_) playCam_ = gameCam_;
+    // The Scene view and the Game view look through different cameras: an orthographic blocking view is not what the
+    // player sees, and orbiting in one must not move the other.
+    req.cam = req.game ? playCam_ : gameCam_;
     req.settings = settings_;
     req.time = pinTime_ ? pinnedTime_ : time_;
     req.dt = pinTime_ ? 0.0f : pendingDt_;   // a pinned clock also stops the animation step
@@ -5029,8 +5781,10 @@ void MainWindow::resetProjectSettings() {
 
 void MainWindow::navigateTo(const QString& dir) {
     browserDir_ = QDir::cleanPath(dir);
-    fsList_->setRootIndex(fsModel_->index(browserDir_));
-    fsDetail_->setRootIndex(fsModel_->index(browserDir_));
+    if (!fsFilter_) return;
+    static_cast<BrowserFilterModel*>(fsFilter_)->setRootFolder(browserDir_);
+    fsList_->setRootIndex(fsFilter_->mapFromSource(fsModel_->index(browserDir_)));
+    fsDetail_->setRootIndex(fsFilter_->mapFromSource(fsModel_->index(browserDir_)));
     const QModelIndex treeIndex = fsDirs_->index(browserDir_);
     fsTree_->setCurrentIndex(treeIndex);
     fsTree_->scrollTo(treeIndex);
@@ -5041,32 +5795,21 @@ void MainWindow::navigateTo(const QString& dir) {
     updateBrowserDetails(QModelIndex());
 }
 
+// The search box and the kind button feed the filter model, which applies the engine's query rule (a word is a
+// substring, a word with wildcards is a glob, every word has to match) and the type lists. Nothing is pushed into the
+// file-system model any more: it lists the folder, and the filter decides what the browser shows.
 void MainWindow::updateBrowserFilter() {
-    const QString text = fsSearch_->text().trimmed();
-    const QString match = text.isEmpty() ? QStringLiteral("*") : "*" + text + "*";
-    static const QStringList modelExt{"vrm", "glb", "gltf"};
-    static const QStringList textureExt{"png", "jpg", "jpeg", "bmp", "tga", "webp", "gif", "tif", "tiff"};
-    static const QStringList audioExt{"wav", "mp3", "ogg", "flac", "opus", "m4a"};
-
-    QDir::Filters filters = QDir::AllEntries | QDir::NoDotAndDotDot;
-    QStringList patterns;
-    auto byExtension = [&](const QStringList& exts) {
-        for (const QString& e : exts) patterns << match + "." + e;
-    };
-    switch (browserKind_) {
-    case 1: byExtension(modelExt); break;
-    case 2: byExtension(textureExt); break;
-    case 3: byExtension(audioExt); break;
-    case 4:
-        filters = QDir::AllDirs | QDir::NoDotAndDotDot;
-        patterns << match;
-        break;
-    default: patterns << match; break;
+    auto* filter = static_cast<BrowserFilterModel*>(fsFilter_);
+    if (filter) {
+        filter->setKind(browserKind_);
+        filter->setQuery(fsSearch_->text().trimmed());
     }
-    if (editor::prefs::boolean(QStringLiteral("browser/hidden"), false)) filters |= QDir::Hidden;
-    fsModel_->setFilter(filters);
-    fsModel_->setNameFilterDisables(false);
-    fsModel_->setNameFilters(patterns);
+    if (fsModel_) {
+        QDir::Filters filters = QDir::AllEntries | QDir::NoDotAndDotDot;
+        if (editor::prefs::boolean(QStringLiteral("browser/hidden"), false)) filters |= QDir::Hidden;
+        // setFilter reloads the model, which would collapse the tree on every keystroke; only change it when it differs.
+        if (fsModel_->filter() != filters) fsModel_->setFilter(filters);
+    }
 }
 
 void MainWindow::updateBrowserDetails(const QModelIndex& index) {
@@ -5078,7 +5821,7 @@ void MainWindow::updateBrowserDetails(const QModelIndex& index) {
         detailDeps_->clear();
         return;
     }
-    const QString path = fsModel_->filePath(index);
+    const QString path = fsModel_->filePath(fsFilter_ ? fsFilter_->mapToSource(index) : index);
     const QFileInfo info(path);
     detailPreview_->setPixmap(assets::fileIcon(info).pixmap(QSize(220, 220)));
     detailTitle_->setText(info.fileName());
@@ -5123,7 +5866,15 @@ void MainWindow::openAnimDialog() {
 
 QString MainWindow::browserPathAt(QAbstractItemView* view, const QModelIndex& index) const {
     if (!index.isValid()) return QString();
-    return view == fsTree_ ? fsDirs_->filePath(index) : fsModel_->filePath(index);
+    if (view == fsTree_) return fsDirs_->filePath(index);
+    return fsModel_->filePath(fsFilter_ ? fsFilter_->mapToSource(index) : index);
+}
+
+// The grid's index for a path, mapped through the search filter. Invalid when the filter hides the file, which is the
+// right answer for revealing something the current query excludes.
+QModelIndex MainWindow::browserIndex(const QString& path) const {
+    if (!fsModel_ || !fsFilter_) return QModelIndex();
+    return fsFilter_->mapFromSource(fsModel_->index(path));
 }
 
 void MainWindow::refreshBrowser() {
@@ -5213,7 +5964,23 @@ assetops::Result MainWindow::removeBrowserItem(const QString& path) {
 
 assetops::Result MainWindow::importBrowserFiles(const QStringList& sources, const QString& destDir) {
     QStringList imported;
-    const assetops::Result r = assetops::importInto(sources, destDir, &imported);
+    // A plugin that claims an extension gets the file first: that is the whole point of claiming one. A file it
+    // imports is not copied as an asset, because the plugin has already put something in the project for it.
+    QStringList remaining;
+    for (const QString& source : sources) {
+        const QFileInfo info(source);
+        if (plugins_ && plugins_->importFile(info.absoluteFilePath().toStdString())) {
+            imported << info.absoluteFilePath();
+            log(QStringLiteral("plugin imported %1").arg(info.fileName()));
+        } else {
+            remaining << source;
+        }
+    }
+    if (remaining.isEmpty()) {
+        refreshBrowser();
+        return assetops::Result{true, {}};
+    }
+    const assetops::Result r = assetops::importInto(remaining, destDir, &imported);
     if (!imported.isEmpty()) {
         refreshBrowser();
         log(QStringLiteral("imported %1 item(s) into %2").arg(imported.size()).arg(destDir));
@@ -5302,7 +6069,7 @@ void MainWindow::browserContextMenu(QAbstractItemView* view, const QPoint& pos) 
             menu.addAction(uiIcon("folder_open"), "Open Folder", this, [this, path] { navigateTo(path); });
         } else {
             menu.addAction(uiIcon("open_with"), "Open", this, [this, view, path] {
-                if (view != fsTree_) onBrowserActivated(fsModel_->index(path));
+                if (view != fsTree_) onBrowserActivated(browserIndex(path));
             });
         }
         menu.addSeparator();
@@ -5329,9 +6096,110 @@ void MainWindow::browserContextMenu(QAbstractItemView* view, const QPoint& pos) 
     menu.exec(view->viewport()->mapToGlobal(pos));
 }
 
+// --- Scripts ----------------------------------------------------------------------------------------
+
+void MainWindow::openScriptEditor(const QString& path) {
+    if (path.isEmpty()) return;
+    const QString abs = QDir::cleanPath(QFileInfo(path).isAbsolute() ? path : projectRoot_ + QStringLiteral("/") + path);
+    if (!QFileInfo::exists(abs)) {
+        log("no such script: " + abs);
+        return;
+    }
+    // A project that has no support files yet gets them the first time a script is opened, so an external editor
+    // opened from here (or from the file manager) already understands the API.
+    if (!QFileInfo::exists(projectRoot_ + QStringLiteral("/Scripts/.ukiyo/lua/ukiyo.lua"))) writeScriptSupportFiles();
+    if (!prefs::boolean(QStringLiteral("scripting/builtinEditor"), true)) {
+        QString opened;
+        if (openInExternalEditor(abs, QString(), &opened)) log("opened " + abs + " in " + opened);
+        else log(opened);
+        return;
+    }
+    if (QDialog* open = scriptEditors_.value(abs)) {
+        open->raise();
+        open->activateWindow();
+        return;
+    }
+    auto* dialog = new LuaEditorDialog(
+        this, abs, [this](const QString& file, const QString& text, QString* error) {
+            bool ok = false;
+            runOnWorker([&] { ok = worker_ && worker_->checkScriptText(file, text, error); });
+            return ok;
+        });
+    QString error;
+    if (!dialog->openFile(&error)) {
+        log(error);
+        delete dialog;
+        return;
+    }
+    dialog->setAttribute(Qt::WA_DeleteOnClose, true);
+    scriptEditors_.insert(abs, dialog);
+    connect(dialog, &LuaEditorDialog::saved, this,
+            [this](const QString& file) { log("saved " + file); });
+    connect(dialog, &QDialog::destroyed, this, [this, abs] { scriptEditors_.remove(abs); });
+    dialog->show();
+    dialog->raise();
+}
+
+void MainWindow::reloadPlayingScripts() {
+    bool running = false;
+    runOnWorker([&] { running = worker_->playing(); });
+    if (!running) return;
+    QString error;
+    bool ok = false;
+    runOnWorker([&] { ok = worker_->reloadScripts(&error); });
+    log(ok ? "scripts reloaded" : "script error: " + error);
+    if (!ok) statusBar()->showMessage(error, 6000);
+}
+
+void MainWindow::writeScriptSupportFiles() {
+    std::vector<std::string> written;
+    std::string errorStd;
+    QString error;
+    bool ok = false;
+    if (worker_) runOnWorker([&] { ok = worker_->writeScriptSupportFiles(&written, &error); });
+    else ok = ukiyo::script_project::writeSupportFiles(projectRoot_.toStdString(), &written, &errorStd);
+    if (!ok) {
+        log("could not write the script support files: " + error);
+        statusBar()->showMessage(QStringLiteral("Could not write the script support files"), 5000);
+        return;
+    }
+    QStringList names;
+    for (const std::string& f : written) names << QString::fromStdString(f);
+    log(QStringLiteral("script support files: %1 written").arg(names.size()));
+    if (!names.isEmpty()) log("  " + names.join(", "));
+    statusBar()->showMessage(QStringLiteral("Lua support files are up to date"), 4000);
+    // .ukiyo is a hidden folder in the browser: the files are for tools, not for dragging into the scene.
+    refreshBrowser();
+}
+
+void MainWindow::showScriptingTools() {
+    auto* tools = new ScriptingToolsDialog(this, projectRoot_, [this](QString* error) {
+        std::vector<std::string> written;
+        std::string err;
+        bool ok = false;
+        if (worker_) {
+            runOnWorker([&] { ok = worker_->writeScriptSupportFiles(&written, error); });
+        } else {
+            ok = ukiyo::script_project::writeSupportFiles(projectRoot_.toStdString(), &written, &err);
+            if (!ok && error) *error = QString::fromStdString(err);
+        }
+        if (!ok) return false;
+        if (!written.empty()) {
+            refreshBrowser();
+            log(QStringLiteral("script support files: %1 written").arg(written.size()));
+        }
+        return true;
+    });
+    tools->setAttribute(Qt::WA_DeleteOnClose, true);
+    connect(tools, &ScriptingToolsDialog::externalEditorChosen, this,
+            [this](const QString& command) { log("scripts open in: " + command); });
+    tools->show();
+}
+
 void MainWindow::onBrowserActivated(const QModelIndex& index) {
-    const QString path = fsModel_->filePath(index);
-    if (fsModel_->isDir(index)) {
+    const QModelIndex source = fsFilter_ ? fsFilter_->mapToSource(index) : index;
+    const QString path = fsModel_->filePath(source);
+    if (fsModel_->isDir(source)) {
         navigateTo(path);
         return;
     }
@@ -5341,6 +6209,8 @@ void MainWindow::onBrowserActivated(const QModelIndex& index) {
         markDirty();
     } else if (suffix == "glb" && path.contains("/anim/")) {
         loadAnimLibrary(path);
+    } else if (suffix == "lua") {
+        openScriptEditor(path);
     } else {
         log("no editor for " + path);
     }
@@ -5476,7 +6346,7 @@ void MainWindow::openConsoleSource(const QString& path) {
             projectDock_->raise();
         }
         navigateTo(info.absolutePath());
-        const QModelIndex idx = fsModel_->index(info.absoluteFilePath());
+        const QModelIndex idx = browserIndex(info.absoluteFilePath());
         if (idx.isValid()) {
             fsList_->setCurrentIndex(idx);
             fsList_->scrollTo(idx);
@@ -5531,6 +6401,13 @@ QJsonArray floatsJson(std::initializer_list<float> values) {
     QJsonArray a;
     for (float f : values) a.append(double(f));
     return a;
+}
+
+// A scale as a scene file writes it: one number when it is uniform, because that is what a prop scaled evenly has, and
+// what a person writing the file by hand would say; a vector otherwise.
+QJsonValue scaleJson(const glm::vec3& s) {
+    if (std::fabs(s.x - s.y) < 1e-6f && std::fabs(s.x - s.z) < 1e-6f) return double(s.x);
+    return floatsJson({s.x, s.y, s.z});
 }
 
 QJsonObject cameraJson(const ukiyo::OrbitCamera& c) {
@@ -5600,7 +6477,7 @@ void MainWindow::newScene() {
     // Loading the default model resets the rest poses and frames both cameras.
     loadingScene_ = true;
     runOnWorker([&] { worker_->clearScene(); });
-    loadModel(projectRoot_ + "/assets/Seed-san.vrm");
+    loadModel(engineAssetsRoot() + QStringLiteral("/Seed-san.vrm"));
     settings_ = ukiyo::RenderSettings();
     for (const auto& sync : settingSyncers_) sync();
     refresh();
@@ -5613,8 +6490,10 @@ void MainWindow::newScene() {
 
 void MainWindow::openScene() {
     if (!leavePrefabStage() || !confirmDiscardScene()) return;
-    const QString path = QFileDialog::getOpenFileName(this, QStringLiteral("Open Scene"),
-                                                      projectRoot_ + "/assets", QStringLiteral("Ukiyo Scene (*.ukscene)"));
+    const QString scenes = QDir(projectRoot_).absoluteFilePath(QStringLiteral("Scenes"));
+    const QString start = QDir(scenes).exists() ? scenes : projectRoot_ + "/assets";
+    const QString path = QFileDialog::getOpenFileName(this, QStringLiteral("Open Scene"), start,
+                                                      QStringLiteral("Ukiyo Scene (*.ukscene)"));
     if (!path.isEmpty()) readScene(path);
 }
 
@@ -5625,8 +6504,10 @@ bool MainWindow::saveScene() {
 
 bool MainWindow::saveSceneAs() {
     const QString base = scenePath_.isEmpty() ? QStringLiteral("Untitled") : QFileInfo(scenePath_).completeBaseName();
+    const QString scenes = QDir(projectRoot_).absoluteFilePath(QStringLiteral("Scenes"));
+    const QString folder = QDir(scenes).exists() ? scenes : projectRoot_ + "/assets";
     QString path = QFileDialog::getSaveFileName(this, QStringLiteral("Save Scene"),
-                                                projectRoot_ + "/assets/" + base + ".ukscene",
+                                                folder + "/" + base + ".ukscene",
                                                 QStringLiteral("Ukiyo Scene (*.ukscene)"));
     if (path.isEmpty()) return false;
     if (!path.endsWith(QLatin1String(".ukscene"), Qt::CaseInsensitive)) path += QStringLiteral(".ukscene");
@@ -5637,6 +6518,8 @@ QJsonObject MainWindow::sceneDocument() {
     QJsonObject s;
     s["aaMode"] = settings_.aaMode;
     s["shadows"] = settings_.shadows;
+    s["vgeom"] = settings_.vgeom;
+    s["vgeomPixels"] = double(settings_.vgeomPixels);
     s["sky"] = settings_.sky;
     s["grid"] = settings_.grid;
     s["outlines"] = settings_.outlines;
@@ -5661,11 +6544,14 @@ QJsonObject MainWindow::sceneDocument() {
         s["glossPower"] = settings_.glossPower;
     }
     // Screen effects: written only when one is on, so existing scene files stay the same.
-    if (settings_.fogDensity > 0.0f || settings_.ssao > 0.0f || settings_.ssr > 0.0f || settings_.depthNormalOutline > 0.0f
+    if (settings_.fogDensity > 0.0f || settings_.ssao > 0.0f || settings_.contactShadows > 0.0f || settings_.ssr > 0.0f
+        || settings_.depthNormalOutline > 0.0f
+        || settings_.gi > 0.0f
         || settings_.flare > 0.0f || settings_.motionBlur > 0.0f || settings_.chromatic > 0.0f || settings_.sharpen > 0.0f
         || settings_.autoExposure || settings_.celBand || settings_.screenRim > 0.0f || settings_.outlineNoise > 0.0f
         || settings_.depthEdgeRim > 0.0f
         || settings_.normalMap > 0.0f || settings_.outlineMatNoise > 0.0f || settings_.smoothNormals
+        || !settings_.preserveAlphaCoverage || settings_.alphaTestThreshold != 0.5f
         || settings_.softLight > 0.0f || settings_.lightSweep > 0.0f || settings_.ditherFadeFar > settings_.ditherFadeNear
         || settings_.pbrStyle > 0.0f || settings_.eyeFlatten > 0.0f || settings_.eyeParallax > 0.0f
         || settings_.eyeMatcap > 0.0f || settings_.eyeHighlight > 0.0f) {
@@ -5680,6 +6566,8 @@ QJsonObject MainWindow::sceneDocument() {
         s["ditherFadeNear"] = double(settings_.ditherFadeNear);
         s["ditherFadeFar"] = double(settings_.ditherFadeFar);
         s["smoothNormals"] = settings_.smoothNormals;
+        s["preserveAlphaCoverage"] = settings_.preserveAlphaCoverage;
+        s["alphaTestThreshold"] = double(settings_.alphaTestThreshold);
         s["screenRim"] = double(settings_.screenRim);
         s["outlineNoise"] = double(settings_.outlineNoise);
         s["depthEdgeRim"] = double(settings_.depthEdgeRim);
@@ -5687,7 +6575,33 @@ QJsonObject MainWindow::sceneDocument() {
         s["outlineMatNoise"] = double(settings_.outlineMatNoise);
         s["fogDensity"] = double(settings_.fogDensity);
         s["fogSun"] = double(settings_.fogSun);
+        if (settings_.fogColor != glm::vec3(0.62f, 0.72f, 0.86f))
+            s["fogColor"] = floatsJson({settings_.fogColor.x, settings_.fogColor.y, settings_.fogColor.z});
+        // The sky: written whenever it differs from the daytime default, so an untouched scene keeps its old file.
+        if (settings_.cloudCover != 1.0f || settings_.stars != 0.0f || settings_.sunDisc != 1.0f ||
+            settings_.skyZenith != glm::vec3(0.20f, 0.46f, 0.92f) ||
+            settings_.skyHorizon != glm::vec3(0.80f, 0.91f, 1.00f) ||
+            settings_.ambientSky != glm::vec3(0.62f, 0.72f, 0.92f) ||
+            settings_.ambientGround != glm::vec3(0.50f, 0.45f, 0.48f)) {
+            s["cloudCover"] = double(settings_.cloudCover);
+            s["stars"] = double(settings_.stars);
+            s["sunDisc"] = double(settings_.sunDisc);
+            s["skyZenith"] = floatsJson({settings_.skyZenith.x, settings_.skyZenith.y, settings_.skyZenith.z});
+            s["skyHorizon"] = floatsJson({settings_.skyHorizon.x, settings_.skyHorizon.y, settings_.skyHorizon.z});
+            s["ambientSky"] = floatsJson({settings_.ambientSky.x, settings_.ambientSky.y, settings_.ambientSky.z});
+            s["ambientGround"] =
+                floatsJson({settings_.ambientGround.x, settings_.ambientGround.y, settings_.ambientGround.z});
+        }
         s["ssao"] = double(settings_.ssao);
+        s["multiBounceAO"] = settings_.multiBounceAO;
+        s["contactShadows"] = double(settings_.contactShadows);
+        s["contactShadowLength"] = double(settings_.contactShadowLength);
+        s["contactShadowThickness"] = double(settings_.contactShadowThickness);
+        s["contactShadowSteps"] = settings_.contactShadowSteps;
+        s["gi"] = double(settings_.gi);
+        s["giRadius"] = double(settings_.giRadius);
+        s["giRays"] = settings_.giRays;
+        s["giDenoise"] = settings_.giDenoise;
         s["ssr"] = double(settings_.ssr);
         s["depthNormalOutline"] = double(settings_.depthNormalOutline);
         s["flare"] = double(settings_.flare);
@@ -5754,12 +6668,27 @@ QJsonObject MainWindow::sceneDocument() {
             if (in.overrides.contains(QLatin1String("translation")))
                 ov["translation"] = floatsJson({in.position[0], in.position[1], in.position[2]});
             if (in.overrides.contains(QLatin1String("yawDeg"))) ov["yawDeg"] = double(in.yawDeg);
+            if (in.overrides.contains(QLatin1String("scale"))) ov["scale"] = scaleJson(in.scale);
             o["overrides"] = ov;
+            // Pitch and roll belong to the instance, not to the prefab node, so they are written alongside it, in the
+            // `rotation` form the runtime reads.
+            if (std::fabs(in.pitchDeg) > 1e-6f || std::fabs(in.rollDeg) > 1e-6f)
+                o["rotation"] = floatsJson({in.pitchDeg, in.yawDeg, in.rollDeg});
         } else {
             if (in.path == emptyModelPath()) o["empty"] = true;
             else o["path"] = QDir(projectRoot_).relativeFilePath(in.path);
             o["position"] = floatsJson({in.position[0], in.position[1], in.position[2]});
-            o["yawDeg"] = double(in.yawDeg);
+            // `yawDeg` stays the plain form, so a scene whose models only turn about Y keeps the bytes it had. Once a
+            // model is tilted the three angles are written as `rotation`, the field the runtime reads.
+            if (std::fabs(in.pitchDeg) > 1e-6f || std::fabs(in.rollDeg) > 1e-6f)
+                o["rotation"] = floatsJson({in.pitchDeg, in.yawDeg, in.rollDeg});
+            else
+                o["yawDeg"] = double(in.yawDeg);
+            // Only a scaled instance writes it, so a scene that never scaled anything keeps its exact bytes. A uniform
+            // scale is one number, because that is what most props have and what a person would write by hand.
+            if (std::fabs(in.scale.x - 1.0f) > 1e-6f || std::fabs(in.scale.y - 1.0f) > 1e-6f ||
+                std::fabs(in.scale.z - 1.0f) > 1e-6f)
+                o["scale"] = scaleJson(in.scale);
         }
         if (!in.name.isEmpty()) o["name"] = in.name;
         // Game system settings. Only written when something is enabled.
@@ -5784,6 +6713,7 @@ QJsonObject MainWindow::sceneDocument() {
     root["gameCamera"] = cameraJson(gameCam_);
     root["nodes"] = nodes;
     if (water_) root["water"] = scene_file::waterToJson(*water_);
+    if (!lights_.empty()) root["lights"] = scene_file::lightsToJson(lights_);
 
     return root;
 }
@@ -5804,6 +6734,7 @@ bool MainWindow::writeScene(const QString& path) {
         log("error: could not save the terrain: " + terrErr);
         return false;
     }
+    flushEdit();   // a save ends the edit in progress
     const QJsonObject root = sceneDocument();
     QFile file(path);
     if (!file.open(QIODevice::WriteOnly | QIODevice::Truncate)) {
@@ -5876,45 +6807,169 @@ void shiftEntry(QJsonObject& e, float dx) {
 }
 } // namespace
 
+nlohmann::json MainWindow::docToJson(const QJsonObject& doc) {
+    // Through the JSON text, so an integer stays an integer and a float stays a float: a patch that compares numbers
+    // must see the document exactly as the file will hold it.
+    return nlohmann::json::parse(QJsonDocument(doc).toJson(QJsonDocument::Compact).toStdString());
+}
+
+QJsonObject MainWindow::jsonToDoc(const nlohmann::json& j) {
+    return QJsonDocument::fromJson(QByteArray::fromStdString(j.dump())).object();
+}
+
+MainWindow::PrefabEdit MainWindow::capturePrefabStage() const {
+    PrefabEdit e;
+    if (!prefabStage_) return e;
+    MainWindow* self = const_cast<MainWindow*>(this);
+    self->runOnWorker([&] { e.list = self->worker_->instances(); });
+    e.keys = prefabStage_->keys;
+    e.removedKeys = prefabStage_->removedKeys;
+    return e;
+}
+
 bool MainWindow::beginEdit(const QString& key) {
-    if (loadingScene_ || prefabStage_) return false;
+    if (loadingScene_) return false;
     if (!key.isEmpty() && key == lastEditKey_ && lastEditTimer_.isValid() && lastEditTimer_.elapsed() < 800) {
         lastEditTimer_.restart();
-        return false;   // part of the same edit as the snapshot already taken
+        return false;   // part of the same edit as the step already taken
     }
-    undoStack_.push_back(sceneDocument());
-    if (static_cast<int>(undoStack_.size()) > kUndoLimit) undoStack_.erase(undoStack_.begin());
-    redoStack_.clear();
+    // A step is taken at the start of every edit, as it always was: what is new is that the step is the difference the
+    // last edit made rather than another copy of the document. Taking it here is what makes Undo available the moment an
+    // edit starts, and it is what lets a failed operation drop the step it took (dropTopEdit).
+    if (prefabStage_) {
+        prefabUndo_.push_back(capturePrefabStage());
+        if (static_cast<int>(prefabUndo_.size()) > kUndoLimit) prefabUndo_.erase(prefabUndo_.begin());
+        prefabRedo_.clear();
+    } else {
+        const nlohmann::json doc = docToJson(sceneDocument());
+        SceneEdit e;
+        if (undoTopValid_) {
+            e.patch = ukiyo::diffJson(undoTopDoc_, doc);
+            e.inverse = ukiyo::invertJsonPatch(e.patch, undoTopDoc_);
+            e.terrain = pendingTerrain_;
+        }
+        pendingTerrain_ = QJsonArray();
+        e.label = key;
+        undoTopDoc_ = doc;
+        undoTopValid_ = true;
+        undoStack_.push_back(std::move(e));
+        if (static_cast<int>(undoStack_.size()) > kUndoLimit) undoStack_.erase(undoStack_.begin());
+        redoStack_.clear();
+    }
     lastEditKey_ = key;
     lastEditTimer_.restart();
     updateEditActions();
     return true;
 }
 
-void MainWindow::undoEdit() {
-    if (prefabStage_) {
-        statusBar()->showMessage(QStringLiteral("Undo is not available in prefab mode."), 3000);
+void MainWindow::flushEdit() {
+    // The edit in progress has not been recorded yet: beginEdit records what the *previous* edit did. Undo, save and
+    // play all call this first, so none of them loses the last change.
+    if (loadingScene_ || prefabStage_) return;
+    const nlohmann::json doc = docToJson(sceneDocument());
+    if (!undoTopValid_) {
+        undoTopDoc_ = doc;
+        undoTopValid_ = true;
         return;
     }
+    SceneEdit e;
+    e.patch = ukiyo::diffJson(undoTopDoc_, doc);
+    if (e.patch.empty() && pendingTerrain_.isEmpty()) {
+        undoTopDoc_ = doc;
+        return;
+    }
+    e.inverse = ukiyo::invertJsonPatch(e.patch, undoTopDoc_);
+    e.terrain = pendingTerrain_;
+    e.label = lastEditKey_;
+    pendingTerrain_ = QJsonArray();
+    undoTopDoc_ = doc;
+    undoStack_.push_back(std::move(e));
+    if (static_cast<int>(undoStack_.size()) > kUndoLimit) undoStack_.erase(undoStack_.begin());
+    redoStack_.clear();
+    updateEditActions();
+}
+
+void MainWindow::dropTopEdit() {
+    if (prefabStage_) {
+        if (!prefabUndo_.empty()) prefabUndo_.pop_back();
+        updateEditActions();
+        return;
+    }
+    if (!undoStack_.empty()) {
+        // Put the stack's document back to what it was before that step, so the next flush diffs from the truth.
+        const SceneEdit& top = undoStack_.back();
+        std::string err;
+        if (undoTopValid_) ukiyo::applyJsonPatch(&undoTopDoc_, top.inverse, &err);
+        undoStack_.pop_back();
+    }
+    updateEditActions();
+}
+
+void MainWindow::cancelEdit() {
+    // The step beginEdit took belongs to an operation that failed. Dropping it leaves the stack where it was, and the
+    // document base goes back with it, so the next edit diffs from the truth.
+    dropTopEdit();
+    lastEditKey_.clear();
+    lastEditTimer_.invalidate();
+    updateEditActions();
+}
+
+void MainWindow::undoEdit() {
+    if (prefabStage_) {
+        if (prefabUndo_.empty()) {
+            statusBar()->showMessage(QStringLiteral("Nothing to undo."), 2000);
+            return;
+        }
+        PrefabEdit e = prefabUndo_.back();
+        prefabUndo_.pop_back();
+        prefabRedo_.push_back(capturePrefabStage());
+        const bool ok = reloadPrefabStage(e.list, e.keys, -1);
+        if (!ok) {
+            log(QStringLiteral("error: undo could not rebuild the prefab objects"));
+            updateEditActions();
+            return;
+        }
+        prefabStage_->removedKeys = e.removedKeys;
+        prefabStage_->dirty = true;
+        lastEditKey_.clear();
+        updateEditActions();
+        updatePrefabCrumb();
+        statusBar()->showMessage(QStringLiteral("Undone."), 2000);
+        return;
+    }
+    flushEdit();   // the edit in progress becomes the step this undo takes back
     if (undoStack_.empty()) {
         statusBar()->showMessage(QStringLiteral("Nothing to undo."), 2000);
         return;
     }
-    const QJsonObject doc = undoStack_.back();
+    const SceneEdit e = undoStack_.back();
     undoStack_.pop_back();
-    QJsonObject redoDoc = sceneDocument();
-    const QJsonArray tags = doc.value(kTerrainUndoKey).toArray();
-    if (!tags.isEmpty()) redoDoc[kTerrainUndoKey] = tags;
-    redoStack_.push_back(redoDoc);
+    redoStack_.push_back({e.patch, e.inverse, e.terrain, e.label});
     lastEditKey_.clear();
-    // Last record first, so overlapping dabs unwind in order. The scene document below rebuilds the tiles.
-    for (int i = tags.size() - 1; i >= 0; --i) applyTerrainRecord(tags[i].toInt(), false);
-    pruneTerrainRecords();
-    const int sel = selectedInstance();
-    if (!applySceneDocument(doc, QStringLiteral("undo"))) {
-        log(QStringLiteral("error: undo could not restore the scene"));
+    nlohmann::json reverted = docToJson(sceneDocument());
+    std::string patchErr;
+    if (!ukiyo::applyJsonPatch(&reverted, e.inverse, &patchErr)) {
+        log(QStringLiteral("error: undo patch does not fit the scene: ") + QString::fromStdString(patchErr));
+        undoStack_.push_back(e);
+        redoStack_.pop_back();
+        updateEditActions();
         return;
     }
+    undoTopDoc_ = reverted;
+    undoTopValid_ = true;
+    // Last record first, so overlapping dabs unwind in order. The document below rebuilds the tiles.
+    for (int i = e.terrain.size() - 1; i >= 0; --i) applyTerrainRecord(e.terrain[i].toInt(), false);
+    pruneTerrainRecords();
+    const int sel = selectedInstance();
+    // The applied patch already carries the old document; if the scene refuses it, the step goes back on the stack.
+    if (!applySceneDocument(jsonToDoc(reverted), QStringLiteral("undo"))) {
+        log(QStringLiteral("error: undo could not restore the scene"));
+        undoStack_.push_back(e);
+        redoStack_.pop_back();
+        updateEditActions();
+        return;
+    }
+    undoTopDoc_ = docToJson(sceneDocument());   // the reloaded document is the truth, down to key order
     if (sel >= 0) selectInstanceRow(sel);   // does nothing if that model no longer exists
     sceneDirty_ = true;
     updateWindowTitle();
@@ -5924,27 +6979,57 @@ void MainWindow::undoEdit() {
 
 void MainWindow::redoEdit() {
     if (prefabStage_) {
-        statusBar()->showMessage(QStringLiteral("Redo is not available in prefab mode."), 3000);
+        if (prefabRedo_.empty()) {
+            statusBar()->showMessage(QStringLiteral("Nothing to redo."), 2000);
+            return;
+        }
+        PrefabEdit e = prefabRedo_.back();
+        prefabRedo_.pop_back();
+        prefabUndo_.push_back(capturePrefabStage());
+        if (!reloadPrefabStage(e.list, e.keys, -1)) {
+            log(QStringLiteral("error: redo could not rebuild the prefab objects"));
+            updateEditActions();
+            return;
+        }
+        prefabStage_->removedKeys = e.removedKeys;
+        prefabStage_->dirty = true;
+        lastEditKey_.clear();
+        updateEditActions();
+        updatePrefabCrumb();
+        statusBar()->showMessage(QStringLiteral("Redone."), 2000);
         return;
     }
+    flushEdit();
     if (redoStack_.empty()) {
         statusBar()->showMessage(QStringLiteral("Nothing to redo."), 2000);
         return;
     }
-    const QJsonObject doc = redoStack_.back();
+    const SceneEdit e = redoStack_.back();
     redoStack_.pop_back();
-    QJsonObject undoDoc = sceneDocument();
-    const QJsonArray tags = doc.value(kTerrainUndoKey).toArray();
-    if (!tags.isEmpty()) undoDoc[kTerrainUndoKey] = tags;
-    undoStack_.push_back(undoDoc);
+    undoStack_.push_back({e.patch, e.inverse, e.terrain, e.label});
     lastEditKey_.clear();
-    for (int i = 0; i < tags.size(); ++i) applyTerrainRecord(tags[i].toInt(), true);
-    pruneTerrainRecords();
-    const int sel = selectedInstance();
-    if (!applySceneDocument(doc, QStringLiteral("redo"))) {
-        log(QStringLiteral("error: redo could not restore the scene"));
+    nlohmann::json redone = docToJson(sceneDocument());
+    std::string patchErr;
+    if (!ukiyo::applyJsonPatch(&redone, e.patch, &patchErr)) {
+        log(QStringLiteral("error: redo patch does not fit the scene: ") + QString::fromStdString(patchErr));
+        redoStack_.push_back(e);
+        undoStack_.pop_back();
+        updateEditActions();
         return;
     }
+    undoTopDoc_ = redone;
+    undoTopValid_ = true;
+    for (int i = 0; i < e.terrain.size(); ++i) applyTerrainRecord(e.terrain[i].toInt(), true);
+    pruneTerrainRecords();
+    const int sel = selectedInstance();
+    if (!applySceneDocument(jsonToDoc(redone), QStringLiteral("redo"))) {
+        log(QStringLiteral("error: redo could not restore the scene"));
+        redoStack_.push_back(e);
+        undoStack_.pop_back();
+        updateEditActions();
+        return;
+    }
+    undoTopDoc_ = docToJson(sceneDocument());
     if (sel >= 0) selectInstanceRow(sel);
     sceneDirty_ = true;
     updateWindowTitle();
@@ -5953,8 +7038,10 @@ void MainWindow::redoEdit() {
 }
 
 void MainWindow::updateEditActions() {
-    if (undoAction_) undoAction_->setEnabled(!undoStack_.empty());
-    if (redoAction_) redoAction_->setEnabled(!redoStack_.empty());
+    const bool canUndo = prefabStage_ ? !prefabUndo_.empty() : !undoStack_.empty();
+    const bool canRedo = prefabStage_ ? !prefabRedo_.empty() : !redoStack_.empty();
+    if (undoAction_) undoAction_->setEnabled(canUndo);
+    if (redoAction_) redoAction_->setEnabled(canRedo);
     if (pasteAction_) pasteAction_->setEnabled(hasInstanceClipboard_);
 }
 
@@ -5962,7 +7049,23 @@ int MainWindow::selectedInstance() const {
     const QTreeWidgetItem* cur = hierarchy_->currentItem();
     if (!cur) return -1;
     const int kind = cur->data(0, Qt::UserRole).toInt();
-    return kind <= kItemInstanceBase ? kItemInstanceBase - kind : -1;
+    return isInstanceRow(kind) ? kItemInstanceBase - kind : -1;
+}
+
+// Every instance selected in the Hierarchy, in the order the rows appear, with the active one first: the gizmo edits
+// all of them at once, and the active one is the one the Inspector shows and a rotate or scale drag measures from.
+std::vector<int> MainWindow::selectedInstances() const {
+    std::vector<int> out;
+    const int active = selectedInstance();
+    if (active >= 0) out.push_back(active);
+    for (QTreeWidgetItem* item : hierarchy_->selectedItems()) {
+        if (!item) continue;
+        const int kind = item->data(0, Qt::UserRole).toInt();
+        if (!isInstanceRow(kind)) continue;
+        const int index = kItemInstanceBase - kind;
+        if (index >= 0 && std::find(out.begin(), out.end(), index) == out.end()) out.push_back(index);
+    }
+    return out;
 }
 
 void MainWindow::copyInstance(int index) {
@@ -6001,7 +7104,7 @@ void MainWindow::addInstanceEntry(const QJsonObject& entry, bool keepNodes) {
     if (!keepNodes) doc["nodes"] = QJsonArray();
     const bool pushed = beginEdit();
     if (!applySceneDocument(doc, QStringLiteral("paste"))) {
-        if (pushed) undoStack_.pop_back();
+        if (pushed) cancelEdit();
         updateEditActions();
         return;
     }
@@ -6037,7 +7140,7 @@ void MainWindow::deleteInstance(int index) {
     doc["active"] = next;
     const bool pushed = beginEdit();
     if (!applySceneDocument(doc, QStringLiteral("delete"))) {
-        if (pushed) undoStack_.pop_back();
+        if (pushed) cancelEdit();
         return;
     }
     sceneDirty_ = true;
@@ -6112,9 +7215,11 @@ void MainWindow::buildGizmoToolbar() {
     group->setExclusive(true);
     group->addAction(gizmoMoveAction_);
     group->addAction(gizmoRotateAction_);
+    group->addAction(gizmoScaleAction_);
     gizmoScaleAction_ = tb->addAction(uiIcon("aspect_ratio"), QStringLiteral("Scale"));
-    gizmoScaleAction_->setEnabled(false);
-    gizmoScaleAction_->setToolTip(QStringLiteral("Scale is not available: model instances have no scale yet"));
+    gizmoScaleAction_->setCheckable(true);
+    gizmoScaleAction_->setShortcut(QKeySequence(QStringLiteral("R")));
+    gizmoScaleAction_->setToolTip(QStringLiteral("Scale the selected model (R)"));
 
     tb->addSeparator();
     snapAction_ = tb->addAction(QStringLiteral("Snap"));
@@ -6135,6 +7240,7 @@ void MainWindow::buildGizmoToolbar() {
 
     connect(gizmoMoveAction_, &QAction::triggered, this, [this] { setGizmoTool(gizmo::Tool::Move); });
     connect(gizmoRotateAction_, &QAction::triggered, this, [this] { setGizmoTool(gizmo::Tool::Rotate); });
+    connect(gizmoScaleAction_, &QAction::triggered, this, [this] { setGizmoTool(gizmo::Tool::Scale); });
     connect(snapAction_, &QAction::toggled, this, [this](bool on) {
         snapOn_ = on;
         viewport_->update();
@@ -6147,6 +7253,22 @@ void MainWindow::buildGizmoToolbar() {
     });
     // Escape cancels a drag in progress and puts the model back where it was.
     new QShortcut(QKeySequence(Qt::Key_Escape), this, [this] { cancelGizmoDrag(); });
+    // Flying: the arrow keys travel, Page Up/Down rise and drop. Nobody presses them by accident, and they do not fight
+    // the game while playing (a flying editor camera in play mode would be a bug, not a feature).
+    const struct { int key; float forward; float right; float up; } fly[] = {
+        {Qt::Key_Up, 1.0f, 0.0f, 0.0f},     {Qt::Key_Down, -1.0f, 0.0f, 0.0f},
+        {Qt::Key_Left, 0.0f, -1.0f, 0.0f},  {Qt::Key_Right, 0.0f, 1.0f, 0.0f},
+        {Qt::Key_PageUp, 0.0f, 0.0f, 1.0f}, {Qt::Key_PageDown, 0.0f, 0.0f, -1.0f},
+    };
+    for (const auto& f : fly) {
+        new QShortcut(QKeySequence(f.key), this, [this, f] {
+            if (playing_ || prefabStage_) return;
+            // A fixed step in the view's own scale, so a flown camera moves the same on a zoomed-in view as on a wide one.
+            const float step = gameCam_.orthographic ? gameCam_.orthoHeight * 0.08f : std::max(gameCam_.distance * 0.1f, 0.2f);
+            gameCam_.fly(f.forward * step, f.right * step, f.up * step);
+            onEditorCameraMoved();
+        });
+    }
     setGizmoTool(gizmo::Tool::Move);
 }
 
@@ -6154,6 +7276,7 @@ void MainWindow::setGizmoTool(gizmo::Tool tool) {
     gizmoTool_ = tool;
     gizmoMoveAction_->setChecked(tool == gizmo::Tool::Move);
     gizmoRotateAction_->setChecked(tool == gizmo::Tool::Rotate);
+    gizmoScaleAction_->setChecked(tool == gizmo::Tool::Scale);
     viewport_->update();
 }
 
@@ -6172,30 +7295,84 @@ bool MainWindow::selectionTarget(int* index, InstanceInfo* info) {
     if (sel >= static_cast<int>(list.size())) return false;
     *index = sel;
     *info = list[sel];
+    // Several selected instances share one gizmo, standing at the middle of them: that is the point a drag turns and
+    // scales the whole selection about, and a handle has to be drawn where the drag is measured from. With one
+    // selected, the pivot is that instance's own position and nothing below changes.
+    const std::vector<int> picked = selectedInstances();
+    if (picked.size() > 1) {
+        std::vector<glm::vec3> at;
+        for (int i : picked) {
+            if (i < 0 || i >= static_cast<int>(list.size())) continue;
+            at.push_back(glm::vec3(list[i].position[0], list[i].position[1], list[i].position[2]));
+        }
+        const glm::vec3 pivot = ukiyo::gizmo::selectionPivot(at);
+        info->position[0] = pivot.x;
+        info->position[1] = pivot.y;
+        info->position[2] = pivot.z;
+    }
     return true;
 }
 
-bool MainWindow::gizmoPress(QPointF s) {
-    if (terrainBrush_.tool != TerrainTool::None) return terrainPress(s);
+bool MainWindow::gizmoPress(QPointF sPos) {
+    if (terrainBrush_.tool != TerrainTool::None) return terrainPress(sPos);
     int index = -1;
     InstanceInfo info;
     if (!gizmoTarget(&index, &info)) return false;
     const glm::vec3 origin(info.position[0], info.position[1], info.position[2]);
     const int w = viewport_->width(), h = viewport_->height();
-    const gizmo::Part part = gizmo::hitTest(gameCam_, w, h, gizmoTool_, origin, s);
+    const gizmo::Part part = gizmo::hitTest(gameCam_, w, h, gizmoTool_, origin, sPos);
     if (part == gizmo::Part::None) return false;
-    const gizmo::Ray r = gizmo::screenRay(gameCam_, w, h, s);
-    if (part == gizmo::Part::RotateYaw) {
-        float theta = 0.0f;
-        if (!gizmo::yawAngle(r, origin, &theta)) return false;
-        gizmoTheta0_ = theta;
-    } else {
-        gizmoT0_ = gizmo::axisParam(r, origin, part);
-    }
+    const gizmo::Ray r = gizmo::screenRay(gameCam_, w, h, sPos);
     gizmoIndex_ = index;
     gizmoPart_ = part;
     gizmoOrigin0_ = origin;
+    // The whole selection moves together, so where each of them started is part of the drag's state: a drag is
+    // measured from the press, never accumulated from the last frame.
+    gizmoTargets_ = selectedInstances();
+    if (gizmoTargets_.empty()) gizmoTargets_.push_back(index);
+    gizmoStart_.clear();
+    {
+        std::vector<InstanceInfo> picked;
+        runOnWorker([&] { picked = worker_->instances(); });
+        for (int i : gizmoTargets_) {
+            if (i < 0 || i >= static_cast<int>(picked.size())) continue;
+            GizmoStart s;
+            s.index = i;
+            s.position = glm::vec3(picked[i].position[0], picked[i].position[1], picked[i].position[2]);
+            s.rotationDeg = glm::vec3(picked[i].pitchDeg, picked[i].yawDeg, picked[i].rollDeg);
+            s.scale = picked[i].scale;
+            gizmoStart_.push_back(s);
+        }
+    }
     gizmoYaw0_ = info.yawDeg;
+    gizmoPitch0_ = info.pitchDeg;
+    gizmoRoll0_ = info.rollDeg;
+    gizmoScale0_ = info.scale;
+    gizmoT0_ = 0.0f;
+    gizmoTheta0_ = 0.0f;
+    gizmoHit0_ = glm::vec3(0.0f);
+    gizmoMouse0_ = sPos;
+    switch (gizmoTool_) {
+    case gizmo::Tool::Move:
+        if (gizmo::isPlanePart(part)) {
+            // A plane handle drags in its own plane: remember where in that plane the pointer started.
+            if (!gizmo::planePoint(r, origin, part, &gizmoHit0_)) return false;
+        } else {
+            gizmoT0_ = gizmo::axisParam(r, origin, part);
+        }
+        break;
+    case gizmo::Tool::Rotate:
+        if (!gizmo::ringAngle(r, origin, gizmo::partAxis(part), &gizmoTheta0_)) return false;
+        break;
+    case gizmo::Tool::Scale: {
+        // A scale drag measures from the gizmo's centre in pixels, so a rotation of the view does not change how much a
+        // pixel of travel scales the object.
+        QPointF c;
+        if (!gizmo::project(gameCam_, w, h, origin, &c)) return false;
+        gizmoCenter0_ = c;
+        break;
+    }
+    }
     gizmoDragging_ = true;
     gizmoChanged_ = false;
     gizmoPushed_ = beginEdit();   // one undo step for the whole drag
@@ -6203,32 +7380,118 @@ bool MainWindow::gizmoPress(QPointF s) {
     return true;
 }
 
-void MainWindow::gizmoDrag(QPointF s) {
+void MainWindow::gizmoDrag(QPointF sPos) {
     if (terrainStroke_) {
-        terrainStrokeDab(s);
+        terrainStrokeDab(sPos);
         return;
     }
     if (!gizmoDragging_) return;
     const int w = viewport_->width(), h = viewport_->height();
-    const gizmo::Ray r = gizmo::screenRay(gameCam_, w, h, s);
+    const gizmo::Ray r = gizmo::screenRay(gameCam_, w, h, sPos);
     float pos[3] = {gizmoOrigin0_.x, gizmoOrigin0_.y, gizmoOrigin0_.z};
     float yaw = gizmoYaw0_;
-    if (gizmoPart_ == gizmo::Part::RotateYaw) {
+    float pitch = gizmoPitch0_;
+    float roll = gizmoRoll0_;
+    float scale[3] = {gizmoScale0_.x, gizmoScale0_.y, gizmoScale0_.z};
+
+    switch (gizmoTool_) {
+    case gizmo::Tool::Move:
+        if (gizmo::isPlanePart(gizmoPart_)) {
+            glm::vec3 hit;
+            if (!gizmo::planePoint(r, gizmoOrigin0_, gizmoPart_, &hit)) return;
+            const glm::vec3 p = gizmo::movedInPlane(gizmoOrigin0_, gizmoHit0_, hit, snapOn_ ? moveSnap_ : 0.0f);
+            pos[0] = p.x;
+            pos[1] = p.y;
+            pos[2] = p.z;
+        } else {
+            const float t = gizmo::axisParam(r, gizmoOrigin0_, gizmoPart_);
+            const glm::vec3 p = gizmo::movedPosition(gizmoOrigin0_, gizmoPart_, gizmoT0_, t, snapOn_ ? moveSnap_ : 0.0f);
+            pos[0] = p.x;
+            pos[1] = p.y;
+            pos[2] = p.z;
+        }
+        break;
+    case gizmo::Tool::Rotate: {
         float theta = 0.0f;
-        if (!gizmo::yawAngle(r, gizmoOrigin0_, &theta)) return;
-        yaw = gizmo::rotatedYaw(gizmoYaw0_, gizmoTheta0_, theta, snapOn_ ? rotateSnapDeg_ : 0.0f);
-    } else {
-        const float t = gizmo::axisParam(r, gizmoOrigin0_, gizmoPart_);
-        const glm::vec3 p = gizmo::movedPosition(gizmoOrigin0_, gizmoPart_, gizmoT0_, t, snapOn_ ? moveSnap_ : 0.0f);
-        pos[0] = p.x;
-        pos[1] = p.y;
-        pos[2] = p.z;
+        if (!gizmo::ringAngle(r, gizmoOrigin0_, gizmo::partAxis(gizmoPart_), &theta)) return;
+        // One ring turns one angle: the ring round X is pitch, round Y is yaw, round Z is roll, which is the engine's
+        // ZXY order read off the handles.
+        const float step = snapOn_ ? rotateSnapDeg_ : 0.0f;
+        if (gizmoPart_ == gizmo::Part::RotateX) pitch = gizmo::rotatedAngle(gizmoPitch0_, gizmoTheta0_, theta, step);
+        else if (gizmoPart_ == gizmo::Part::RotateY) yaw = gizmo::rotatedAngle(gizmoYaw0_, gizmoTheta0_, theta, step);
+        else if (gizmoPart_ == gizmo::Part::RotateZ) roll = gizmo::rotatedAngle(gizmoRoll0_, gizmoTheta0_, theta, step);
+        break;
     }
+    case gizmo::Tool::Scale: {
+        const float step = snapOn_ ? 0.1f : 0.0f;
+        const glm::vec2 at(float(sPos.x()), float(sPos.y()));
+        if (gizmoPart_ == gizmo::Part::ScaleUniform) {
+            // The centre handle scales all three axes by the same factor, from the ratio of the pointer's distance to
+            // the gizmo: drag to twice the radius and the object doubles.
+            const float f = ukiyo::gizmo::scaleRadial(glm::vec2(float(gizmoCenter0_.x()), float(gizmoCenter0_.y())),
+                                                      glm::vec2(float(gizmoMouse0_.x()), float(gizmoMouse0_.y())), at);
+            for (int k = 0; k < 3; ++k) scale[k] = ukiyo::gizmo::snapScale(gizmoScale0_[k] * f, step);
+        } else {
+            // An axis handle scales only its own axis, measured along the handle: drag the cube out by one handle length
+            // and that axis doubles. The handle is measured on screen, so the view's angle does not change the feel.
+            const int k = gizmoPart_ == gizmo::Part::ScaleX ? 0 : gizmoPart_ == gizmo::Part::ScaleY ? 1 : 2;
+            const glm::vec3 axis = gizmo::partAxis(gizmoPart_);
+            QPointF base, tip;
+            if (!gizmo::project(gameCam_, w, h, gizmoOrigin0_, &base) ||
+                !gizmo::project(gameCam_, w, h, gizmoOrigin0_ + axis * gizmo::handleLength(gameCam_, gizmoOrigin0_), &tip))
+                return;
+            const glm::vec2 axisPixels(float(tip.x() - base.x()), float(tip.y() - base.y()));
+            const float travelled = ukiyo::gizmo::scaleDelta(glm::vec2(float(gizmoMouse0_.x()), float(gizmoMouse0_.y())),
+                                                             at, axisPixels, nullptr);
+            scale[k] = ukiyo::gizmo::snapScale(gizmoScale0_[k] * (1.0f + travelled), step);
+        }
+        break;
+    }
+    }
+
     const bool differs = pos[0] != gizmoOrigin0_.x || pos[1] != gizmoOrigin0_.y || pos[2] != gizmoOrigin0_.z ||
-                         yaw != gizmoYaw0_;
+                         yaw != gizmoYaw0_ || pitch != gizmoPitch0_ || roll != gizmoRoll0_ ||
+                         scale[0] != gizmoScale0_.x || scale[1] != gizmoScale0_.y || scale[2] != gizmoScale0_.z;
     if (!differs && !gizmoChanged_) return;   // nothing to write yet
     gizmoChanged_ = gizmoChanged_ || differs;
-    applyInstanceTransform(gizmoIndex_, pos, yaw);
+
+    // The numbers above are the active instance's new transform. Turn them back into the thing the hand did - a move
+    // of this much, a turn of this much, a factor of this much - and hand that to the whole selection. Then two
+    // objects dragged together keep their shape, and each keeps the rotation and scale it had.
+    std::vector<PlacementWrite> writes;
+    switch (gizmoTool_) {
+    case gizmo::Tool::Move: {
+        const glm::vec3 delta = glm::vec3(pos[0], pos[1], pos[2]) - gizmoOrigin0_;
+        for (const GizmoStart& s : gizmoStart_)
+            writes.push_back({s.index, ukiyo::gizmo::movedBy(s.position, delta), s.rotationDeg, s.scale});
+        break;
+    }
+    case gizmo::Tool::Rotate: {
+        const glm::vec3 deltaDeg(pitch - gizmoPitch0_, yaw - gizmoYaw0_, roll - gizmoRoll0_);
+        for (const GizmoStart& s : gizmoStart_) {
+            const ukiyo::gizmo::Placement out =
+                ukiyo::gizmo::rotatedAbout({s.position, s.rotationDeg, s.scale}, gizmoOrigin0_, deltaDeg);
+            writes.push_back({s.index, out.position, out.rotationDeg, out.scale});
+        }
+        break;
+    }
+    case gizmo::Tool::Scale: {
+        // The factor is what the active instance's scale was multiplied by, so every object grows by the same amount
+        // and lands wherever its own scale times that factor puts it.
+        glm::vec3 factor(1.0f);
+        for (int k = 0; k < 3; ++k) {
+            const float start = k == 0 ? gizmoScale0_.x : k == 1 ? gizmoScale0_.y : gizmoScale0_.z;
+            factor[k] = std::fabs(start) > 1e-6f ? scale[k] / start : 1.0f;
+        }
+        for (const GizmoStart& s : gizmoStart_) {
+            const ukiyo::gizmo::Placement out =
+                ukiyo::gizmo::scaledAbout({s.position, s.rotationDeg, s.scale}, gizmoOrigin0_, factor);
+            writes.push_back({s.index, out.position, out.rotationDeg, out.scale});
+        }
+        break;
+    }
+    }
+    applyInstanceTransforms(writes);
     viewport_->update();
 }
 
@@ -6240,7 +7503,7 @@ void MainWindow::gizmoRelease() {
     if (!gizmoDragging_) return;
     gizmoDragging_ = false;
     // A press with no movement leaves no undo step behind.
-    if (gizmoPushed_ && !gizmoChanged_ && !undoStack_.empty()) undoStack_.pop_back();
+    if (gizmoPushed_ && !gizmoChanged_) dropTopEdit();
     gizmoPushed_ = false;
     updateEditActions();
     if (hierarchy_->currentItem()) showPropertiesFor(hierarchy_->currentItem());   // Inspector shows the new values
@@ -6250,20 +7513,22 @@ void MainWindow::gizmoRelease() {
 
 void MainWindow::cancelGizmoDrag() {
     if (!gizmoDragging_) return;
-    const float pos[3] = {gizmoOrigin0_.x, gizmoOrigin0_.y, gizmoOrigin0_.z};
-    applyInstanceTransform(gizmoIndex_, pos, gizmoYaw0_);
+    // Every instance the drag touched goes back where it started, not only the active one.
+    std::vector<PlacementWrite> writes;
+    for (const GizmoStart& s : gizmoStart_) writes.push_back(s);
+    applyInstanceTransforms(writes);
     gizmoChanged_ = false;   // back where it started, so the release drops the undo step
     gizmoRelease();
 }
 
-void MainWindow::gizmoHover(QPointF s) {
+void MainWindow::gizmoHover(QPointF sPos) {
     if (gizmoDragging_) return;
     int index = -1;
     InstanceInfo info;
     gizmo::Part part = gizmo::Part::None;
     if (gizmoTarget(&index, &info)) {
         const glm::vec3 origin(info.position[0], info.position[1], info.position[2]);
-        part = gizmo::hitTest(gameCam_, viewport_->width(), viewport_->height(), gizmoTool_, origin, s);
+        part = gizmo::hitTest(gameCam_, viewport_->width(), viewport_->height(), gizmoTool_, origin, sPos);
     }
     if (part != gizmoHover_) {
         gizmoHover_ = part;
@@ -6387,7 +7652,7 @@ int MainWindow::replaceInNames(const QString& find, const QString& replacement, 
         }
     }
     if (done == 0) {
-        if (pushed) undoStack_.pop_back();
+        if (pushed) cancelEdit();
         updateEditActions();
         return 0;
     }
@@ -6494,6 +7759,62 @@ void MainWindow::paintGizmo(QPainter& p) {
     const glm::vec3 origin(info.position[0], info.position[1], info.position[2]);
     gizmo::paint(p, gameCam_, viewport_->width(), viewport_->height(), gizmoTool_, origin, gizmoHover_,
                  gizmoDragging_ ? gizmoPart_ : gizmo::Part::None);
+    // A selection of several shares one gizmo. Saying how many the next drag will move is the difference between a
+    // drag that surprises and one that does not, and it costs one line of text next to the handles.
+    const int picked = gizmoDragging_ ? static_cast<int>(gizmoStart_.size())
+                                      : static_cast<int>(selectedInstances().size());
+    if (picked > 1) {
+        QPointF centre;
+        if (gizmo::project(gameCam_, viewport_->width(), viewport_->height(), origin, &centre)) {
+            QFont f = p.font();
+            f.setPointSizeF(std::max(7.0, f.pointSizeF() - 1.0));
+            p.setFont(f);
+            p.setPen(QColor(255, 224, 102));
+            p.drawText(QPointF(centre.x() + 14.0, centre.y() - 10.0), QStringLiteral("%1 objects").arg(picked));
+        }
+    }
+}
+
+void MainWindow::paintViewGizmo(QPainter& p) {
+    const QRectF box = viewgizmo::bounds(viewport_->width(), viewport_->height());
+    viewgizmo::paint(p, gameCam_, box, viewGizmoHover_);
+}
+
+// A click on the view gizmo's corner widget looks along the axis that was clicked, the way the same widget does in
+// Blender: the view turns to face that axis, and it switches to orthographic, because the reason to press it is to check
+// a silhouette or a side elevation against a known direction.
+bool MainWindow::viewGizmoPress(QPointF sPos) {
+    const QRectF box = viewgizmo::bounds(viewport_->width(), viewport_->height());
+    if (!box.contains(sPos)) return false;
+    const int handle = viewgizmo::hitTest(gameCam_, box, sPos);
+    if (handle < 0) return false;
+    viewGizmoSnap(handle);
+    return true;
+}
+
+void MainWindow::viewGizmoSnap(int handle) {
+    float yaw = gameCam_.yaw;
+    float pitch = gameCam_.pitch;
+    viewgizmo::viewFor(handle, &yaw, &pitch);
+    gameCam_.yaw = yaw;
+    gameCam_.pitch = pitch;
+    gameCam_.orthographic = true;
+    orthoAction_->setChecked(true);
+    refresh();
+    viewport_->update();
+    const char* axis = viewgizmo::handleLabel(handle);
+    statusBar()->showMessage(axis[0] != '\0' ? QStringLiteral("Looking along %1").arg(QString::fromLatin1(axis))
+                                             : QStringLiteral("Looking along the opposite axis"),
+                             2500);
+}
+
+void MainWindow::viewGizmoHover(QPointF sPos) {
+    const QRectF box = viewgizmo::bounds(viewport_->width(), viewport_->height());
+    const int handle = box.contains(sPos) ? viewgizmo::hitTest(gameCam_, box, sPos) : -1;
+    if (handle != viewGizmoHover_) {
+        viewGizmoHover_ = handle;
+        viewport_->update();
+    }
 }
 
 // Create > Terrain: picks a raw 16-bit heightmap and adds a tile at the origin (item 18). The file must hold a square
@@ -6540,7 +7861,7 @@ void MainWindow::createTerrainObject() {
         if (ok) worker_->setInstanceName(index, QStringLiteral("Terrain"));
     });
     if (!ok) {
-        if (pushed) undoStack_.pop_back();
+        if (pushed) cancelEdit();
         updateEditActions();
         log("error: " + err);
         return;
@@ -6550,7 +7871,7 @@ void MainWindow::createTerrainObject() {
     runOnWorker([&] { terrOk = worker_->setInstanceTerrain(index, t, &terrErr); });
     if (!terrOk) {
         // The file was readable, so this is rare. Remove the empty object again and drop this step's undo entry.
-        if (pushed) undoStack_.pop_back();
+        if (pushed) cancelEdit();
         updateEditActions();
         deleteInstance(index);
         log("error: " + terrErr);
@@ -6585,7 +7906,7 @@ void MainWindow::createEmptyObject() {
         if (ok) worker_->setInstanceName(index, QStringLiteral("Empty Object"));
     });
     if (!ok) {
-        if (pushed) undoStack_.pop_back();
+        if (pushed) cancelEdit();
         updateEditActions();
         log("error: " + err);
         return;
@@ -6613,7 +7934,7 @@ void MainWindow::renameInstance(int index, const QString& name) {
     bool ok = false;
     runOnWorker([&] { ok = worker_->setInstanceName(index, clean); });
     if (!ok) {
-        if (pushed) undoStack_.pop_back();
+        if (pushed) cancelEdit();
         updateEditActions();
         return;
     }
@@ -6625,6 +7946,11 @@ void MainWindow::renameInstance(int index, const QString& name) {
 QMenu* MainWindow::hierarchyContextMenu(QTreeWidgetItem* item) {
     QMenu* menu = new QMenu(this);
     const int kind = item ? item->data(0, Qt::UserRole).toInt() : kItemScene;
+    if (item && isLightRow(kind)) {
+        const int index = kItemLightBase - kind;
+        menu->addAction(uiIcon("delete"), QStringLiteral("Delete Light"), this, [this, index] { deleteLight(index); });
+        return menu;
+    }
     if (item && kind <= kItemInstanceBase) {
         const int index = kItemInstanceBase - kind;
         menu->addAction(uiIcon("edit"), QStringLiteral("Rename"), this, [this, item] {
@@ -6649,6 +7975,8 @@ QMenu* MainWindow::hierarchyContextMenu(QTreeWidgetItem* item) {
     create->addAction(QStringLiteral("Empty Object"), this, [this] { createEmptyObject(); });
     create->addAction(QStringLiteral("Terrain..."), this, [this] { createTerrainObject(); });
     create->addAction(QStringLiteral("Model..."), this, [this] { addModelDialog(); });
+    create->addAction(uiIcon("lightbulb"), QStringLiteral("Point Light"), this, [this] { addLight(1); });
+    create->addAction(uiIcon("light_mode"), QStringLiteral("Spot Light"), this, [this] { addLight(2); });
     create->addAction(QStringLiteral("Prefab..."), this, [this] {
         const QString path = QFileDialog::getOpenFileName(this, QStringLiteral("Add Prefab"), projectRoot_ + "/assets",
                                                           QStringLiteral("Ukiyo Prefab (*.ukprefab)"));
@@ -6700,6 +8028,9 @@ bool MainWindow::applySceneDocument(const QJsonObject& root, const QString& sour
     // Water (item 16) belongs to the scene. A document without it has none, so opening or undoing clears it.
     water_ = parsed.hasWater ? std::optional<ukiyo::WaterVolume>(parsed.water) : std::nullopt;
     pushWater();
+    // Scene lights (item 6) belong to the scene too, for the same reason.
+    lights_ = scene_file::readLights(root.value("lights"));
+    pushLights();
 
     // Undo and redo keep the view the user is looking at. Opening a scene uses the saved camera.
     const bool keepView = (source == QStringLiteral("undo") || source == QStringLiteral("redo"));
@@ -6714,8 +8045,9 @@ bool MainWindow::applySceneDocument(const QJsonObject& root, const QString& sour
     }
     {
         const scene_file::SceneEntry first = entries[0];
+        const float firstScale[3] = {first.scale.x, first.scale.y, first.scale.z};
         runOnWorker([&] {
-            worker_->setInstancePlacement(0, first.position, first.yawDeg);
+            worker_->setInstancePlacement(0, first.position, first.yawDeg, first.pitchDeg, first.rollDeg, firstScale);
             worker_->setInstanceName(0, first.name);
             if (!first.prefab.isEmpty())
                 worker_->setInstanceLink(0, first.prefab, first.prefabId, first.overrides);
@@ -6726,12 +8058,14 @@ bool MainWindow::applySceneDocument(const QJsonObject& root, const QString& sour
     }
     for (int k = 1; k < static_cast<int>(entries.size()); ++k) {
         const scene_file::SceneEntry e = entries[k];
+        const float eScale[3] = {e.scale.x, e.scale.y, e.scale.z};
         QString err;
         ModelInfo unused;
         bool ok = false;
         int index = -1;
         runOnWorker([&] {
             ok = worker_->addModel(e.path, e.position, e.yawDeg, &err, &unused, &index);
+            if (ok) worker_->setInstancePlacement(index, e.position, e.yawDeg, e.pitchDeg, e.rollDeg, eScale);
             if (ok && !e.prefab.isEmpty()) worker_->setInstanceLink(index, e.prefab, e.prefabId, e.overrides);
             if (ok) worker_->setInstanceComponents(index, e.components);
             if (ok) worker_->setInstanceLod(index, e.lodSwitches);
@@ -6762,6 +8096,8 @@ bool MainWindow::applySceneDocument(const QJsonObject& root, const QString& sour
     ukiyo::RenderSettings st;
     st.aaMode = s.value("aaMode").toInt(st.aaMode);
     st.shadows = s.value("shadows").toBool(st.shadows);
+    st.vgeom = s.value("vgeom").toBool(st.vgeom);
+    st.vgeomPixels = std::clamp(float(s.value("vgeomPixels").toDouble(st.vgeomPixels)), 0.25f, 8.0f);
     st.sky = s.value("sky").toBool(st.sky);
     st.grid = s.value("grid").toBool(st.grid);
     st.outlines = s.value("outlines").toBool(st.outlines);
@@ -6782,7 +8118,40 @@ bool MainWindow::applySceneDocument(const QJsonObject& root, const QString& sour
     // Screen effects, clamped to their control ranges.
     st.fogDensity = std::clamp(float(s.value("fogDensity").toDouble(st.fogDensity)), 0.0f, 0.1f);
     st.fogSun = std::clamp(float(s.value("fogSun").toDouble(st.fogSun)), 0.0f, 1.0f);
+    {
+        float c[3] = {st.fogColor.x, st.fogColor.y, st.fogColor.z};
+        readFloats(s.value("fogColor"), c, 3);
+        st.fogColor = glm::vec3(c[0], c[1], c[2]);
+    }
+    // A scene states the hour through its sky and ambient (src/engine/renderer.h). Read here too, so opening and saving
+    // a night scene in the editor keeps the night.
+    st.cloudCover = std::clamp(float(s.value("cloudCover").toDouble(st.cloudCover)), 0.0f, 1.0f);
+    st.stars = std::clamp(float(s.value("stars").toDouble(st.stars)), 0.0f, 1.0f);
+    st.sunDisc = std::clamp(float(s.value("sunDisc").toDouble(st.sunDisc)), 0.0f, 1.0f);
+    // Colours are three floats, the same shape sunDir and the tints above use.
+    auto readSky = [&](const char* key, glm::vec3& dst) {
+        float c[3] = {dst.x, dst.y, dst.z};
+        readFloats(s.value(key), c, 3);
+        dst = glm::vec3(c[0], c[1], c[2]);
+    };
+    readSky("skyZenith", st.skyZenith);
+    readSky("skyHorizon", st.skyHorizon);
+    readSky("ambientSky", st.ambientSky);
+    readSky("ambientGround", st.ambientGround);
     st.ssao = std::clamp(float(s.value("ssao").toDouble(st.ssao)), 0.0f, 1.0f);
+    // QJsonObject::value has no "default" overload: a scene written before this key existed keeps the setting's
+    // own default.
+    if (s.contains("multiBounceAO")) st.multiBounceAO = s.value("multiBounceAO").toBool();
+    // Contact shadows: keys written by this version onward, so a scene from before them keeps the defaults.
+    st.contactShadows = std::clamp(float(s.value("contactShadows").toDouble(st.contactShadows)), 0.0f, 1.0f);
+    st.contactShadowLength = std::clamp(float(s.value("contactShadowLength").toDouble(st.contactShadowLength)), 0.02f, 2.0f);
+    st.contactShadowThickness =
+        std::clamp(float(s.value("contactShadowThickness").toDouble(st.contactShadowThickness)), 0.01f, 1.0f);
+    st.contactShadowSteps = std::clamp(int(s.value("contactShadowSteps").toInt(st.contactShadowSteps)), 4, 64);
+    st.gi = std::clamp(float(s.value("gi").toDouble(st.gi)), 0.0f, 1.0f);
+    st.giRadius = std::clamp(float(s.value("giRadius").toDouble(st.giRadius)), 2.0f, 40.0f);
+    st.giRays = std::clamp(float(s.value("giRays").toDouble(st.giRays)), 1.0f, 8.0f);
+    if (s.contains("giDenoise")) st.giDenoise = s.value("giDenoise").toBool();
     st.ssr = std::clamp(float(s.value("ssr").toDouble(st.ssr)), 0.0f, 1.0f);
     st.depthNormalOutline = std::clamp(float(s.value("depthNormalOutline").toDouble(st.depthNormalOutline)), 0.0f, 1.0f);
     st.flare = std::clamp(float(s.value("flare").toDouble(st.flare)), 0.0f, 1.0f);
@@ -6798,6 +8167,8 @@ bool MainWindow::applySceneDocument(const QJsonObject& root, const QString& sour
     st.normalMap = std::clamp(float(s.value("normalMap").toDouble(st.normalMap)), 0.0f, 1.0f);
     st.outlineMatNoise = std::clamp(float(s.value("outlineMatNoise").toDouble(st.outlineMatNoise)), 0.0f, 1.0f);
     st.smoothNormals = s.value("smoothNormals").toBool(st.smoothNormals);
+    if (s.contains("preserveAlphaCoverage")) st.preserveAlphaCoverage = s.value("preserveAlphaCoverage").toBool();
+    st.alphaTestThreshold = std::clamp(float(s.value("alphaTestThreshold").toDouble(st.alphaTestThreshold)), 0.05f, 0.95f);
     st.softLight = std::clamp(float(s.value("softLight").toDouble(st.softLight)), 0.0f, 1.0f);
     st.lightSweep = std::clamp(float(s.value("lightSweep").toDouble(st.lightSweep)), 0.0f, 1.0f);
     st.sweepSpeed = std::clamp(float(s.value("sweepSpeed").toDouble(st.sweepSpeed)), 0.0f, 2.0f);
@@ -7004,14 +8375,17 @@ void MainWindow::setBrowserView(int view) {
     if (browserViews_) browserViews_->setCurrentIndex(browserView_ == 2 ? 1 : 0);
     if (browserViewGroup_ && browserViewGroup_->button(browserView_)) browserViewGroup_->button(browserView_)->setChecked(true);
 
-    if (browserView_ == 1) {
-        fsList_->setViewMode(QListView::ListMode);
-        fsList_->setGridSize(QSize());
-        fsList_->setIconSize(QSize(20, 20));
-    } else {
-        fsList_->setViewMode(QListView::IconMode);
-        fsList_->setIconSize(QSize(fsSize_->value(), fsSize_->value()));
-        fsList_->setGridSize(QSize(fsSize_->value() + 24, fsSize_->value() + 44));
+    if (fsList_) {
+        const int px = browserThumb_;
+        if (browserView_ == 1) {
+            fsList_->setViewMode(QListView::ListMode);
+            fsList_->setGridSize(QSize());
+        } else {
+            fsList_->setViewMode(QListView::IconMode);
+            fsList_->setGridSize(QSize(ukiyo::thumbGridWidth(px), ukiyo::thumbGridHeight(px)));
+        }
+        const int icon = ukiyo::thumbIconForView(browserView_, px);
+        fsList_->setIconSize(QSize(icon, icon));
     }
     if (fsSize_) fsSize_->setEnabled(browserView_ != 2);
 
@@ -7022,11 +8396,39 @@ void MainWindow::setBrowserView(int view) {
     }
 }
 
+// The one place a thumbnail size is applied. The slider and Ctrl + wheel both call it, so the grid, the list rows, the
+// slider's own position and the saved preference can only ever say the same number.
+void MainWindow::applyThumbSize(int px) {
+    const int v = ukiyo::thumbClamp(px);
+    const bool changed = v != browserThumb_;
+    browserThumb_ = v;
+    if (fsSize_ && fsSize_->value() != v) {
+        const QSignalBlocker block(fsSize_);   // the slider reports its own move; this is the snapped answer
+        fsSize_->setValue(v);
+    }
+    if (fsList_) {
+        const int icon = ukiyo::thumbIconForView(browserView_, v);
+        fsList_->setIconSize(QSize(icon, icon));
+        if (browserView_ != 1) fsList_->setGridSize(QSize(ukiyo::thumbGridWidth(v), ukiyo::thumbGridHeight(v)));
+    }
+    // Godot writes the setting on a 1.5 s timer rather than on every notch: a scroll of nine notches is one write.
+    if (changed && fsSizeSave_) fsSizeSave_->start();   // start() restarts a running single-shot timer
+}
+
+void MainWindow::zoomBrowserThumb(int notches) {
+    if (!fsSize_ || !ukiyo::thumbWheelZooms(browserView_)) return;
+    applyThumbSize(ukiyo::thumbStep(browserThumb_, notches));
+}
+
+void MainWindow::saveBrowserThumb() {
+    editor::prefs::set(QStringLiteral("browser/thumb"), browserThumb_);
+}
+
 void MainWindow::applyPreferences() {
     const int view = editor::prefs::integer(QStringLiteral("browser/view"), 0);
     if (view != browserView_) setBrowserView(view);
-    const int thumb = editor::prefs::integer(QStringLiteral("browser/thumb"), 96);
-    if (fsSize_->value() != thumb) fsSize_->setValue(thumb);
+    const int thumb = editor::prefs::integer(QStringLiteral("browser/thumb"), ukiyo::kThumbDefault);
+    if (browserThumb_ != ukiyo::thumbClamp(thumb)) applyThumbSize(thumb);
     updateBrowserFilter();
 }
 
@@ -7221,15 +8623,49 @@ int MainWindow::runSelfTest() {
     const int nodesOut = da.object().value(QStringLiteral("nodes")).toArray().size();
     check(nodesSrc == nodesOut, "scene node count survives the round trip",
           QString("fixture %1, saved %2").arg(nodesSrc).arg(nodesOut));
-    // The fixture is version 1. Saving it upgrades it to version 2 (models, active); nothing else may change.
-    auto withoutV2Keys = [](QJsonObject o) {
-        o.remove(QStringLiteral("version"));
-        o.remove(QStringLiteral("models"));
-        o.remove(QStringLiteral("active"));
-        return o;
+    // The fixture is version 1. Saving it upgrades it to version 2 (models, active) and writes every setting the writer
+    // knows about, which a v1 file did not have to carry. "No field loss" therefore means: every field the file *has*
+    // comes back with the same value. A field a newer writer adds is not a loss, and comparing whole documents would
+    // fail on it forever.
+    auto firstLoss = [](const QJsonValue& before, const QJsonValue& after, const QString& at,
+                        auto&& self) -> QString {
+        if (before.isObject()) {
+            if (!after.isObject()) return at + QStringLiteral(" is no longer an object");
+            const QJsonObject a = before.toObject(), b = after.toObject();
+            for (auto it = a.begin(); it != a.end(); ++it) {
+                if (!b.contains(it.key())) return at + QLatin1Char('/') + it.key() + QStringLiteral(" was dropped");
+                const QString d = self(it.value(), b.value(it.key()), at + QLatin1Char('/') + it.key(), self);
+                if (!d.isEmpty()) return d;
+            }
+            return QString();
+        }
+        if (before.isArray()) {
+            if (!after.isArray()) return at + QStringLiteral(" is no longer an array");
+            const QJsonArray a = before.toArray(), b = after.toArray();
+            if (a.size() != b.size()) return at + QStringLiteral(" changed length (%1 to %2)").arg(a.size()).arg(b.size());
+            for (int i = 0; i < a.size(); ++i) {
+                const QString d = self(a[i], b[i], at + QStringLiteral("[%1]").arg(i), self);
+                if (!d.isEmpty()) return d;
+            }
+            return QString();
+        }
+        if (before.isDouble() && after.isDouble()) {
+            const double x = before.toDouble(), y = after.toDouble();
+            // Floats are stored as floats; a value that survives as a float may move in its last bits, not more.
+            if (std::fabs(x - y) > 1e-6 * std::max(1.0, std::fabs(x)))
+                return at + QStringLiteral(" changed (%1 to %2)").arg(x, 0, 'g', 12).arg(y, 0, 'g', 12);
+            return QString();
+        }
+        return before == after ? QString() : at + QStringLiteral(" changed");
     };
-    check(!da.isNull() && withoutV2Keys(dsrc.object()) == withoutV2Keys(da.object()),
-          "scene fixture round trips without field loss (version 2 keys aside)");
+    QJsonObject before = dsrc.object(), after = da.object();
+    for (const char* v2 : {"version", "models", "active"}) {
+        before.remove(QString::fromLatin1(v2));
+        after.remove(QString::fromLatin1(v2));
+    }
+    const QString loss = da.isNull() ? QStringLiteral("the saved scene is not valid JSON")
+                                     : firstLoss(before, after, QStringLiteral("scene"), firstLoss);
+    check(loss.isEmpty(), "scene fixture round trips without field loss (version 2 keys aside)", loss);
     check(da.object().value(QStringLiteral("version")).toInt() == 2 &&
               da.object().value(QStringLiteral("models")).toArray().size() == 1,
           "v1 fixture saves as a version 2 scene with one model");
@@ -8018,6 +9454,11 @@ int MainWindow::runSelfTest() {
             const int emptyIndex = before;
             check(instanceCount() == before + 1, "Create > Empty Object adds one instance");
             check(selectedInstance() == emptyIndex, "the new empty object is selected");
+            // A row past the first instance has to reach the instance page: the light rows sit below kItemLightBase,
+            // and a range test that only asked "below the instance base" also caught every instance but the first,
+            // which opened a light page with an index no light has.
+            check(inspectedInstance_ == emptyIndex, "a second instance row opens the instance page, not a light page",
+                  QString::number(inspectedInstance_));
             check(labelOf(emptyIndex) == "Empty Object", "the empty object's row reads Empty Object");
             check(rowFor(emptyIndex) && (rowFor(emptyIndex)->flags() & Qt::ItemIsEditable),
                   "model rows can be renamed in place");
@@ -8142,9 +9583,10 @@ int MainWindow::runSelfTest() {
             const glm::vec3 snapped = gizmo::movedPosition(glm::vec3(0.1f, 0, 0), gizmo::Part::MoveX, 0.0f, 0.4f, 0.25f);
             check(near(snapped.x, 0.5f, 1e-5f) && snapped.y == 0.0f && snapped.z == 0.0f,
                   "moving X snaps only that axis to the 0.25 m grid");
-            check(near(gizmo::rotatedYaw(10.0f, 0.0f, 30.0f, 0.0f), 40.0f, 1e-4f), "a 30 degree sweep turns 30 degrees");
-            check(near(gizmo::rotatedYaw(10.0f, 0.0f, 33.0f, 15.0f), 45.0f, 1e-4f), "turns snap to 15 degree steps");
-            check(near(gizmo::rotatedYaw(0.0f, 170.0f, -170.0f, 0.0f), 20.0f, 1e-4f),
+            check(near(gizmo::rotatedAngle(10.0f, 0.0f, 30.0f, 0.0f), 40.0f, 1e-4f),
+                  "a 30 degree sweep turns 30 degrees");
+            check(near(gizmo::rotatedAngle(10.0f, 0.0f, 33.0f, 15.0f), 45.0f, 1e-4f), "turns snap to 15 degree steps");
+            check(near(gizmo::rotatedAngle(0.0f, 170.0f, -170.0f, 0.0f), 20.0f, 1e-4f),
                   "a sweep across 180 degrees takes the short way");
 
             const float s30 = std::sin(glm::radians(30.0f)), c30 = std::cos(glm::radians(30.0f));
@@ -8155,8 +9597,19 @@ int MainWindow::runSelfTest() {
             const glm::vec3 eyeSide(s30 * 2.0f, 3.0f, c30 * 2.0f);
             const gizmo::Ray ringRay{eyeSide, glm::normalize(glm::vec3(s30, 0.0f, c30) - eyeSide)};
             float theta = 0.0f;
-            check(gizmo::yawAngle(ringRay, glm::vec3(0.0f), &theta) && near(theta, 30.0f, 1e-3f),
-                  "a ray that hits the ring at 30 degrees reads 30 degrees");
+            check(gizmo::ringAngle(ringRay, glm::vec3(0.0f), glm::vec3(0.0f, 1.0f, 0.0f), &theta) &&
+                      near(theta, 30.0f, 1e-3f),
+                  "a ray that hits the Y ring at 30 degrees reads 30 degrees");
+
+            // Blender's visibility rule: an axis pointing at the viewer is not drawn, a plane seen edge-on is not either.
+            check(!ukiyo::gizmo::axisVisible(glm::vec3(0.0f, 0.0f, 1.0f), glm::vec3(0.0f, 0.0f, 1.0f), false),
+                  "an axis pointing at the viewer is hidden");
+            check(ukiyo::gizmo::axisVisible(glm::vec3(0.0f, 0.0f, 1.0f), glm::vec3(1.0f, 0.0f, 0.0f), false),
+                  "an axis across the view is drawn");
+            check(!ukiyo::gizmo::axisVisible(glm::vec3(0.0f, 0.0f, 1.0f), glm::vec3(0.0f, 0.0f, 1.0f), true),
+                  "a plane seen face-on is hidden: its square would cover the object");
+            check(ukiyo::gizmo::axisVisible(glm::vec3(0.0f, 0.0f, 1.0f), glm::vec3(1.0f, 0.0f, 0.0f), true),
+                  "a plane seen from the side is drawn");
         }
 
         // Real mouse events on the Scene view, with a model selected.
@@ -8200,7 +9653,11 @@ int MainWindow::runSelfTest() {
                 t.start();
                 while ((frameInFlight_ || renderWanted_) && t.elapsed() < 5000)
                     QCoreApplication::processEvents(QEventLoop::AllEvents, 10);
+                // Two copies: one beside the fixture, one in the repository's renders/, which CI uploads so the gizmo can
+                // be looked at after a run without a local Qt.
                 viewport_->grab().save(projectRoot_ + QStringLiteral("/renders/gizmo_scene_view.png"));
+                QDir().mkpath(QStringLiteral("renders"));
+                viewport_->grab().save(QStringLiteral("renders/gizmo_scene_view.png"));
             }
             const int w = viewport_->width(), h = viewport_->height();
             const float len = gizmo::handleLength(gameCam_, o);
@@ -8258,6 +9715,51 @@ int MainWindow::runSelfTest() {
             undoEdit();
             settle();
             check(near(posOf(0).yawDeg, beforeTurn.yawDeg, 1e-3f), "undo restores the turn");
+
+            // Scale: drag the X cube out by one handle length, which doubles that axis and leaves the others alone.
+            setGizmoTool(gizmo::Tool::Scale);
+            settle();
+            const InstanceInfo beforeScale = posOf(0);
+            QPointF sGrab, sTo;
+            gizmo::project(gameCam_, w, h, o + ax * len, &sGrab);
+            gizmo::project(gameCam_, w, h, o + ax * (len * 2.0f), &sTo);
+            sendMouse(QEvent::MouseButtonPress, sGrab, Qt::LeftButton, Qt::LeftButton);
+            sendMouse(QEvent::MouseMove, sTo, Qt::NoButton, Qt::LeftButton);
+            sendMouse(QEvent::MouseButtonRelease, sTo, Qt::LeftButton, Qt::NoButton);
+            settle();
+            const InstanceInfo afterScale = posOf(0);
+            check(near(afterScale.scale.x, beforeScale.scale.x * 2.0f, 0.05f),
+                  "dragging the X scale handle by its length doubles X");
+            check(near(afterScale.scale.y, beforeScale.scale.y, 1e-4f) &&
+                      near(afterScale.scale.z, beforeScale.scale.z, 1e-4f),
+                  "a scale handle leaves the other two axes alone");
+            undoEdit();
+            settle();
+            check(near(posOf(0).scale.x, beforeScale.scale.x, 1e-4f), "undo restores the scale");
+
+            // The view gizmo: pressing its top handle looks down from above.
+            {
+                const QRectF box = viewgizmo::bounds(w, h);
+                QPointF above;
+                float depth = 0.0f;
+                for (int i = 0; i < viewgizmo::kHandleCount; ++i) {
+                    const QPointF at = viewgizmo::handlePoint(gameCam_, box, i, &depth);
+                    if (viewgizmo::handleDirection(i) == glm::vec3(0.0f, 1.0f, 0.0f)) above = at;
+                }
+                const float yawBefore = gameCam_.yaw;
+                sendMouse(QEvent::MouseButtonPress, above, Qt::LeftButton, Qt::LeftButton);
+                sendMouse(QEvent::MouseButtonRelease, above, Qt::LeftButton, Qt::NoButton);
+                settle();
+                check(near(gameCam_.pitch, 1.55334f, 1e-3f),
+                      "pressing the view gizmo's +Y handle looks straight down");
+                check(gameCam_.orthographic, "a view gizmo press switches the Scene view to orthographic");
+                gameCam_.yaw = yawBefore;
+                gameCam_.pitch = 0.15f;
+                gameCam_.orthographic = camBefore.orthographic;
+                refresh();
+                settle();
+            }
+
             setGizmoTool(gizmo::Tool::Move);
             settle();
 
@@ -8276,6 +9778,135 @@ int MainWindow::runSelfTest() {
             snapAction_->setChecked(false);
             moveSnapBox_->setCurrentIndex(1);
             settle();
+
+            // Multi-object transform: with two models selected the gizmo stands between them, and one drag moves,
+            // turns or scales both. Everything else in this section drags one model, so nothing here can pass by
+            // accident.
+            {
+                selectInstanceRow(0);
+                settle();
+                duplicateSelected();
+                settle();
+                int now = 0;
+                runOnWorker([&] { now = static_cast<int>(worker_->instances().size()); });
+                auto rowFor = [this](int index) -> QTreeWidgetItem* {
+                    QTreeWidgetItemIterator it(hierarchy_);
+                    while (*it) {
+                        if ((*it)->data(0, Qt::UserRole).toInt() == kItemInstanceBase - index) return *it;
+                        ++it;
+                    }
+                    return nullptr;
+                };
+                QTreeWidgetItem* rowA = now >= 2 ? rowFor(0) : nullptr;
+                QTreeWidgetItem* rowB = now >= 2 ? rowFor(now - 1) : nullptr;
+                check(rowA && rowB, "the scene has two instances to select");
+                if (rowA && rowB) {
+                    // Put the copy beside the original, so the gizmo's pivot is a known point between them.
+                    const glm::vec3 at(0.8f, 0.0f, 0.0f);
+                    const float pa[3] = {o.x, o.y, o.z};
+                    const float pb[3] = {o.x + at.x, o.y + at.y, o.z + at.z};
+                    setInstanceTransform(0, pa, 0.0f);
+                    settle();
+                    setInstanceTransform(now - 1, pb, 0.0f);
+                    settle();
+
+                    hierarchy_->clearSelection();
+                    hierarchy_->setCurrentItem(rowA);
+                    rowB->setSelected(true);
+                    settle();
+                    check(selectedInstances().size() == 2, "two selected rows are two instances",
+                          QString::number(selectedInstances().size()));
+
+                    int mi = -1;
+                    InstanceInfo mInfo;
+                    check(gizmoTarget(&mi, &mInfo), "a selection of two gets a gizmo");
+                    const glm::vec3 pivot(mInfo.position[0], mInfo.position[1], mInfo.position[2]);
+                    check(near(pivot.x, o.x + at.x * 0.5f, 1e-4f) && near(pivot.y, o.y, 1e-4f),
+                          "the gizmo stands midway between the two selected models");
+
+                    const float mlen = gizmo::handleLength(gameCam_, pivot);
+                    // Move: drag the X arrow, and both models travel the same distance.
+                    const int undoTwo = static_cast<int>(undoStack_.size());
+                    QPointF mg, mt;
+                    gizmo::project(gameCam_, w, h, pivot + ax * (mlen * 0.5f), &mg);
+                    gizmo::project(gameCam_, w, h, pivot + ax * (mlen * 0.5f + 0.4f), &mt);
+                    sendMouse(QEvent::MouseButtonPress, mg, Qt::LeftButton, Qt::LeftButton);
+                    sendMouse(QEvent::MouseMove, mt, Qt::NoButton, Qt::LeftButton);
+                    sendMouse(QEvent::MouseButtonRelease, mt, Qt::LeftButton, Qt::NoButton);
+                    settle();
+                    const InstanceInfo ma = posOf(0), mb = posOf(now - 1);
+                    check(near(ma.position[0], o.x + 0.4f, 0.05f) && near(mb.position[0], o.x + at.x + 0.4f, 0.05f),
+                          "a move drag carries both selected models by the same amount");
+                    check(near(mb.position[0] - ma.position[0], at.x, 0.02f), "and they keep the distance between them");
+                    check(static_cast<int>(undoStack_.size()) == undoTwo + 1, "a multi-object drag is one undo step");
+                    undoEdit();
+                    settle();
+                    check(near(posOf(0).position[0], o.x, 1e-4f) && near(posOf(now - 1).position[0], o.x + at.x, 1e-4f),
+                          "undo puts both selected models back");
+
+                    // Turn: the yaw ring swings both models around the pivot, and turns each of them.
+                    setGizmoTool(gizmo::Tool::Rotate);
+                    settle();
+                    auto ringTwo = [&](float deg) {
+                        QPointF pt;
+                        gizmo::project(gameCam_, w, h,
+                                       pivot + mlen * glm::vec3(std::sin(glm::radians(deg)), 0.0f, std::cos(glm::radians(deg))),
+                                       &pt);
+                        return pt;
+                    };
+                    const InstanceInfo ra = posOf(0), rb = posOf(now - 1);
+                    sendMouse(QEvent::MouseButtonPress, ringTwo(60.0f), Qt::LeftButton, Qt::LeftButton);
+                    sendMouse(QEvent::MouseMove, ringTwo(90.0f), Qt::NoButton, Qt::LeftButton);
+                    sendMouse(QEvent::MouseButtonRelease, ringTwo(90.0f), Qt::LeftButton, Qt::NoButton);
+                    settle();
+                    const InstanceInfo ta = posOf(0), tb = posOf(now - 1);
+                    check(near(ta.yawDeg, ra.yawDeg + 30.0f, 1.0f) && near(tb.yawDeg, rb.yawDeg + 30.0f, 1.0f),
+                          "a turn turns both selected models");
+                    // A 30 degree turn on a 0.4 m arm: 0.2 m of travel, well clear of a rounding error. The x-only
+                    // comparison this replaced passed by four hundredths of a millimetre at some view angles.
+                    const float swungA =
+                        glm::length(glm::vec2(ta.position[0] - ra.position[0], ta.position[2] - ra.position[2]));
+                    const float swungB =
+                        glm::length(glm::vec2(tb.position[0] - rb.position[0], tb.position[2] - rb.position[2]));
+                    check(swungA > 0.1f && swungB > 0.1f, "and swings them around the pivot between them",
+                          QString::number(swungA) + " / " + QString::number(swungB));
+                    check(near(glm::length(glm::vec2(tb.position[0] - ta.position[0], tb.position[2] - ta.position[2])),
+                               glm::length(glm::vec2(rb.position[0] - ra.position[0], rb.position[2] - ra.position[2])),
+                               0.05f),
+                          "without changing the distance between them");
+                    undoEdit();
+                    settle();
+
+                    // Scale: the centre handle doubles both models and carries them twice as far apart.
+                    setGizmoTool(gizmo::Tool::Scale);
+                    settle();
+                    const InstanceInfo sa = posOf(0), sb = posOf(now - 1);
+                    // The centre cube is a 28 pixel target, and the factor is the ratio of the pointer's distance
+                    // from the centre: twice as far out, twice as big.
+                    QPointF centre;
+                    gizmo::project(gameCam_, w, h, pivot, &centre);
+                    const QPointF out(centre.x() + 10.0, centre.y());
+                    const QPointF twice(centre.x() + 20.0, centre.y());
+                    sendMouse(QEvent::MouseButtonPress, out, Qt::LeftButton, Qt::LeftButton);
+                    sendMouse(QEvent::MouseMove, twice, Qt::NoButton, Qt::LeftButton);
+                    sendMouse(QEvent::MouseButtonRelease, twice, Qt::LeftButton, Qt::NoButton);
+                    settle();
+                    const InstanceInfo ua = posOf(0), ub = posOf(now - 1);
+                    const float fa = ua.scale.x / std::max(1e-4f, sa.scale.x);
+                    const float fb = ub.scale.x / std::max(1e-4f, sb.scale.x);
+                    check(near(fa, fb, 0.02f) && near(fa, 2.0f, 0.1f),
+                          "a uniform drag scales both selected models by one factor",
+                          QString::number(fa) + " / " + QString::number(fb));
+                    check(near(glm::length(glm::vec2(ub.position[0] - ua.position[0], ub.position[2] - ua.position[2])),
+                               fa * glm::length(glm::vec2(sb.position[0] - sa.position[0], sb.position[2] - sa.position[2])),
+                               0.05f),
+                          "and carries them out from the pivot by it");
+                    undoEdit();
+                    settle();
+                    setGizmoTool(gizmo::Tool::Move);
+                    settle();
+                }
+            }
         }
 
         // Put the scene back the way the tests found it.
@@ -8399,6 +10030,138 @@ int MainWindow::runSelfTest() {
         check(removeBrowserItem(renamedDir).ok && !QFileInfo::exists(renamedDir),
               "Delete in the browser moves the folder to the trash");
         settle();
+
+        // Thumbnail zoom (GH-119103). The wheel events are real QWheelEvents sent to the viewport, so the filter and the
+        // ladder are both under test, not a shortcut that calls the handler directly.
+        {
+            const int savedThumb = fsSize_->value();
+            const int savedView = browserView_;
+            setBrowserView(0);
+            fsSize_->setValue(80);
+            check(browserThumb_ == 80 && fsList_->iconSize() == QSize(80, 80),
+                  "the size slider sets the icon size", QString::number(fsList_->iconSize().width()));
+            check(fsList_->gridSize() == QSize(104, 124), "and the grid around it",
+                  QStringLiteral("%1 x %2").arg(fsList_->gridSize().width()).arg(fsList_->gridSize().height()));
+
+            auto wheel = [this](int dy, Qt::KeyboardModifiers mods) {
+                const QPoint local(8, 8);
+                QWheelEvent e(QPointF(local), QPointF(fsList_->viewport()->mapToGlobal(local)), QPoint(), QPoint(0, dy),
+                              Qt::NoButton, mods, Qt::NoScrollPhase, false);
+                QCoreApplication::sendEvent(fsList_->viewport(), &e);
+                return browserThumb_;
+            };
+            check(wheel(120, Qt::ControlModifier) == 96, "Ctrl + wheel up grows the thumbnails one stop");
+            check(wheel(-120, Qt::ControlModifier) == 80, "Ctrl + wheel down shrinks them one stop");
+            check(wheel(120, Qt::NoModifier) == 80, "a plain wheel scrolls the grid and does not zoom");
+            check(wheel(120, Qt::ShiftModifier) == 80, "Shift + wheel does not zoom either");
+            for (int i = 0; i < 20; ++i) wheel(120, Qt::ControlModifier);
+            check(browserThumb_ == ukiyo::kThumbMax, "zooming past the top stops at 224", QString::number(browserThumb_));
+            for (int i = 0; i < 30; ++i) wheel(-120, Qt::ControlModifier);
+            check(browserThumb_ == ukiyo::kThumbMin, "and zooming past the bottom stops at 32",
+                  QString::number(browserThumb_));
+            fsSize_->setValue(ukiyo::kThumbDefault);
+            check(fsList_->gridSize() == QSize(120, 140), "the default 96 px grid is the one the browser always had");
+            setBrowserView(1);
+            check(fsList_->iconSize() == QSize(20, 20), "list view keeps its 20 px row icon at the default size",
+                  QString::number(fsList_->iconSize().width()));
+            fsSize_->setValue(160);
+            check(fsList_->iconSize().width() > 20 && fsList_->iconSize().width() <= 48,
+                  "and list rows grow with the zoom, within bounds", QString::number(fsList_->iconSize().width()));
+            setBrowserView(2);
+            const int before = browserThumb_;
+            wheel(120, Qt::ControlModifier);
+            check(browserThumb_ == before, "the details view keeps the wheel for scrolling");
+            setBrowserView(savedView);
+            fsSize_->setValue(savedThumb);
+            settle();
+        }
+
+        // Glob search (GH-119103), on a folder of five files made here.
+        {
+            const QString globDir = projectRoot_ + QStringLiteral("/assets/zz_selftest_glob");
+            QDir(globDir).removeRecursively();   // a previous run that stopped early leaves the folder behind
+            createBrowserFolder(projectRoot_ + QStringLiteral("/assets"), QStringLiteral("zz_selftest_glob"));
+            const QStringList made{"Hero.vrm", "Brass Sword.vrm", "Sword Idle.ukscene", "Sword.png", "readme.txt"};
+            bool wrote = true;
+            for (const QString& name : made) {
+                QFile f(globDir + QLatin1Char('/') + name);
+                wrote = wrote && f.open(QIODevice::WriteOnly) && f.write("x") == 1;
+            }
+            settle();
+            const QString savedQuery = fsSearch_->text();
+            const int savedKind = browserKind_;
+            browserKind_ = 0;
+            updateBrowserFilter();
+            navigateTo(globDir);
+            settle();
+            auto visible = [this] {
+                QStringList out;
+                const QAbstractItemModel* m = fsList_->model();
+                const QModelIndex root = fsList_->rootIndex();
+                for (int r = 0; r < m->rowCount(root); ++r)
+                    out << m->index(r, 0, root).data(Qt::DisplayRole).toString();
+                out.sort();
+                return out;
+            };
+            // QFileSystemModel lists a folder on its own thread, so a check that runs one event loop turn after
+            // navigateTo can read a half-built folder. Wait until the list stops changing (or three seconds pass) and
+            // report what it settled on: on a loaded CI runner that is the difference between a real result and a race.
+            auto settled = [&] {
+                QStringList last = visible();
+                for (int i = 0; i < 150; ++i) {
+                    QCoreApplication::processEvents(QEventLoop::AllEvents, 20);
+                    const QStringList now = visible();
+                    if (now == last && !now.isEmpty()) return now;
+                    last = now;
+                }
+                return last;
+            };
+            check(wrote && settled().size() == made.size(), "the test folder holds five files",
+                  QString::number(visible().size()));
+            fsSearch_->setText(QStringLiteral("sword"));
+            settle();
+            check(settled() == QStringList{"Brass Sword.vrm", "Sword Idle.ukscene", "Sword.png"},
+                  "a word keeps every name that contains it", settled().join(QStringLiteral(", ")));
+            fsSearch_->setText(QStringLiteral("*.vrm"));
+            settle();
+            check(settled() == QStringList{"Brass Sword.vrm", "Hero.vrm"}, "a glob keeps one type of file",
+                  settled().join(QStringLiteral(", ")));
+            fsSearch_->setText(QStringLiteral("sword *.vrm"));
+            settle();
+            check(settled() == QStringList{"Brass Sword.vrm"}, "a word and a glob narrow each other",
+                  settled().join(QStringLiteral(", ")));
+            fsSearch_->setText(QStringLiteral("s?ord.png"));
+            settle();
+            check(settled() == QStringList{"Sword.png"}, "a single-character wildcard works", settled().join(QStringLiteral(", ")));
+            fsSearch_->setText(QStringLiteral("Sword*{vrm,png}"));
+            settle();
+            check(settled() == QStringList{"Sword.png"}, "a brace set picks between endings",
+                  settled().join(QStringLiteral(", ")));
+            fsSearch_->setText(QStringLiteral("hero.vrm"));
+            settle();
+            check(settled() == QStringList{"Hero.vrm"}, "a dot is a literal, not a wildcard", settled().join(QStringLiteral(", ")));
+            fsSearch_->setText(QStringLiteral("nomatch*"));
+            settle();
+            check(settled().isEmpty(), "a query nothing matches shows an empty grid");
+            // 1 is Models in the button's list (All, Models, Textures, Audio, Folders): the same set "*.vrm" names.
+            fsSearch_->setText(QString());
+            browserKind_ = 1;
+            updateBrowserFilter();
+            settle();
+            check(settled() == QStringList{"Brass Sword.vrm", "Hero.vrm"}, "the type button keeps just the models",
+                  settled().join(QStringLiteral(", ")));
+            fsSearch_->setText(QStringLiteral("*.vrm"));
+            settle();
+            check(settled() == QStringList{"Brass Sword.vrm", "Hero.vrm"},
+                  "the type button and a glob agree with each other", settled().join(QStringLiteral(", ")));
+            browserKind_ = savedKind;
+            updateBrowserFilter();
+            fsSearch_->setText(savedQuery);
+            settle();
+            removeBrowserItem(globDir);
+            navigateTo(projectRoot_ + QStringLiteral("/assets"));
+            settle();
+        }
     }
 
     // --- 11g. Console: search, level filter, collapsed repeats, source lines, copy -------------
@@ -9541,8 +11304,12 @@ int MainWindow::runSelfTest() {
             if (meshNode >= 0) {
                 const QString before = nodes_[meshNode].graphMaterial;
                 const bool dirtyBefore = sceneDirty_;
-                const QString defAbs = root + QStringLiteral("/Materials/Default.ukmat");
-                const QString redAbs = root + QStringLiteral("/Materials/Red.ukmat");
+                const QString defAbs = QDir::cleanPath(root + QStringLiteral("/Materials/Default.ukmat"));
+                const QString redAbs = QDir::cleanPath(root + QStringLiteral("/Materials/Red.ukmat"));
+                // The node keeps the path exactly as it was given, so the scene's own (project-relative) value and the
+                // absolute path this block works in are two spellings of one file. Compare them as the file they name.
+                const QString beforeAbs = before.isEmpty() ? QString()
+                                                           : QDir::cleanPath(QDir(projectRoot_).absoluteFilePath(before));
                 // The Inspector checks above cleared Red's override, so write it again: the viewport must draw red.
                 writeMat(QStringLiteral("Red"), QJsonObject{{QStringLiteral("albedo"), QStringLiteral("Textures/red.png")}});
                 int active = 0;
@@ -9569,23 +11336,69 @@ int MainWindow::runSelfTest() {
                         }
                     }
                 };
+                // A viewport is a stream: the first render after a change can still carry the previous frame, which a
+                // person watching would never notice and a count of coloured pixels does. Every shot below is the second
+                // render after its change.
+                auto shot = [&](QImage* out) {
+                    runOnWorker([&] {
+                        worker_->renderNow(cam);
+                        *out = worker_->renderNow(cam).convertToFormat(QImage::Format_RGB32);
+                    });
+                };
+                // The model's own look, before any graph material: only used to show that assigning the shader's
+                // default is a visible change, so the baseline below is really the shader's own texture.
+                QImage ownView;
+                shot(&ownView);
+                long oR = 0, oB = 0;
+                tally(ownView, oR, oB);
+                auto pixelsDiffer = [](const QImage& a, const QImage& b) -> long {
+                    if (a.isNull() || b.isNull() || a.size() != b.size()) return -1;
+                    long n = 0;
+                    for (int y = 0; y < a.height(); ++y)
+                        for (int x = 0; x < a.width(); ++x)
+                            if (a.pixel(x, y) != b.pixel(x, y)) ++n;
+                    return n;
+                };
+
+                // The baseline is the shader's default texture on the model, not the model's own look. Its palette is
+                // warm (a VRM character's skin and clothes count as "red" by any fixed rule), so the checks below
+                // compare against this shot rather than against an absolute red/blue dominance that only the flat
+                // test texture could satisfy -- and the revert compares against it for the same reason.
+                setNodeMaterial(meshNode, defAbs);
+                settle();
+                QImage baseView;
+                shot(&baseView);
+                long bR = 0, bB = 0;
+                tally(baseView, bR, bB);
+                if (beforeAbs != defAbs) {
+                    const long materialDiff = pixelsDiffer(ownView, baseView);
+                    check(materialDiff > 200, "11t: assigning the shader's default material changes what the model draws",
+                          QString("%1 pixels differ from the view before it was assigned (own red %2, blue %3; "
+                                  "shader red %4, blue %5)").arg(materialDiff).arg(oR).arg(oB).arg(bR).arg(bB));
+                }
+
                 setNodeMaterial(meshNode, redAbs);
                 settle();
                 QImage redView;
-                runOnWorker([&] { redView = worker_->renderNow(cam).convertToFormat(QImage::Format_RGB32); });
+                shot(&redView);
                 long rR = 0, rB = 0;
                 tally(redView, rR, rB);
-                check(rR > 300 && rR > 2 * rB, "11t: the viewport draws a material's texture override on the model",
-                      QString("red %1, blue %2").arg(rR).arg(rB));
+                check(rR > bR + 300, "11t: the viewport draws a material's texture override on the model",
+                      QString("override red %1, blue %2; shader default red %3, blue %4")
+                          .arg(rR).arg(rB).arg(bR).arg(bB));
 
                 setNodeMaterial(meshNode, defAbs);
                 settle();
                 QImage defView;
-                runOnWorker([&] { defView = worker_->renderNow(cam).convertToFormat(QImage::Format_RGB32); });
+                shot(&defView);
                 long dR = 0, dB = 0;
                 tally(defView, dR, dB);
-                check(dB > 300 && dB > 2 * dR, "11t: the viewport draws the shader's default texture when there is no override",
-                      QString("red %1, blue %2").arg(dR).arg(dB));
+                // The override is gone when the model looks like it did before the override went on: within a tenth,
+                // because a viewport is free to be a frame behind in its exposure or AA history but not in its texture.
+                const long tolerance = std::max<long>(40, bR / 10);
+                check(std::labs(dR - bR) <= tolerance && std::labs(dB - bB) <= tolerance,
+                      "11t: the viewport draws the shader's default texture when there is no override",
+                      QString("after override red %1, blue %2; shader default red %3, blue %4").arg(dR).arg(dB).arg(bR).arg(bB));
 
                 setNodeMaterial(meshNode, before);
                 settle();
@@ -9848,7 +11661,8 @@ int MainWindow::runSelfTest() {
         world.setKeyHeld("Space", false);
         check(!world.actionDown("Jump"), "Input: a released key deactivates its action");
         err.clear();
-        check(world.script.loadString("function onUpdate(dt) if ukiyo.actionDown('Jump') then ukiyo.log('jump') end end\n", "input", &err),
+        check(world.sceneScript().loadString(
+                  "function onUpdate(dt) if ukiyo.actionDown('Jump') then ukiyo.log('jump') end end\n", "input", &err),
               "Input: a script that calls ukiyo.actionDown loads", QString::fromStdString(err));
         world.setKeyHeld("Space", true);
         world.tick(0.1f);
@@ -9940,9 +11754,54 @@ int MainWindow::runSelfTest() {
             check(inputStatus->text().contains(QStringLiteral("single key")), "Input: a key combination is rejected");
             inputTable->item(r, 1)->setText(QStringLiteral("q"));
             bool dashSaved = false;
+            // A cell that is a key is written back as a keyboard control path, so a project setting and a runtime
+            // binding name the same thing. The table shows it as the key again.
             for (const engine::InputAction& a : projSettings_.inputActions)
-                if (a.name == "Dash" && a.key == "Q") dashSaved = true;
-            check(dashSaved && inputStatus->text().isEmpty(), "Input: a valid action is saved with its key in portable form");
+                if (a.name == "Dash" && a.key == "<Keyboard>/q") dashSaved = true;
+            check(dashSaved && inputStatus->text().isEmpty(), "Input: a valid action is saved as the control path for its key");
+            check(inputTable->item(r, 1)->text() == QStringLiteral("Q"), "Input: the table shows the key, not the path");
+            inputTable->item(r, 1)->setText(QStringLiteral("<Gamepad>/buttonSouth"));
+            bool padSaved = false;
+            for (const engine::InputAction& a : projSettings_.inputActions)
+                if (a.name == "Dash" && a.key == "<Gamepad>/buttonSouth") padSaved = true;
+            check(padSaved, "Input: a control path is accepted and stored as written");
+            inputTable->item(r, 1)->setText(QStringLiteral("<Gamepad>/nonsense"));
+            check(inputStatus->text().contains(QStringLiteral("not a control")), "Input: a path to a control that does not exist is refused");
+            inputTable->item(r, 1)->setText(QStringLiteral("q"));
+
+            // Rebind: the page takes the next key event, writes the row and saves. A synthetic QKeyEvent goes through
+            // the application's event filter exactly as a real one would.
+            auto* rebindButton = page->findChild<QPushButton*>(QStringLiteral("inputRebind"));
+            inputTable->setCurrentCell(r, 0);
+            check(rebindButton != nullptr, "Input: the page has a Rebind button");
+            if (rebindButton) {
+                rebindButton->click();
+                check(inputStatus->text().contains(QStringLiteral("Listening for")), "Input: Rebind waits for a key");
+                QKeyEvent press(QEvent::KeyPress, Qt::Key_J, Qt::NoModifier);
+                QApplication::sendEvent(inputTable, &press);
+                const QString cell = inputTable->item(r, 1) ? inputTable->item(r, 1)->text() : QStringLiteral("<none>");
+                check(cell == QStringLiteral("J"), "Input: the key that was pressed fills the row",
+                      QStringLiteral("cell: \"%1\", status: \"%2\"").arg(cell, inputStatus->text()));
+                bool rebound = false;
+                for (const engine::InputAction& a : projSettings_.inputActions)
+                    if (a.name == "Dash" && a.key == "<Keyboard>/j") rebound = true;
+                check(rebound && inputStatus->text().contains(QStringLiteral("Bound")),
+                      "Input: a rebound key is saved as its control path");
+                check(fileHas(settingsFile, QStringLiteral("\"key\": \"<Keyboard>/j\"")),
+                      "Input: the rebound key reaches ProjectSettings.json");
+                // A second action on the same key is called out before it is saved. The second action is made here so
+                // the check does not depend on which actions the project happens to ship with.
+                inputAdd->click();
+                const int copy = inputTable->rowCount() - 1;
+                inputTable->item(copy, 0)->setText(QStringLiteral("Copy"));
+                inputTable->item(copy, 1)->setText(QStringLiteral("J"));
+                inputTable->setCurrentCell(r, 0);
+                rebindButton->click();
+                QKeyEvent again(QEvent::KeyPress, Qt::Key_J, Qt::NoModifier);
+                QApplication::sendEvent(inputTable, &again);
+                check(inputStatus->text().contains(QStringLiteral("already used by Copy")),
+                      "Input: a key another action already uses is reported");
+            }
 
             product->setText(QStringLiteral("Test Name"));
             product->editingFinished();
@@ -9973,6 +11832,41 @@ int MainWindow::runSelfTest() {
         }
         projSettings_ = savedSettings;
         postToWorker([this, copy = projSettings_] { worker_->setProjectSettings(copy); });
+    }
+
+    // --- 11x. Editor plugins: a broken library is reported, not fatal, and the page says so ---------
+    // The ABI itself is proven by tests/plugin_test.cpp against two real shared libraries. What can be checked here
+    // is the editor's half: a folder with something that is not a plugin must leave the editor running, say why, and
+    // leave the menu usable.
+    {
+        const QString dir = pluginsDir();
+        const QString file = dir + QStringLiteral("/broken") + QString::fromStdString(ukiyo::PluginHost::pluginExtension());
+        const bool hadDir = QDir(dir).exists();
+        QDir().mkpath(dir);
+        {
+            QFile f(file);
+            check(f.open(QIODevice::WriteOnly), QStringLiteral("the plugin fixture is written"));
+            f.write("this is not a shared library");
+        }
+        loadPlugins();
+        settle();
+        bool reported = false;
+        std::vector<ukiyo::PluginReport> tried;
+        if (plugins_) tried = plugins_->reports();
+        for (const ukiyo::PluginReport& r : tried) reported = reported || (!r.ok && !r.error.empty());
+        check(plugins_ && reported, QStringLiteral("a library that is not a plugin is reported with a reason"));
+        check(plugins_ && plugins_->loadedCount() == 0, QStringLiteral("and nothing is loaded from it"));
+        check(pluginsMenu_ != nullptr && !pluginsMenu_->actions().isEmpty(),
+              QStringLiteral("the Plugins menu still offers Reload and the folder"));
+        auto* listed = projectSettings_ ? projectSettings_->findChild<QTableWidget*>(QStringLiteral("pluginsList"))
+                                       : nullptr;
+        check(listed != nullptr, QStringLiteral("the Plugins page lists what was tried"));
+        check(projectSettings_ && projectSettings_->findChild<QLabel*>(QStringLiteral("pluginsDir")) != nullptr,
+              QStringLiteral("the Plugins page names the folder the editor reads"));
+        QFile::remove(file);
+        if (!hadDir) QDir(dir).removeRecursively();
+        loadPlugins();   // back to whatever the real project has, which is usually nothing
+        settle();
     }
 
     // --- 12. Game view presets render at the chosen aspect ------------------------------------
@@ -10155,12 +12049,17 @@ int MainWindow::runSelfTest() {
         small.setPointSize(7);
         p.setFont(small);
         int missing = 0;
+        QStringList withoutPreview;
         for (int i = 0; i < files.size(); ++i) {
             const int x = pad + (i % cols) * (cell + pad);
             const int y = pad + (i / cols) * (cell + labelH + pad);
             const QImage im = assets::previewImage(files[i]);
-            if (im.isNull()) ++missing;
-            else p.drawImage(QRect(x, y, cell, cell), im);
+            if (im.isNull()) {
+                ++missing;
+                withoutPreview << QFileInfo(files[i]).fileName();
+            } else {
+                p.drawImage(QRect(x, y, cell, cell), im);
+            }
             p.drawText(QRect(x - 4, y + cell + 2, cell + 8, labelH), Qt::AlignHCenter | Qt::AlignTop,
                        QFileInfo(files[i]).fileName());
         }
@@ -10168,7 +12067,13 @@ int MainWindow::runSelfTest() {
         const QString sheetPath = projectRoot_ + QStringLiteral("/renders/icon_audit.png");
         const bool saved = sheet.save(sheetPath);
         check(saved && missing == 0, "icon audit sheet written with a preview for every asset",
-              QString("%1 files, %2 without preview, sheet %3").arg(files.size()).arg(missing).arg(sheetPath));
+              QString("%1 files, %2 without preview, sheet %3%4")
+                  .arg(files.size())
+                  .arg(missing)
+                  .arg(sheetPath)
+                  .arg(withoutPreview.isEmpty() ? QString()
+                                                : QStringLiteral("; no picture for: ") +
+                                                      withoutPreview.join(QStringLiteral(", "))));
     }
 
     // --- 15. Anime grading: LUT path, white balance, tints, tonemapper comparison ----------
@@ -10558,6 +12463,7 @@ int MainWindow::runSelfTest() {
                 settings_.fogDensity = 0.0f;
                 settings_.fogSun = 0.0f;
                 settings_.ssao = 0.0f;
+                settings_.gi = 0.0f;
                 settings_.ssr = 0.0f;
                 settings_.depthNormalOutline = 0.0f;
                 settings_.flare = 0.0f;
@@ -10577,6 +12483,12 @@ int MainWindow::runSelfTest() {
             };
             const double fogD = diffWith([&] { settings_.fogDensity = 0.03f; settings_.fogSun = 0.8f; });
             const double aoD = diffWith([&] { settings_.ssao = 1.0f; });
+            // The GI pass must change the frame on a scene with a heightfield. It is the only effect here that reads
+            // a texture the renderer has to have been given (the heightfield), so a no-op is the likely failure.
+            const double giD = diffWith([&] {
+                settings_.gi = 1.0f;
+                settings_.giRays = 4.0f;
+            });
             const double ssrD = diffWith([&] { settings_.ssr = 0.6f; });
             const double olD = diffWith([&] { settings_.depthNormalOutline = 0.7f; });
             const double flD = diffWith([&] {
@@ -10596,6 +12508,10 @@ int MainWindow::runSelfTest() {
             settings_ = savedFx;
             check(fogD > 1.0, "11v: fog with sun in-scatter changes the frame", QString::number(fogD, 'f', 3));
             check(aoD > 0.1, "11v: ambient occlusion changes the frame", QString::number(aoD, 'f', 3));
+            // The scene here may have no heightfield (a model on the grid), in which case the pass correctly does
+            // nothing; what this always exercises is the three pipelines, their sets and the composite path. The
+            // estimator's own accuracy is measured against the tracer in tools/pathtrace_preview.cpp.
+            check(giD >= 0.0, "11v: traced bounce light runs without breaking the frame", QString::number(giD, 'f', 4));
             check(ssrD > 0.05, "11v: screen-space reflections change the frame", QString::number(ssrD, 'f', 3));
             check(olD > 0.2, "11v: the depth-normal outline changes the frame", QString::number(olD, 'f', 3));
             check(flD > 0.5, "11v: the lens flare changes the frame with the sun in front", QString::number(flD, 'f', 3));
@@ -10912,7 +12828,8 @@ int MainWindow::runSelfTest() {
         QLineEdit* search = dlg.findChild<QLineEdit*>(QStringLiteral("prefsSearch"));
         QComboBox* view = dlg.findChild<QComboBox*>();
         QPushButton* reset = dlg.findChild<QPushButton*>(QStringLiteral("prefsReset"));
-        check(cats && cats->count() == 3, "Preferences lists three categories",
+        // General, Content Browser, Scripting, Shortcuts.
+        check(cats && cats->count() == 4, "Preferences lists its four categories",
               cats ? QString::number(cats->count()) : QString("missing"));
         check(search != nullptr, "Preferences has a search box, as Project Settings does");
         check(!dlg.findChildren<QToolButton*>(QStringLiteral("foldoutHeader")).isEmpty(),
@@ -10937,6 +12854,62 @@ int MainWindow::runSelfTest() {
         }
         if (savedPref.isValid()) prefs::store().setValue(key, savedPref);
         else prefs::store().remove(key);
+    }
+
+    // --- 17b. Scripting: the tools window and the Lua editor --------------------------------------------
+    {
+        ScriptingToolsDialog tools(this, projectRoot_, nullptr);
+        check(tools.toolCount() == static_cast<int>(ukiyo::script_project::toolRecommendations().size()),
+              "Scripting Tools lists every recommendation", QString::number(tools.toolCount()));
+        check(tools.findChild<QTreeWidget*>(QStringLiteral("toolsList")) != nullptr,
+              "Scripting Tools shows its recommendations in a list");
+        check(ScriptingToolsDialog::externalEditorCommand(QStringLiteral("VS Code")) ==
+                  QStringLiteral("code -g {file}:{line}"),
+              "Scripting Tools knows the VS Code command");
+        check(ScriptingToolsDialog::externalEditorCommand(QStringLiteral("Neovim")).contains(QStringLiteral("{file}")),
+              "Scripting Tools knows the Neovim command");
+
+        // A script that compiles checks clean; a syntax error marks the line Lua reports; the API completes.
+        const QString temp = QDir(QDir::tempPath()).filePath(QStringLiteral("ukiyo_selftest_script.lua"));
+        {
+            QFile file(temp);
+            if (file.open(QIODevice::WriteOnly | QIODevice::Truncate))
+                file.write("function onStart()\n    ukiyo.log(\"hi\")\nend\n");
+        }
+        LuaEditorDialog lua(this, temp, [](const QString& path, const QString& text, QString* error) {
+            ukiyo::ScriptHost host;
+            std::string message;
+            if (host.compileString(text.toStdString(), path.toStdString(), &message)) return true;
+            if (error) *error = QString::fromStdString(message);
+            return false;
+        });
+        QString luaError;
+        check(lua.openFile(&luaError), "the Lua editor opens a script", luaError);
+        check(lua.checkNow(), "the Lua editor checks a script that compiles");
+        lua.editor()->setPlainText(QStringLiteral("function onStart(\n"));
+        check(!lua.checkNow(), "the Lua editor reports a syntax error");
+        check(lua.editor()->errorLine() > 0, "the Lua editor marks the line Lua reports",
+              QString::number(lua.editor()->errorLine()));
+        // Hover documentation: the same table as the stub, reachable by the name as written or by the bare name.
+        check(lua.editor()->apiDocFor(QStringLiteral("ukiyo.raycast")).contains(QStringLiteral("maxDistance")),
+              "the Lua editor documents ukiyo.raycast on hover");
+        check(lua.editor()->apiDocFor(QStringLiteral("onUpdate")).contains(QStringLiteral("dt")),
+              "the Lua editor documents the hooks on hover");
+        check(lua.editor()->apiDocFor(QStringLiteral("notAThing")).isEmpty(),
+              "the Lua editor stays quiet about names that are not API");
+        const QStringList words = lua.editor()->completions();
+        check(words.contains(QStringLiteral("ukiyo.raycast")) && words.contains(QStringLiteral("onUpdate")) &&
+                  words.contains(QStringLiteral("self")),
+              "the Lua editor completes the API, the hooks and self", QString::number(words.size()));
+        // Typing a prefix and asking for completion must not disturb the document.
+        lua.editor()->setPlainText(QStringLiteral("local x = ukiyo.ra"));
+        QTextCursor end = lua.editor()->textCursor();
+        end.movePosition(QTextCursor::End);
+        lua.editor()->setTextCursor(end);
+        lua.editor()->completeNow();
+        check(lua.editor()->toPlainText() == QStringLiteral("local x = ukiyo.ra"),
+              "asking for completion leaves the text alone");
+        QFile::remove(temp);
     }
 
     // --- 1d. Prefab stage 3: Hierarchy rows, Inspector, per-key Apply and Revert, drag and drop --
@@ -12009,6 +13982,27 @@ int MainWindow::runSelfTest() {
         check(diff > 500, "terrain: the tile is drawn in the frame", QString("%1 pixels differ").arg(diff));
         after.save(projectRoot_ + QStringLiteral("/renders/terrain_step2.png"));
 
+        // The navmesh bake takes the tile with it. This scene has a flat floor model, so a bake that skipped the
+        // terrain would still succeed -- at the floor's height, through the hills. The bake's input is the check.
+        {
+            QString bakeErr;
+            int navTris = 0;
+            bool baked = false;
+            std::vector<glm::vec3> navVerts;
+            runOnWorker([&] {
+                baked = worker_->bakeNavMesh(&bakeErr, &navTris);
+                navVerts = worker_->bakedNavVertices();
+            });
+            float minY = 1e9f, maxY = -1e9f;
+            for (const glm::vec3& v : navVerts) {
+                minY = std::min(minY, v.y);
+                maxY = std::max(maxY, v.y);
+            }
+            check(baked && maxY > 5.0f && minY < maxY - 5.0f,
+                  "terrain: the navmesh bake follows the tile's hills, not the floor under them",
+                  QString("%1 triangles, y %2 to %3").arg(navTris).arg(minY).arg(maxY));
+        }
+
         // Step 2: a layer's colour reaches the frame. Repaint layer 0 bright red and compare with the default colours.
         ukiyo::TerrainSettings red = ts;
         red.layers[0].colour = glm::vec3(1.0f, 0.1f, 0.1f);
@@ -12113,6 +14107,74 @@ int MainWindow::runSelfTest() {
                                               in.terrain->foliage[0].shape == ukiyo::FoliageShape::Cone);
         check(reopenedTrees, "foliage: the reopened scene has the trees");
 
+        // Step 3b: grass (item 19). Blades are scattered over the tile, drawn from one instanced call per chunk batch,
+        // and turning the grass off gives the frame back. A camera close to the tile: a blade is centimetres wide.
+        int grassIndex = -1;
+        {
+            std::vector<InstanceInfo> now2;
+            runOnWorker([&] { now2 = worker_->instances(); });
+            for (size_t i = 0; i < now2.size(); ++i)
+                if (now2[i].terrain && QString::fromStdString(now2[i].terrain->heightmap) == raw) grassIndex = int(i);
+        }
+        ukiyo::TerrainSettings meadow = forest;
+        meadow.grass.enabled = true;
+        meadow.grass.density = 0.45f;
+        meadow.grass.height = 0.9f;
+        meadow.grass.scaleMin = 0.8f;
+        meadow.grass.scaleMax = 1.2f;
+        meadow.grass.includeLayers = 1u << 0;
+        meadow.grass.bandNear = 80.0f;
+        meadow.grass.bandMid = 160.0f;
+        meadow.grass.cullDistance = 400.0f;
+        ukiyo::OrbitCamera gcam = tcam;
+        gcam.distance = 60.0f;
+        gcam.pitch = 0.35f;
+        QImage bareShot, meadowShot, restoredShot;
+        bool grassOk = false, restoredOk = false;
+        QString grassErr;
+        runOnWorker([&] {
+            bareShot = worker_->renderNow(gcam).convertToFormat(QImage::Format_RGB32);
+            grassOk = worker_->setInstanceTerrain(grassIndex, meadow, &grassErr);
+            meadowShot = worker_->renderNow(gcam).convertToFormat(QImage::Format_RGB32);
+        });
+        auto pixelDiff = [](const QImage& a, const QImage& b) -> long {
+            if (a.isNull() || a.size() != b.size()) return -1;
+            long n = 0;
+            for (int y = 0; y < a.height(); ++y)
+                for (int x = 0; x < a.width(); ++x)
+                    if (a.pixel(x, y) != b.pixel(x, y)) ++n;
+            return n;
+        };
+        const long grassDiff = pixelDiff(bareShot, meadowShot);
+        check(grassOk && grassIndex >= 0 && grassDiff > 500, "grass: blades scattered on the tile are drawn",
+              QString("%1 pixels differ").arg(grassDiff));
+        meadowShot.save(projectRoot_ + QStringLiteral("/renders/terrain_grass.png"));
+        QJsonObject grassBlock;
+        const QJsonArray grassModels = sceneDocument().value(QStringLiteral("models")).toArray();
+        for (const QJsonValue& mv : grassModels) {
+            const QJsonObject terrain = mv.toObject().value(QStringLiteral("terrain")).toObject();
+            if (terrain.value(QStringLiteral("heightmap")).toString().endsWith(QStringLiteral(".u16")))
+                grassBlock = terrain.value(QStringLiteral("grass")).toObject();
+        }
+        const QString grassDetail = QString::fromUtf8(QJsonDocument(grassBlock).toJson(QJsonDocument::Compact));
+        // The values are compared against what was pushed (not against numbers written twice): the document has to
+        // carry the scatter, the two bands and the layer mask the settings above asked for.
+        auto close = [](double got, double want) { return std::fabs(got - want) < 1e-4; };
+        check(grassBlock.value(QStringLiteral("enabled")).toBool(false) &&
+                  close(grassBlock.value(QStringLiteral("density")).toDouble(-1.0), meadow.grass.density) &&
+                  close(grassBlock.value(QStringLiteral("bandNear")).toDouble(-1.0), meadow.grass.bandNear) &&
+                  close(grassBlock.value(QStringLiteral("bandMid")).toDouble(-1.0), meadow.grass.bandMid) &&
+                  close(grassBlock.value(QStringLiteral("cullDistance")).toDouble(-1.0), meadow.grass.cullDistance) &&
+                  grassBlock.value(QStringLiteral("includeLayers")).toArray().size() == 1,
+              "grass: the scene document holds the scatter, the bands and the layer mask", grassDetail);
+        runOnWorker([&] {
+            restoredOk = worker_->setInstanceTerrain(grassIndex, forest, &grassErr);
+            restoredShot = worker_->renderNow(gcam).convertToFormat(QImage::Format_RGB32);
+        });
+        const long restoredDiff = pixelDiff(bareShot, restoredShot);
+        check(restoredOk && restoredDiff >= 0 && restoredDiff < 50, "grass: turning it off gives the frame back",
+              QString("%1 pixels differ").arg(restoredDiff));
+
         // Removing the terrain takes the tile away again.
         bool cleared = false;
         runOnWorker([&] { cleared = worker_->setInstanceTerrain(index, std::nullopt); });
@@ -12126,6 +14188,121 @@ int MainWindow::runSelfTest() {
 
     // --- 18. Terrain editing (item 18, steps 4 to 6): see selfTestTerrainEdits in main_window_terrain.cpp ---
     selfTestTerrainEdits(check);
+
+    // --- 19. Scene lights (item 6): authored, saved, clamped and read back. Last, because it opens scenes and
+    // opening a scene resets the terrain edits and instance indices the blocks above rely on. ---
+    {
+        const QString one = projectRoot_ + QStringLiteral("/renders/roundtrip_test.ukscene");
+        const QString tmpLi = QDir::tempPath() + QStringLiteral("/ukiyo_selftest_lights.ukscene");
+        check(readScene(one) && lights_.empty(), "lights: a scene without lights has none");
+        QJsonObject noLights = sceneDocument();
+        check(!noLights.contains(QStringLiteral("lights")),
+              "lights: a scene without lights writes no lights key, so its file does not change");
+
+        // Add a point light through the same call the Create menu uses, and a spot.
+        addLight(1);
+        addLight(2);
+        check(lights_.size() == 2 && lights_[0].type == ukiyo::LightType::Point &&
+                  lights_[1].type == ukiyo::LightType::Spot,
+              "lights: the Create menu's two entries add a point light and a spot light");
+        bool hierarchyShowsPoint = false, hierarchyShowsSpot = false;
+        for (QTreeWidgetItemIterator it(hierarchy_); *it; ++it) {
+            const QString t = (*it)->text(0);
+            if (t.startsWith(QStringLiteral("Point Light"))) hierarchyShowsPoint = true;
+            if (t.startsWith(QStringLiteral("Spot Light"))) hierarchyShowsSpot = true;
+        }
+        check(hierarchyShowsPoint && hierarchyShowsSpot, "lights: each light gets a Hierarchy row");
+
+        // A change made on the light's page reaches the list and the document.
+        showSceneLightProperties(0);
+        QWidget* page = inspector_->widget();
+        auto* radius = page ? page->findChild<QDoubleSpinBox*>(QStringLiteral("lightRadius")) : nullptr;
+        auto* intensity = page ? page->findChild<QDoubleSpinBox*>(QStringLiteral("lightIntensity")) : nullptr;
+        check(radius && intensity, "lights: the light page has a reach and an intensity field");
+        if (radius && intensity) {
+            radius->setValue(12.5);
+            intensity->setValue(7.25);
+            check(std::fabs(lights_[0].radius - 12.5f) < 1e-4f && std::fabs(lights_[0].intensity - 7.25f) < 1e-4f,
+                  "lights: a field change is written into the scene's light");
+        }
+        QJsonObject withLights = sceneDocument();
+        const QJsonArray arr = withLights.value(QStringLiteral("lights")).toArray();
+        check(arr.size() == 2 && arr[0].toObject().value(QStringLiteral("type")).toString() == QStringLiteral("point") &&
+                  std::fabs(arr[0].toObject().value(QStringLiteral("radius")).toDouble() - 12.5) < 1e-4,
+              "lights: the document holds both lights with what the page wrote");
+
+        check(writeScene(tmpLi) && readScene(tmpLi) && lights_.size() == 2 &&
+                  std::fabs(lights_[0].radius - 12.5f) < 1e-4f,
+              "lights: the lights survive a save and reopen");
+
+        // A hand-edited file cannot ask for a light that shades nothing, or one that floods the frame; and a scene
+        // has one sun, so a second directional light is read as a point light rather than silently dropped.
+        const std::vector<ukiyo::SceneLight> parsed =
+            scene_file::readLights(QJsonArray{QJsonObject{{QStringLiteral("type"), QStringLiteral("point")},
+                                                          {QStringLiteral("radius"), 0.0},
+                                                          {QStringLiteral("intensity"), 1000.0}},
+                                               QJsonObject{{QStringLiteral("type"), QStringLiteral("directional")}},
+                                               QJsonObject{{QStringLiteral("type"), QStringLiteral("directional")}}});
+        check(parsed.size() == 3 && parsed[0].radius >= 0.05f && parsed[0].intensity <= 64.0f &&
+                  parsed[1].type == ukiyo::LightType::Directional && parsed[2].type == ukiyo::LightType::Point,
+              "lights: out-of-range values are clamped and only one light is the sun");
+
+        // Deleting one leaves the other, and reopening a scene without lights clears the list.
+        deleteLight(0);
+        check(lights_.size() == 1 && lights_[0].type == ukiyo::LightType::Spot, "lights: Delete Light removes that light");
+        check(readScene(one) && lights_.empty(), "lights: opening a scene without lights clears them");
+        QFile::remove(tmpLi);
+    }
+
+    // --- 20. Inspector search (Flax 1.13's Properties panel search): the box above the page narrows it to the rows the
+    // query matches, section by section, opens a section whose rows matched, and puts everything back when cleared.
+    {
+        QWidget* page = new QWidget;
+        QVBoxLayout* v = new QVBoxLayout(page);
+        QFormLayout* light = editor::addSection(v, QStringLiteral("Lighting"));
+        QLabel* sunAngle = new QLabel(QStringLiteral("32"));
+        QLabel* shadowSoft = new QLabel(QStringLiteral("0.35"));
+        light->addRow(QStringLiteral("Sun Angle"), sunAngle);
+        light->addRow(QStringLiteral("Shadow Softness"), shadowSoft);
+        QFormLayout* render = editor::addSection(v, QStringLiteral("Render"));
+        QLabel* exposure = new QLabel(QStringLiteral("0.85"));
+        render->addRow(QStringLiteral("Exposure"), exposure);
+        setInspectorPage(page);
+        const QList<editor::Foldout*> folds = page->findChildren<editor::Foldout*>();
+        check(folds.size() == 2 && folds[0]->title() == QStringLiteral("Lighting") &&
+                  folds[1]->title() == QStringLiteral("Render"),
+              "inspector search: the page reports its two sections");
+
+        inspectorFilter_->setText(QStringLiteral("sun"));
+        check(folds[0]->isVisibleTo(page) && !folds[1]->isVisibleTo(page),
+              "inspector search: only the section with a match stays");
+        check(sunAngle->isVisibleTo(page) && !shadowSoft->isVisibleTo(page),
+              "inspector search: the matching row shows, the other hides");
+        check(folds[0]->isOpen(), "inspector search: a matched section is open, whatever it was before");
+
+        inspectorFilter_->setText(QStringLiteral("0.35"));
+        check(shadowSoft->isVisibleTo(page) && !sunAngle->isVisibleTo(page),
+              "inspector search: a value is searchable, not just a label");
+
+        inspectorFilter_->setText(QStringLiteral("xylophone"));
+        check(!folds[0]->isVisibleTo(page) && !folds[1]->isVisibleTo(page),
+              "inspector search: a query that matches nothing hides every section");
+
+        inspectorFilter_->clear();
+        check(sunAngle->isVisibleTo(page) && shadowSoft->isVisibleTo(page) && exposure->isVisibleTo(page) &&
+                  folds[0]->isVisibleTo(page) && folds[1]->isVisibleTo(page),
+              "inspector search: clearing the box restores every row and section");
+
+        bool bound = false;
+        QString key;
+        for (QAction* a : findChildren<QAction*>())
+            if (a->text() == QLatin1String("Find in Inspector")) {
+                bound = true;
+                key = a->shortcut().toString(QKeySequence::PortableText);
+            }
+        check(bound && key == QLatin1String("Ctrl+Shift+F"), "inspector search: Find in Inspector is bound to Ctrl+Shift+F",
+              key);
+    }
 
     std::printf("selftest: %d passed, %d failed\n", passed, failed);
     return failed;
@@ -12166,15 +14343,45 @@ void MainWindow::saveProjectSettingsFile() {
     postToWorker([this, copy = projSettings_] { worker_->setProjectSettings(copy); });
 }
 
+// One definition, above both of its callers: the play-mode key path in eventFilter and the Rebind button on the
+// input page, which live on either side of several hundred lines of unrelated code.
+namespace {
+
+// A Qt key event as the engine's portable key text. Qt spells the numpad "Num+" and the engine spells the same key
+// "NumPlus", so those are translated here; everything else Qt already writes the way the engine reads it (Del, Ins,
+// PgUp, Esc, Shift, and punctuation as the character it prints).
+QString portableKeyForQt(int key, Qt::KeyboardModifiers mods) {
+    if (mods & Qt::KeypadModifier) {
+        if (key >= Qt::Key_0 && key <= Qt::Key_9) return QStringLiteral("Num%1").arg(key - Qt::Key_0);
+        switch (key) {
+        case Qt::Key_Plus: return QStringLiteral("NumPlus");
+        case Qt::Key_Minus: return QStringLiteral("NumMinus");
+        case Qt::Key_Asterisk: return QStringLiteral("NumMultiply");
+        case Qt::Key_Slash: return QStringLiteral("NumDivide");
+        case Qt::Key_Period: return QStringLiteral("NumPeriod");
+        default: break;
+        }
+    }
+    // QKeySequence has no (int) constructor in Qt 6, so QKeySequence(key) silently converts the key code to a
+    // StandardKey -- Qt::Key_W becomes an empty sequence, and a rebind or a play-mode keypress was dropped without a
+    // word. Build the combination explicitly.
+    const QKeyCombination combo(mods & ~Qt::KeypadModifier, Qt::Key(key));
+    return QKeySequence(combo).toString(QKeySequence::PortableText);
+}
+
+} // namespace
+
 bool MainWindow::eventFilter(QObject* watched, QEvent* e) {
-    if (playing_ && (e->type() == QEvent::KeyPress || e->type() == QEvent::KeyRelease) && gameViewActive()) {
+    if (playing_ && (e->type() == QEvent::KeyPress || e->type() == QEvent::KeyRelease)) {
         auto* ke = static_cast<QKeyEvent*>(e);
         const QWidget* focus = QApplication::focusWidget();
         // Typing in a field must not press a game action.
         const bool typing = qobject_cast<const QLineEdit*>(focus) || qobject_cast<const QAbstractSpinBox*>(focus) ||
                             qobject_cast<const QTextEdit*>(focus) || qobject_cast<const QPlainTextEdit*>(focus);
+        // The Scene view keeps its own shortcuts (W and E pick the gizmo) out of the game while editing. While
+        // playing, the game owns the keyboard: that is what the Play button means.
         if (!ke->isAutoRepeat() && !typing) {
-            const QString key = QKeySequence(ke->key()).toString(QKeySequence::PortableText);
+            const QString key = portableKeyForQt(ke->key(), Qt::NoModifier);
             if (!key.isEmpty()) {
                 const bool down = e->type() == QEvent::KeyPress;
                 postToWorker([this, key, down] { worker_->setKeyHeld(key, down); });
@@ -12184,17 +14391,66 @@ bool MainWindow::eventFilter(QObject* watched, QEvent* e) {
     return QMainWindow::eventFilter(watched, e);
 }
 
+namespace {
+
+// While a rebind is armed, the application's key events are the capture. Play mode is fed by the Game view's key
+// events (World::setKeyHeld), not by a poller, so a page that wants to hear a key has to take the same events. It
+// swallows them, so the table does not also start editing a cell on the letter that was pressed.
+class RebindKeyFilter : public QObject {
+public:
+    std::function<void(QKeyEvent* event)> onKey;
+    bool eventFilter(QObject* watched, QEvent* event) override {
+        if (!onKey) return QObject::eventFilter(watched, event);
+        // A key pressed to bind something must not also run the menu action it is a shortcut for: accepting the
+        // override is how Qt is told the key is spoken for.
+        if (event->type() == QEvent::ShortcutOverride) {
+            event->accept();
+            return true;
+        }
+        if (event->type() == QEvent::KeyPress) {
+            onKey(static_cast<QKeyEvent*>(event));
+            return true;
+        }
+        return QObject::eventFilter(watched, event);
+    }
+};
+
+// Unity's keyboard control name -> the key this editor's tables work in. "<Keyboard>/space" -> "Space"; a path on
+// another device has no portable spelling, which is what tells the table to keep the path instead of a key.
+QString portableKeyForPath(const std::string& path) {
+    if (path.empty()) return QString();
+    ukiyo::input::DeviceKind kind;
+    if (!ukiyo::input::deviceKindFromPath(path, &kind) || kind != ukiyo::input::DeviceKind::Keyboard) return QString();
+    return QString::fromStdString(
+        ukiyo::input::portableKeyFromControlName(ukiyo::input::controlNameFromPath(path)));
+}
+
+// The path a table cell describes, assuming the keyboard when the text is just a key: the project setting is a key,
+// and the runtime binding is a path, so this is the one-way bridge between them.
+std::string pathForPortableKey(const QString& key) {
+    // A path names a control, and controls are named the way the engine spells them ("j", "space", "leftShift").
+    // Writing the portable text straight in produced "<Keyboard>/J", which resolveBindingText — correctly — rejects:
+    // the engine has no control called "J".
+    std::string control;
+    if (ukiyo::input::controlNameFromPortableKey(key.toStdString(), &control)) return "<Keyboard>/" + control;
+    return "<Keyboard>/" + key.toStdString();
+}
+
+} // namespace
+
 void MainWindow::fillInputPage(QVBoxLayout* v) {
     QFormLayout* f = addSection(v, QStringLiteral("Input"));
     QLabel* note = new QLabel(QStringLiteral(
-        "Each action names a key. A script asks for an action with ukiyo.actionDown(\"Name\"). "
-        "Keys pressed in the Game view reach the script during play. Changes apply the next time play starts."));
+        "Each action binds a control on a device; the table shows a bare key as that key on the keyboard, and any other "
+        "control as the path it is. A script asks for an action with ukiyo.actionDown(\"Name\"). Rebind listens for "
+        "the next key you press in this window and writes it; Esc cancels before a key arrives, which is the only undo "
+        "there is. Bindings apply the next time play starts."));
     note->setWordWrap(true);
     f->addRow(note);
 
     QTableWidget* table = new QTableWidget(0, 2);
     table->setObjectName(QStringLiteral("inputActionTable"));
-    table->setHorizontalHeaderLabels({QStringLiteral("Action"), QStringLiteral("Key")});
+    table->setHorizontalHeaderLabels({QStringLiteral("Action"), QStringLiteral("Binding")});
     table->horizontalHeader()->setStretchLastSection(true);
     table->verticalHeader()->setVisible(false);
     table->setSelectionBehavior(QAbstractItemView::SelectRows);
@@ -12211,40 +14467,182 @@ void MainWindow::fillInputPage(QVBoxLayout* v) {
             const int r = table->rowCount();
             table->insertRow(r);
             table->setItem(r, 0, new QTableWidgetItem(QString::fromStdString(a.name)));
-            table->setItem(r, 1, new QTableWidgetItem(QString::fromStdString(a.key)));
+            // A gamepad binding is not a key and stays as the path it is; a keyboard one is shown as the key, which
+            // is what a person types.
+            const QString portable = portableKeyForPath(a.key);
+            table->setItem(r, 1, new QTableWidgetItem(portable.isEmpty() ? QString::fromStdString(a.key) : portable));
         }
     };
     refill();
 
     // Checks every row. A bad row shows a message and nothing is saved until it is fixed.
-    auto commit = [this, table, status] {
+    auto commit = [this, table, status](bool keepStatus = false) {
+        // The cells are rewritten as they are accepted (a typed "q" reads "Q"), and that must not come back as another
+        // edit. The blocker covers the writes; the call that is running is already past the signal.
+        QSignalBlocker block(table);
         std::vector<engine::InputAction> actions;
         QStringList names;
         for (int r = 0; r < table->rowCount(); ++r) {
             const QString name = cellText(table, r, 0);
-            const QString keyText = cellText(table, r, 1);
-            if (name.isEmpty() && keyText.isEmpty()) continue;   // a new row that is still empty
+            const QString binding = cellText(table, r, 1);
+            if (name.isEmpty() && binding.isEmpty()) continue;   // a new row that is still empty
             QString problem;
             if (name.isEmpty()) problem = QStringLiteral("Row %1 needs an action name.").arg(r + 1);
             else if (names.contains(name)) problem = QStringLiteral("\"%1\" is listed twice.").arg(name);
-            else if (keyText.isEmpty()) problem = QStringLiteral("\"%1\" needs a key.").arg(name);
+            else if (binding.isEmpty()) problem = QStringLiteral("\"%1\" needs a key.").arg(name);
             if (!problem.isEmpty()) {
                 status->setText(problem);
                 return;
             }
-            const QString key = QKeySequence::fromString(keyText, QKeySequence::PortableText).toString(QKeySequence::PortableText);
-            if (key.isEmpty() || key.contains(QLatin1Char('+'))) {
-                status->setText(QStringLiteral("\"%1\" is not a single key. Use names such as W, Space, Left or Shift.").arg(keyText));
+            // A path names its own device; anything else is a key and has to be exactly one. The rule is the engine's
+            // (input/rebind.h), so the table and a game's own rebinding screen accept the same text.
+            std::string stored;
+            std::string why;
+            if (!ukiyo::input::resolveBindingText(binding.toStdString(), &stored, &why)) {
+                status->setText(QString::fromStdString(why));
                 return;
             }
+            // A keyboard binding reads as the key, not as its path ("Q", not "<Keyboard>/q"), and that is also how
+            // the cell is written back, so what was accepted is what is shown.
+            const QString key = portableKeyForPath(stored);
+            if (!key.isEmpty() && table->item(r, 1) && table->item(r, 1)->text() != key) table->item(r, 1)->setText(key);
             names << name;
-            actions.push_back({name.toStdString(), key.toStdString()});
+            actions.push_back({name.toStdString(), stored});
         }
-        status->clear();
         projSettings_.inputActions = actions;
+        if (!keepStatus) status->setText(QString());
         saveProjectSettingsFile();
     };
     connect(table, &QTableWidget::cellChanged, this, [commit](int, int) { commit(); });
+
+    // The capture: a row being listened for (-1: none) and the binding it had, so Escape can put it back. The key
+    // itself arrives through the filter below and goes to the render thread, where the live world's input state is.
+    struct Capture {
+        int row = -1;
+        std::string previous;
+        RebindKeyFilter* filter = nullptr;
+    };
+    auto capture = std::make_shared<Capture>();
+
+    auto endCapture = [this, table, status, capture](bool restore) {
+        if (capture->row < 0) return;
+        const int r = capture->row;
+        capture->row = -1;
+        if (capture->filter) {
+            qApp->removeEventFilter(capture->filter);
+            capture->filter->deleteLater();
+            capture->filter = nullptr;
+        }
+        runOnWorker([this] { if (worker_) worker_->cancelRebind(); });
+        if (restore) {
+            if (r < table->rowCount() && table->item(r, 1)) {
+                QSignalBlocker block(table);
+                table->item(r, 1)->setText(QString::fromStdString(capture->previous));
+            }
+            status->setStyleSheet(QStringLiteral(""));
+            status->setText(QStringLiteral("Rebind canceled."));
+        }
+        // A capture that bound a key leaves its own message up: the reason it ended is the interesting part.
+    };
+
+    auto finishCapture = [this, table, status, capture, endCapture, commit](int row, const std::string& path) {
+        // Two actions on one control is a bug that is invisible until someone presses it, so the dialog says so
+        // before it saves.
+        const QString shown = portableKeyForPath(path);
+        {
+            QSignalBlocker block(table);
+            if (row >= 0 && row < table->rowCount() && table->item(row, 1))
+                table->item(row, 1)->setText(shown.isEmpty() ? QString::fromStdString(path) : shown);
+        }
+        QStringList clashes;
+        for (int i = 0; i < table->rowCount(); ++i) {
+            if (i == row) continue;
+            const QString other = cellText(table, i, 1);
+            if (other.isEmpty()) continue;
+            const std::string otherPath = other.startsWith(QLatin1Char('<')) ? other.toStdString()
+                                                                             : pathForPortableKey(other);
+            if (otherPath == path) clashes << cellText(table, i, 0);
+        }
+        const QString name = QString::fromStdString(ukiyo::input::controlDisplayName(path));
+        if (clashes.isEmpty()) {
+            status->setStyleSheet(QStringLiteral(""));
+            status->setText(QStringLiteral("Bound %1.").arg(name));
+        } else {
+            status->setStyleSheet(redStatus());
+            status->setText(QStringLiteral("%1 is already used by %2.").arg(name, clashes.join(QStringLiteral(", "))));
+        }
+        endCapture(false);
+        // The cell was written under a signal blocker, so the save is explicit: this is the one edit the table did not
+        // make itself. The status keeps what the capture said, unless the row turned out to be invalid.
+        commit(true);
+    };
+
+    auto beginCapture = [this, table, status, capture, finishCapture, endCapture](int row) {
+        if (row < 0 || row >= table->rowCount()) {
+            status->setStyleSheet(redStatus());
+            status->setText(QStringLiteral("Select an action first."));
+            return;
+        }
+        // Arming a second row without pressing a key for the first: the old filter would stay on the application,
+        // swallowing keys for a row nobody is listening to.
+        if (capture->filter) {
+            qApp->removeEventFilter(capture->filter);
+            capture->filter->deleteLater();
+            capture->filter = nullptr;
+        }
+        capture->previous = table->item(row, 1) ? table->item(row, 1)->text().toStdString() : std::string();
+        capture->row = row;
+        table->selectRow(row);
+        const QString action = cellText(table, row, 0);
+        // Playing, the capture is handed to the engine, on the running world: that is the path a game uses, and it
+        // rebinds the live binding as well as the file. Stopped, there is no world to hand it to, so the page takes the
+        // key itself; what it writes is what the next Play reads.
+        if (worker_ && worker_->playing()) {
+            QString error;
+            runOnWorker([&] { error = worker_->beginRebind(action); });
+            if (!error.isEmpty()) {
+                capture->row = -1;
+                status->setStyleSheet(redStatus());
+                status->setText(error);
+                return;
+            }
+        }
+        status->setStyleSheet(QStringLiteral(""));
+        status->setText(QStringLiteral("Listening for %1 — press a key. Esc cancels.").arg(action));
+
+        auto* filter = new RebindKeyFilter;
+        filter->onKey = [this, table, status, capture, finishCapture, endCapture](QKeyEvent* key) {
+            if (capture->row < 0) return;
+            // Escape cancels here rather than through a QShortcut: this filter swallows the key events that a
+            // shortcut would need.
+            if (key->key() == Qt::Key_Escape) {
+                endCapture(true);
+                return;
+            }
+            // A modifier on its own is a bindable control (Shift, Ctrl), which is what a person expects from a key
+            // rebind: Qt reports it as the key with no text.
+            const QString portable = portableKeyForQt(key->key(), key->modifiers());
+            if (portable.isEmpty() || portable.contains(QLatin1Char('+'))) {
+                status->setText(QStringLiteral("Press a single key, or Esc to cancel."));
+                return;
+            }
+            const int row = capture->row;
+            std::string control;
+            if (!ukiyo::input::controlNameFromPortableKey(portable.toStdString(), &control)) {
+                status->setText(QStringLiteral("%1 is not a key this engine can bind. Try another.").arg(portable));
+                return;
+            }
+            // While playing the engine hears the key too, through the same door the Game view uses, so the running
+            // game's binding changes on the spot. Stopped, the key only reaches this page.
+            QString path;
+            if (worker_ && worker_->playing()) runOnWorker([&] { path = worker_->rebindKey(portable); });
+            finishCapture(row, path.isEmpty() ? pathForPortableKey(portable) : path.toStdString());
+        };
+        // On the application, not on the window: an event filter sees only the events sent to the object it is
+        // installed on, and a key press is delivered to whichever control has focus inside the settings window.
+        qApp->installEventFilter(filter);
+        capture->filter = filter;
+    };
 
     QPushButton* add = new QPushButton(QStringLiteral("Add Action"));
     add->setObjectName(QStringLiteral("inputAdd"));
@@ -12266,12 +14664,41 @@ void MainWindow::fillInputPage(QVBoxLayout* v) {
         for (int r : rows) table->removeRow(r);
         commit();
     });
+    QPushButton* rebind = new QPushButton(uiIcon("keyboard"), QStringLiteral("Rebind"));
+    rebind->setObjectName(QStringLiteral("inputRebind"));
+    rebind->setToolTip(QStringLiteral("Listen for the next key and bind it to the selected action. Esc cancels."));
+    connect(rebind, &QPushButton::clicked, this, [table, beginCapture] { beginCapture(table->currentRow()); });
+    QPushButton* resetBinding = new QPushButton(QStringLiteral("Clear Binding"));
+    resetBinding->setObjectName(QStringLiteral("inputResetBinding"));
+    connect(resetBinding, &QPushButton::clicked, this, [table, status] {
+        const int r = table->currentRow();
+        if (r < 0 || r >= table->rowCount()) return;
+        if (table->item(r, 1)) table->item(r, 1)->setText(QString());
+        status->setStyleSheet(redStatus());
+        status->setText(QStringLiteral("\"%1\" needs a key.").arg(cellText(table, r, 0)));
+    });
     QWidget* buttons = new QWidget;
     QHBoxLayout* h = new QHBoxLayout(buttons);
     h->setContentsMargins(0, 0, 0, 0);
     h->addWidget(add);
     h->addWidget(remove);
+    h->addWidget(rebind);
+    h->addWidget(resetBinding);
     h->addStretch(1);
+
+    // The settings window is rebuilt per project; a capture it started must not outlive it. The filter goes first:
+    // left on the application it would keep swallowing every key press in the editor with nothing left to give them to.
+    QObject::connect(table, &QObject::destroyed, this, [this, capture] {
+        if (capture->filter) {
+            qApp->removeEventFilter(capture->filter);
+            capture->filter->deleteLater();
+            capture->filter = nullptr;
+        }
+        if (capture->row >= 0) {
+            capture->row = -1;
+            if (worker_) runOnWorker([this] { if (worker_) worker_->cancelRebind(); });
+        }
+    });
 
     f->addRow(table);
     f->addRow(buttons);
@@ -12579,8 +15006,89 @@ void MainWindow::fillBuildPage(QVBoxLayout* v) {
     down->setObjectName(QStringLiteral("buildSceneDown"));
     connect(down, &QPushButton::clicked, this, [move] { move(1); });
 
-    // The manifest lists the product and its scenes in build order. Packaging an executable is not
-    // part of it yet.
+    // The start scene: the first entry unless the author picks another. Stored in project settings so the choice
+    // survives a restart, and validated by the manifest parser, which refuses a start scene that is not in the list.
+    QComboBox* startScene = new QComboBox;
+    startScene->setObjectName(QStringLiteral("buildStartScene"));
+    auto refillStart = [this, startScene] {
+        QSignalBlocker block(startScene);
+        startScene->clear();
+        startScene->addItem(QStringLiteral("(first scene)"), QString());
+        for (const std::string& s : projSettings_.buildScenes)
+            startScene->addItem(QString::fromStdString(s), QString::fromStdString(s));
+        const int idx = startScene->findData(QString::fromStdString(projSettings_.buildStartScene));
+        startScene->setCurrentIndex(idx < 0 ? 0 : idx);
+    };
+    refillStart();
+    connect(startScene, QOverload<int>::of(&QComboBox::currentIndexChanged), this, [this, startScene] {
+        projSettings_.buildStartScene = startScene->currentData().toString().toStdString();
+        saveProjectSettingsFile();
+    });
+
+    // HUD font: every .ttf under assets/fonts, plus none. The player draws the HUD with this face; without one it still
+    // draws panels, just no words.
+    QComboBox* font = new QComboBox;
+    font->setObjectName(QStringLiteral("buildFont"));
+    auto refillFonts = [this, font] {
+        QSignalBlocker block(font);
+        font->clear();
+        font->addItem(QStringLiteral("(no HUD text)"), QString());
+        QDir dir(projectRoot_ + QStringLiteral("/assets/fonts"));
+        const QStringList files = dir.entryList({QStringLiteral("*.ttf"), QStringLiteral("*.otf")}, QDir::Files, QDir::Name);
+        for (const QString& f : files) {
+            const QString rel = QStringLiteral("assets/fonts/") + f;
+            font->addItem(f, rel);
+        }
+        const int idx = font->findData(QString::fromStdString(projSettings_.buildFont));
+        font->setCurrentIndex(idx < 0 ? 0 : idx);
+    };
+    refillFonts();
+    connect(font, QOverload<int>::of(&QComboBox::currentIndexChanged), this, [this, font] {
+        projSettings_.buildFont = font->currentData().toString().toStdString();
+        saveProjectSettingsFile();
+    });
+
+    QSpinBox* winW = new QSpinBox;
+    winW->setObjectName(QStringLiteral("buildWidth"));
+    winW->setRange(320, 7680);
+    winW->setSingleStep(16);
+    winW->setValue(projSettings_.buildWidth);
+    QSpinBox* winH = new QSpinBox;
+    winH->setObjectName(QStringLiteral("buildHeight"));
+    winH->setRange(240, 4320);
+    winH->setSingleStep(16);
+    winH->setValue(projSettings_.buildHeight);
+    connect(winW, QOverload<int>::of(&QSpinBox::valueChanged), this, [this](int v) {
+        projSettings_.buildWidth = v;
+        saveProjectSettingsFile();
+    });
+    connect(winH, QOverload<int>::of(&QSpinBox::valueChanged), this, [this](int v) {
+        projSettings_.buildHeight = v;
+        saveProjectSettingsFile();
+    });
+    QCheckBox* fullscreen = new QCheckBox(QStringLiteral("Fullscreen"));
+    fullscreen->setObjectName(QStringLiteral("buildFullscreen"));
+    fullscreen->setChecked(projSettings_.buildFullscreen);
+    connect(fullscreen, &QCheckBox::toggled, this, [this](bool on) {
+        projSettings_.buildFullscreen = on;
+        saveProjectSettingsFile();
+    });
+    QWidget* windowRow = new QWidget;
+    QHBoxLayout* wr = new QHBoxLayout(windowRow);
+    wr->setContentsMargins(0, 0, 0, 0);
+    wr->addWidget(winW);
+    wr->addWidget(new QLabel(QStringLiteral("x")));
+    wr->addWidget(winH);
+    wr->addWidget(fullscreen);
+    wr->addStretch(1);
+    QLabel* playHint = new QLabel(QStringLiteral("Run: <b>ukiyo_player</b> (build/ukiyo_player, or %1 on PATH)")
+                                      .arg(QStringLiteral("ukiyo_player")));
+    playHint->setObjectName(QStringLiteral("buildHint"));
+    playHint->setWordWrap(true);
+    playHint->setTextInteractionFlags(Qt::TextSelectableByMouse);
+
+    // The whole manifest: product, start scene, ordered scenes, window, HUD font. The player is the reader, so the writer
+    // and the reader share parseBuildManifest's rules: this page cannot write a file the player would reject.
     QPushButton* write = new QPushButton(QStringLiteral("Write Build Manifest"));
     write->setObjectName(QStringLiteral("buildWrite"));
     connect(write, &QPushButton::clicked, this, [this, buildStatus] {
@@ -12589,32 +15097,166 @@ void MainWindow::fillBuildPage(QVBoxLayout* v) {
             return;
         }
         QStringList missing;
-        QJsonArray arr;
         for (const std::string& s : projSettings_.buildScenes) {
             const QString rel = QString::fromStdString(s);
             if (!QFileInfo::exists(projectRoot_ + QLatin1Char('/') + rel)) missing << rel;
-            arr.append(rel);
         }
         if (!missing.isEmpty()) {
             buildStatus->setText(QStringLiteral("Missing scene file: ") + missing.join(QStringLiteral(", ")));
             return;
         }
-        QJsonObject manifest;
-        manifest[QStringLiteral("format")] = QStringLiteral("ukiyo-build");
-        manifest[QStringLiteral("version")] = 1;
-        manifest[QStringLiteral("productName")] = QString::fromStdString(projSettings_.productName);
-        manifest[QStringLiteral("scenes")] = arr;
+        ukiyo::BuildManifest m;
+        m.name = projSettings_.productName;
+        m.scenes = projSettings_.buildScenes;
+        m.startScene = projSettings_.buildStartScene;
+        m.font = projSettings_.buildFont;
+        m.window.width = projSettings_.buildWidth;
+        m.window.height = projSettings_.buildHeight;
+        m.window.fullscreen = projSettings_.buildFullscreen;
+        if (!m.font.empty() && !QFileInfo::exists(projectRoot_ + QLatin1Char('/') + QString::fromStdString(m.font))) {
+            buildStatus->setText(QStringLiteral("Missing HUD font: %1").arg(QString::fromStdString(m.font)));
+            return;
+        }
+        const QString json = QString::fromStdString(ukiyo::buildManifestJson(m));
+        ukiyo::BuildManifest check;
+        std::string error;
+        if (!ukiyo::parseBuildManifest(json.toStdString(), &check, &error)) {
+            buildStatus->setText(QStringLiteral("The manifest would not load: %1").arg(QString::fromStdString(error)));
+            return;
+        }
         QDir().mkpath(projectRoot_ + QStringLiteral("/Build"));
         QFile out(projectRoot_ + QStringLiteral("/Build/build.json"));
         if (!out.open(QIODevice::WriteOnly | QIODevice::Truncate)) {
             buildStatus->setText(QStringLiteral("Could not write Build/build.json."));
             return;
         }
-        out.write(QJsonDocument(manifest).toJson(QJsonDocument::Indented));
+        out.write(json.toUtf8());
         out.close();
-        buildStatus->setText(QStringLiteral("Wrote Build/build.json with %1 scene(s). Packaging a playable executable is not included yet.")
-                                 .arg(arr.size()));
+        buildStatus->setText(QStringLiteral("Wrote Build/build.json: %1 scene(s), %2x%3. Run it with ukiyo_player --project .")
+                                 .arg(m.scenes.size())
+                                 .arg(m.window.width)
+                                 .arg(m.window.height));
     });
+
+    // --- Package: the editor runs ukiyo_pack, so shipping is not a command the author has to remember ---
+    QFormLayout* pk = addSection(v, QStringLiteral("Package"));
+    QComboBox* target = new QComboBox;
+    target->setObjectName(QStringLiteral("buildTarget"));
+    target->addItem(QStringLiteral("Linux (x86-64)"), QStringLiteral("linux"));
+    target->addItem(QStringLiteral("Windows (x86-64)"), QStringLiteral("windows"));
+    target->addItem(QStringLiteral("Android (arm64-v8a APK)"), QStringLiteral("android"));
+    target->setCurrentIndex(std::max(0, target->findData(editor::prefs::text(QStringLiteral("build/target"), QStringLiteral("linux")))));
+
+    QLineEdit* version = new QLineEdit(editor::prefs::text(QStringLiteral("build/version"), QStringLiteral("0.1.0")));
+    version->setObjectName(QStringLiteral("buildVersion"));
+    version->setToolTip(QStringLiteral("Written into Build/build.json as \"version\" before packaging"));
+    QLineEdit* icon = new QLineEdit(editor::prefs::text(QStringLiteral("build/icon"), QString()));
+    icon->setObjectName(QStringLiteral("buildIcon"));
+    icon->setPlaceholderText(QStringLiteral("assets/icon.png (optional)"));
+    icon->setToolTip(QStringLiteral("Copied into the package as icon.png, where the platform's packaging step picks it up"));
+
+    QPushButton* package = new QPushButton(QStringLiteral("Package and Run"));
+    package->setObjectName(QStringLiteral("buildPackage"));
+    package->setToolTip(QStringLiteral("Writes the manifest, runs ukiyo_pack for the chosen target, and starts the package"));
+    QLabel* packageStatus = new QLabel;
+    packageStatus->setObjectName(QStringLiteral("buildPackageStatus"));
+    packageStatus->setWordWrap(true);
+    packageStatus->setTextInteractionFlags(Qt::TextSelectableByMouse);
+
+    connect(target, QOverload<int>::of(&QComboBox::currentIndexChanged), this, [target](int i) {
+        editor::prefs::set(QStringLiteral("build/target"), target->itemData(i).toString());
+    });
+    connect(version, &QLineEdit::editingFinished, this, [version] {
+        editor::prefs::set(QStringLiteral("build/version"), version->text().trimmed());
+    });
+    connect(icon, &QLineEdit::editingFinished, this, [icon] {
+        editor::prefs::set(QStringLiteral("build/icon"), icon->text().trimmed());
+    });
+    connect(package, &QPushButton::clicked, this, [this, target, version, icon, packageStatus] {
+        // The manifest is the package's input, so a package without one is refused rather than guessed at.
+        const QString manifest = projectRoot_ + QStringLiteral("/Build/build.json");
+        if (!QFileInfo::exists(manifest)) {
+            packageStatus->setText(QStringLiteral("Write the build manifest first; the package ships what it lists."));
+            return;
+        }
+        const QString versionText = version->text().trimmed();
+        if (!versionText.isEmpty()) {
+            std::string err;
+            if (!ukiyo::pack::setManifestVersion(manifest.toStdString(), versionText.toStdString(), &err)) {
+                packageStatus->setText(QStringLiteral("Could not set the version: ") + QString::fromStdString(err));
+                return;
+            }
+        }
+        // The tool and the player both live in the build folder of the checkout this editor belongs to.
+        const QString buildDir = QDir(QStringLiteral(UKIYO_ROOT) + QStringLiteral("/build")).absolutePath();
+        QString tool = QDir(buildDir).absoluteFilePath(QStringLiteral("ukiyo_pack"));
+        if (!QFileInfo::exists(tool)) tool = QStringLiteral("ukiyo_pack");
+        ukiyo::pack::Target t = ukiyo::pack::Target::Linux;
+        const QString platform = target->currentData().toString();
+        if (platform == QLatin1String("windows")) t = ukiyo::pack::Target::Windows;
+        else if (platform == QLatin1String("android")) t = ukiyo::pack::Target::Android;
+        QString player = QDir(buildDir).absoluteFilePath(t == ukiyo::pack::Target::Windows
+                                                            ? QStringLiteral("ukiyo_player.exe")
+                                                            : QStringLiteral("ukiyo_player"));
+        if (!QFileInfo::exists(player)) {
+            packageStatus->setText(QStringLiteral("No player at %1. Build the player (cmake --build build --target ukiyo_player) first.")
+                                       .arg(player));
+            return;
+        }
+        ukiyo::pack::PackRequest request;
+        request.project = ".";   // the tool runs with the project as its working directory
+        request.player = player.toStdString();
+        request.shaders = QDir(buildDir).absoluteFilePath(QStringLiteral("shaders")).toStdString();
+        request.outDir = ukiyo::pack::defaultOutDir(projectRoot_.toStdString(), t);
+        request.zip = request.outDir + ".zip";
+        request.target = t;
+        request.root = QStringLiteral(UKIYO_ROOT).toStdString();
+        QStringList args;
+        for (const std::string& a : ukiyo::pack::packArgs(request)) args << QString::fromStdString(a);
+        packageStatus->setText(QStringLiteral("Packaging %1...").arg(platform));
+        log(QStringLiteral("package: %1 %2").arg(tool, args.join(QLatin1Char(' '))));
+        QProcess proc;
+        proc.setWorkingDirectory(projectRoot_);
+        proc.start(tool, args);
+        if (!proc.waitForStarted(5000)) {
+            packageStatus->setText(QStringLiteral("Could not start %1").arg(tool));
+            return;
+        }
+        proc.waitForFinished(600000);
+        const QString out = QString::fromLocal8Bit(proc.readAllStandardOutput()).trimmed();
+        const QString err = QString::fromLocal8Bit(proc.readAllStandardError()).trimmed();
+        if (!out.isEmpty()) log(out);
+        if (!err.isEmpty()) log(err);
+        if (proc.exitStatus() != QProcess::NormalExit || proc.exitCode() != 0) {
+            packageStatus->setText(QStringLiteral("ukiyo_pack failed (%1). See the Console.").arg(proc.exitCode()));
+            return;
+        }
+        packageStatus->setText(QStringLiteral("Packaged into %1").arg(QString::fromStdString(request.outDir)));
+        // The icon ships with the package. Nothing in the player reads it yet; a platform packaging step does (the
+        // Android assembly in CI is the one that exists), and a file that is not copied cannot be picked up at all.
+        const QString iconPath = icon->text().trimmed();
+        if (!iconPath.isEmpty()) {
+            const QString from = QDir(projectRoot_).absoluteFilePath(iconPath);
+            const QString to = QDir(QString::fromStdString(request.outDir)).absoluteFilePath(QStringLiteral("icon.png"));
+            if (QFileInfo::exists(from) && !QFile::copy(from, to)) log(QStringLiteral("package: could not copy ") + from);
+        }
+        // Run it: the package is a folder with the player inside, so starting the game is starting that file.
+        QString exe = QDir(QString::fromStdString(request.outDir)).absoluteFilePath(t == ukiyo::pack::Target::Windows
+                                                                                     ? QStringLiteral("ukiyo_player.exe")
+                                                                                     : QStringLiteral("ukiyo_player"));
+        if (QFileInfo::exists(exe)) {
+            if (!QProcess::startDetached(exe, {QStringLiteral("--project"), QString::fromStdString(request.outDir)},
+                                         QString::fromStdString(request.outDir))) {
+                packageStatus->setText(packageStatus->text() + QStringLiteral(" (the package would not start)"));
+            }
+        }
+    });
+
+    pk->addRow(QStringLiteral("Target"), target);
+    pk->addRow(QStringLiteral("Version"), version);
+    pk->addRow(QStringLiteral("Icon"), icon);
+    pk->addRow(package);
+    pk->addRow(packageStatus);
 
     QWidget* sceneButtons = new QWidget;
     QHBoxLayout* h = new QHBoxLayout(sceneButtons);
@@ -12628,12 +15270,567 @@ void MainWindow::fillBuildPage(QVBoxLayout* v) {
     f->addRow(QStringLiteral("Product name"), product);
     f->addRow(QStringLiteral("Scenes (build order)"), scenes);
     f->addRow(sceneButtons);
+    f->addRow(QStringLiteral("Start scene"), startScene);
+    f->addRow(QStringLiteral("Window"), windowRow);
+    f->addRow(QStringLiteral("HUD font"), font);
+    f->addRow(playHint);
     f->addRow(write);
     f->addRow(buildStatus);
-    settingSyncers_.push_back([syncProduct, refillScenes] {
+    settingSyncers_.push_back([this, syncProduct, refillScenes, refillStart, refillFonts, winW, winH, fullscreen] {
         syncProduct();
         refillScenes();
+        refillStart();
+        refillFonts();
+        QSignalBlocker b1(winW), b2(winH), b3(fullscreen);
+        winW->setValue(projSettings_.buildWidth);
+        winH->setValue(projSettings_.buildHeight);
+        fullscreen->setChecked(projSettings_.buildFullscreen);
     });
+}
+
+// --- Assets -------------------------------------------------------------------------------------
+//
+// The page that makes an asset a thing with an identity. Every file under the project gets a `.meta` sidecar the first
+// time this page runs (or the project is opened), holding the GUID that survives a rename and the importer settings that
+// decide how the asset enters a scene. The two things an author actually needs are here: which references are broken,
+// and one button that puts the selected asset into the open scene with its import settings applied.
+void MainWindow::fillAssetsPage(QVBoxLayout* v) {
+    QFormLayout* f = addSection(v, QStringLiteral("Assets"));
+    QLabel* note = new QLabel(QStringLiteral(
+        "Every asset has a <b>.meta</b> sidecar next to it: a GUID that belongs to the file rather than to its path, and "
+        "the import settings used when it enters a scene. Moving or renaming an asset inside the project keeps every "
+        "reference to it working; moving it outside this editor and pressing Repair does the same by GUID."));
+    note->setWordWrap(true);
+    f->addRow(note);
+
+    QTableWidget* table = new QTableWidget(0, 3);
+    table->setObjectName(QStringLiteral("assetTable"));
+    table->setHorizontalHeaderLabels({QStringLiteral("Asset"), QStringLiteral("Kind"), QStringLiteral("GUID")});
+    table->verticalHeader()->setVisible(false);
+    table->horizontalHeader()->setStretchLastSection(true);
+    table->setSelectionBehavior(QAbstractItemView::SelectRows);
+    table->setEditTriggers(QAbstractItemView::NoEditTriggers);
+    table->setMinimumHeight(180);
+
+    QDoubleSpinBox* importScale = new QDoubleSpinBox;
+    importScale->setObjectName(QStringLiteral("assetImportScale"));
+    importScale->setRange(0.001, 1000.0);
+    importScale->setDecimals(3);
+    importScale->setSingleStep(0.1);
+    importScale->setValue(1.0);
+    QDoubleSpinBox* importYaw = new QDoubleSpinBox;
+    importYaw->setObjectName(QStringLiteral("assetImportYaw"));
+    importYaw->setRange(-360.0, 360.0);
+    importYaw->setSingleStep(15.0);
+    QLineEdit* importMaterial = new QLineEdit;
+    importMaterial->setObjectName(QStringLiteral("assetImportMaterial"));
+    importMaterial->setPlaceholderText(QStringLiteral("assets/materials/name.ukmat (optional)"));
+
+    QLabel* status = new QLabel;
+    status->setObjectName(QStringLiteral("assetStatus"));
+    status->setWordWrap(true);
+    status->setTextInteractionFlags(Qt::TextSelectableByMouse);
+
+    // The scan result outlives the page: the buttons below work on it.
+    auto db = std::make_shared<ukiyo::AssetDatabase>();
+    auto selected = std::make_shared<int>(-1);
+
+    auto refill = [this, table, db] {
+        QSignalBlocker block(table);
+        table->setRowCount(static_cast<int>(db->assets.size()));
+        for (int i = 0; i < static_cast<int>(db->assets.size()); ++i) {
+            const ukiyo::AssetEntry& a = db->assets[i];
+            table->setItem(i, 0, new QTableWidgetItem(QString::fromStdString(a.path)));
+            table->setItem(i, 1, new QTableWidgetItem(QString::fromLatin1(ukiyo::assetKindName(a.meta.kind))));
+            table->setItem(i, 2, new QTableWidgetItem(QString::fromStdString(a.meta.guid)));
+        }
+        table->resizeColumnsToContents();
+        table->horizontalHeader()->setStretchLastSection(true);
+    };
+
+    QPushButton* scan = new QPushButton(QStringLiteral("Scan Project"));
+    scan->setObjectName(QStringLiteral("assetScan"));
+    scan->setToolTip(QStringLiteral("Lists every asset and writes a sidecar for anything that has none"));
+    connect(scan, &QPushButton::clicked, this, [this, db, refill, status] {
+        *db = ukiyo::scanProject(projectRoot_.toStdString(), true);
+        refill();
+        status->setText(QStringLiteral("%1 assets. %2 warnings.").arg(db->assets.size()).arg(db->warnings.size()));
+        for (const std::string& w : db->warnings) log(QStringLiteral("assets: ") + QString::fromStdString(w));
+    });
+
+    QPushButton* check = new QPushButton(QStringLiteral("Check References"));
+    check->setObjectName(QStringLiteral("assetCheck"));
+    check->setToolTip(QStringLiteral("Scenes, prefabs, materials and the build manifest: anything pointing at a file that is not there"));
+    connect(check, &QPushButton::clicked, this, [this, db, status, scan] {
+        if (db->assets.empty()) scan->click();
+        const std::vector<ukiyo::BrokenRef> broken = ukiyo::brokenReferences(*db);
+        if (broken.empty()) {
+            status->setText(QStringLiteral("No broken references."));
+            return;
+        }
+        QStringList lines;
+        for (const ukiyo::BrokenRef& b : broken) {
+            lines << QStringLiteral("%1 %2 -> %3").arg(QString::fromStdString(b.file), QString::fromStdString(b.field),
+                                                       QString::fromStdString(b.target));
+        }
+        status->setText(QStringLiteral("%1 broken reference(s):\n%2").arg(broken.size()).arg(lines.join(QStringLiteral("\n"))));
+        for (const QString& l : lines) log(QStringLiteral("broken: ") + l);
+    });
+
+    QPushButton* repair = new QPushButton(QStringLiteral("Repair Moved Assets"));
+    repair->setObjectName(QStringLiteral("assetRepair"));
+    repair->setToolTip(QStringLiteral("Rewrites references by GUID after files were moved or renamed outside the editor"));
+    connect(repair, &QPushButton::clicked, this, [this, db, status, scan, refill] {
+        if (db->assets.empty()) scan->click();
+        std::vector<std::string> files, warnings;
+        const int fixed = ukiyo::repairMovedAssets(*db, &files, &warnings);
+        for (const std::string& w : warnings) log(QStringLiteral("repair: ") + QString::fromStdString(w));
+        status->setText(QStringLiteral("%1 reference(s) rewritten in %2 file(s).").arg(fixed).arg(files.size()));
+        for (const std::string& file : files) log(QStringLiteral("repair: wrote ") + QString::fromStdString(file));
+        *db = ukiyo::scanProject(projectRoot_.toStdString(), false);
+        refill();
+    });
+
+    QPushButton* addToScene = new QPushButton(QStringLiteral("Add to Scene"));
+    addToScene->setObjectName(QStringLiteral("assetAddToScene"));
+    addToScene->setToolTip(QStringLiteral("Inserts the selected asset with its import settings applied"));
+    connect(addToScene, &QPushButton::clicked, this, [this, db, selected, status] {
+        if (*selected < 0 || *selected >= static_cast<int>(db->assets.size())) {
+            status->setText(QStringLiteral("Select an asset first."));
+            return;
+        }
+        const ukiyo::AssetEntry& a = db->assets[*selected];
+        if (a.meta.kind != ukiyo::AssetKind::Model) {
+            status->setText(QStringLiteral("Only a model can be added to a scene."));
+            return;
+        }
+        const QString name = QFileInfo(QString::fromStdString(a.path)).completeBaseName();
+        const QJsonObject entry = jsonToDoc(ukiyo::sceneEntryForAsset(a, name.toStdString()));
+        addInstanceEntry(entry, false);
+        status->setText(QStringLiteral("Added %1").arg(QString::fromStdString(a.path)));
+    });
+
+    connect(table, &QTableWidget::itemSelectionChanged, this, [db, selected, table, importScale, importYaw, importMaterial] {
+        *selected = table->currentRow();
+        if (*selected < 0 || *selected >= static_cast<int>(db->assets.size())) return;
+        const ukiyo::AssetMeta& m = db->assets[*selected].meta;
+        QSignalBlocker b1(importScale), b2(importYaw), b3(importMaterial);
+        importScale->setValue(m.importScale);
+        importYaw->setValue(m.importYawDeg);
+        importMaterial->setText(QString::fromStdString(m.materialRemap));
+    });
+
+    // Writing an import setting writes the sidecar, which is what makes it an import setting rather than a UI value.
+    auto writeImporter = [this, db, selected, importScale, importYaw, importMaterial, status] {
+        if (*selected < 0 || *selected >= static_cast<int>(db->assets.size())) return;
+        ukiyo::AssetEntry& a = db->assets[*selected];
+        a.meta.importScale = float(importScale->value());
+        a.meta.importYawDeg = float(importYaw->value());
+        a.meta.materialRemap = importMaterial->text().trimmed().toStdString();
+        const QString sidecar = QDir(projectRoot_).absoluteFilePath(QString::fromStdString(a.path)) + QStringLiteral(".meta");
+        std::string err;
+        if (!ukiyo::writeAssetMeta(sidecar.toStdString(), a.meta, &err)) {
+            status->setText(QStringLiteral("Could not write the sidecar: ") + QString::fromStdString(err));
+            return;
+        }
+        status->setText(QStringLiteral("Saved the import settings of %1").arg(QString::fromStdString(a.path)));
+    };
+    connect(importScale, QOverload<double>::of(&QDoubleSpinBox::valueChanged), this, [writeImporter](double) { writeImporter(); });
+    connect(importYaw, QOverload<double>::of(&QDoubleSpinBox::valueChanged), this, [writeImporter](double) { writeImporter(); });
+    connect(importMaterial, &QLineEdit::editingFinished, this, writeImporter);
+
+    QWidget* buttons = new QWidget;
+    QHBoxLayout* bh = new QHBoxLayout(buttons);
+    bh->setContentsMargins(0, 0, 0, 0);
+    bh->addWidget(scan);
+    bh->addWidget(check);
+    bh->addWidget(repair);
+    bh->addWidget(addToScene);
+    bh->addStretch(1);
+
+    f->addRow(table);
+    f->addRow(buttons);
+    QFormLayout* imp = addSection(v, QStringLiteral("Import Settings"));
+    imp->addRow(QStringLiteral("Scale"), importScale);
+    imp->addRow(QStringLiteral("Facing correction (deg)"), importYaw);
+    imp->addRow(QStringLiteral("Material remap"), importMaterial);
+    imp->addRow(status);
+
+    // A project that has never been scanned gets its sidecars on the first visit, so the page is not empty on day one.
+    *db = ukiyo::scanProject(projectRoot_.toStdString(), true);
+    refill();
+    status->setText(QStringLiteral("%1 assets.").arg(db->assets.size()));
+}
+
+// --- Localisation -------------------------------------------------------------------------------
+// ---- Editor extensions -------------------------------------------------------------------------
+
+QString MainWindow::pluginsDir() const { return projectRoot_ + QStringLiteral("/Plugins"); }
+
+void MainWindow::loadPlugins() {
+    // A fresh host each time, so Reload really reloads: the old libraries are unloaded before the new ones are opened,
+    // which is the only way to pick up a rebuilt plugin on Linux without restarting the editor.
+    plugins_.reset();
+    ukiyo::PluginHostCallbacks cb;
+    cb.log = [this](const std::string& line) { log(QString::fromStdString(line)); };
+    cb.status = [this](const std::string& line, int ms) {
+        statusBar()->showMessage(QString::fromStdString(line), ms);
+    };
+    cb.projectRoot = [this] { return projectRoot_.toStdString(); };
+    cb.scenePath = [this] { return scenePath_.toStdString(); };
+    plugins_ = std::make_unique<ukiyo::PluginHost>(cb);
+
+    // A project with no Plugins folder is the normal case, and creating the folder for it would litter every project
+    // with an empty directory. The page offers to make one.
+    if (!QDir(pluginsDir()).exists()) {
+        rebuildPluginsMenu();
+        log(QStringLiteral("no plugins: %1 does not exist").arg(pluginsDir()));
+        return;
+    }
+    const int loaded = plugins_->loadDirectory(pluginsDir().toStdString());
+    for (const ukiyo::PluginReport& r : plugins_->reports()) {
+        if (!r.ok) log(QStringLiteral("plugin failed: %1: %2").arg(QString::fromStdString(r.path),
+                                                                   QString::fromStdString(r.error)));
+    }
+    log(QStringLiteral("%1 plugin(s) loaded from Plugins").arg(loaded));
+    rebuildPluginsMenu();
+}
+
+void MainWindow::rebuildPluginsMenu() {
+    if (!pluginsMenu_) return;
+    pluginsMenu_->clear();
+    if (plugins_) {
+        for (const ukiyo::PluginCommand& c : plugins_->commands()) {
+            const QString id = QString::fromStdString(c.id);
+            pluginsMenu_->addAction(QString::fromStdString(c.label), this, [this, id] {
+                if (!plugins_) return;
+                statusBar()->showMessage(QStringLiteral("Running %1").arg(id), 1500);
+                plugins_->runCommand(id.toStdString());
+            });
+        }
+        if (!plugins_->commands().empty()) pluginsMenu_->addSeparator();
+        if (!plugins_->importers().empty()) {
+            QStringList claimed;
+            for (const ukiyo::PluginImporter& i : plugins_->importers())
+                claimed << QStringLiteral(".%1 (%2)").arg(QString::fromStdString(i.extension),
+                                                          QString::fromStdString(i.label));
+            QAction* info = pluginsMenu_->addAction(QStringLiteral("Importers: %1").arg(claimed.join(", ")));
+            info->setEnabled(false);
+            pluginsMenu_->addSeparator();
+        }
+    }
+    pluginsMenu_->addAction(uiIcon("refresh"), "Reload Plugins", this, &MainWindow::loadPlugins);
+    pluginsMenu_->addAction(uiIcon("folder_open"), "Open Plugins Folder", this, [this] {
+        QDir().mkpath(pluginsDir());
+        QDesktopServices::openUrl(QUrl::fromLocalFile(pluginsDir()));
+    });
+}
+
+void MainWindow::fillPluginsPage(QVBoxLayout* v) {
+    QFormLayout* f = addSection(v, QStringLiteral("Editor Plugins"));
+    QLabel* note = new QLabel(QStringLiteral(
+        "A plugin is a shared library in <b>&lt;project&gt;/Plugins</b> that exports <b>ukiyo_plugin_load</b>. It can add "
+        "commands to the Plugins menu and claim a file extension for import. The ABI is plain C "
+        "(<b>src/engine/plugin_api.h</b>), so a plugin may be written in C, C++ or anything else that exports two "
+        "symbols, and it is built against the same header the editor uses. <b>docs/PLUGINS.md</b> has a worked "
+        "example."));
+    note->setWordWrap(true);
+    f->addRow(note);
+
+    QLabel* directory = new QLabel(pluginsDir());
+    directory->setObjectName(QStringLiteral("pluginsDir"));
+    directory->setTextInteractionFlags(Qt::TextSelectableByMouse);
+    directory->setWordWrap(true);
+    f->addRow(QStringLiteral("Folder"), directory);
+
+    QTableWidget* table = new QTableWidget(0, 4);
+    table->setObjectName(QStringLiteral("pluginsList"));
+    table->setHorizontalHeaderLabels({QStringLiteral("Library"), QStringLiteral("Name"), QStringLiteral("Version"),
+                                      QStringLiteral("Status")});
+    table->horizontalHeader()->setStretchLastSection(true);
+    table->verticalHeader()->setVisible(false);
+    table->setMinimumHeight(140);
+    table->setEditTriggers(QAbstractItemView::NoEditTriggers);
+    std::vector<ukiyo::PluginReport> reports;
+    if (plugins_) reports = plugins_->reports();
+    table->setRowCount(static_cast<int>(reports.size()));
+    for (int row = 0; row < static_cast<int>(reports.size()); ++row) {
+        const ukiyo::PluginReport& r = reports[static_cast<size_t>(row)];
+        table->setItem(row, 0, new QTableWidgetItem(QFileInfo(QString::fromStdString(r.path)).fileName()));
+        table->setItem(row, 1, new QTableWidgetItem(QString::fromStdString(r.name)));
+        table->setItem(row, 2, new QTableWidgetItem(QString::fromStdString(r.version)));
+        table->setItem(row, 3, new QTableWidgetItem(r.ok ? QStringLiteral("loaded")
+                                                         : QString::fromStdString(r.error)));
+    }
+    f->addRow(table);
+
+    QStringList commands;
+    if (plugins_)
+        for (const ukiyo::PluginCommand& c : plugins_->commands())
+            commands << QStringLiteral("%1 — %2").arg(QString::fromStdString(c.label),
+                                                      QString::fromStdString(c.id));
+    if (!commands.isEmpty()) {
+        QLabel* list = new QLabel(commands.join(QStringLiteral("<br>")));
+        list->setObjectName(QStringLiteral("pluginCommands"));
+        list->setWordWrap(true);
+        list->setTextFormat(Qt::RichText);
+        f->addRow(QStringLiteral("Commands"), list);
+    }
+
+    auto* buttons = new QHBoxLayout;
+    auto* reload = new QPushButton(uiIcon("refresh"), QStringLiteral("Reload"));
+    reload->setObjectName(QStringLiteral("pluginsReload"));
+    connect(reload, &QPushButton::clicked, this, [this] { loadPlugins(); });
+    auto* folder = new QPushButton(uiIcon("folder_open"), QStringLiteral("Open Folder"));
+    connect(folder, &QPushButton::clicked, this, [this] {
+        QDir().mkpath(pluginsDir());
+        QDesktopServices::openUrl(QUrl::fromLocalFile(pluginsDir()));
+    });
+    buttons->addWidget(reload);
+    buttons->addWidget(folder);
+    buttons->addStretch(1);
+    v->addLayout(buttons);
+    v->addStretch(1);
+}
+
+void MainWindow::fillLocalisationPage(QVBoxLayout* v) {
+    QFormLayout* f = addSection(v, QStringLiteral("Languages"));
+    QLabel* note = new QLabel(QStringLiteral(
+        "One file per language: <b>assets/locales/&lt;code&gt;.json</b>. A script reads a string with "
+        "<b>ukiyo.tr(\"key\")</b>, which returns the key itself when the language has no text for it, so a missing "
+        "translation is visible rather than blank. A new language starts as a copy of the base language's keys."));
+    note->setWordWrap(true);
+    f->addRow(note);
+
+    QLabel* base = new QLabel(QString::fromStdString(ukiyo::baseLocale(projectRoot_.toStdString())));
+    base->setObjectName(QStringLiteral("localeBase"));
+    QComboBox* languages = new QComboBox;
+    languages->setObjectName(QStringLiteral("localeList"));
+    QTableWidget* strings = new QTableWidget(0, 2);
+    strings->setObjectName(QStringLiteral("localeStrings"));
+    strings->setHorizontalHeaderLabels({QStringLiteral("Key"), QStringLiteral("Text")});
+    strings->horizontalHeader()->setStretchLastSection(true);
+    strings->verticalHeader()->setVisible(false);
+    strings->setMinimumHeight(200);
+    QLabel* status = new QLabel;
+    status->setObjectName(QStringLiteral("localeStatus"));
+    status->setWordWrap(true);
+
+    auto catalog = std::make_shared<ukiyo::LocaleCatalog>();
+    auto refillLanguages = [this, languages, catalog, strings, status] {
+        QSignalBlocker block(languages);
+        languages->clear();
+        for (const std::string& code : ukiyo::availableLocales(projectRoot_.toStdString()))
+            languages->addItem(QString::fromStdString(code));
+        *catalog = ukiyo::LocaleCatalog();
+        if (languages->count() > 0) {
+            std::string err;
+            if (!ukiyo::loadLocale(projectRoot_.toStdString(), languages->currentText().toStdString(), catalog.get(), &err))
+                status->setText(QString::fromStdString(err));
+        }
+        QSignalBlocker blockTable(strings);
+        strings->setRowCount(static_cast<int>(catalog->strings.size()));
+        int row = 0;
+        for (const auto& [key, text] : catalog->strings) {
+            strings->setItem(row, 0, new QTableWidgetItem(QString::fromStdString(key)));
+            strings->setItem(row, 1, new QTableWidgetItem(QString::fromStdString(text)));
+            ++row;
+        }
+        strings->resizeColumnsToContents();
+        strings->horizontalHeader()->setStretchLastSection(true);
+    };
+    refillLanguages();
+
+    connect(languages, QOverload<int>::of(&QComboBox::currentIndexChanged), this, [refillLanguages](int) { refillLanguages(); });
+
+    QPushButton* save = new QPushButton(QStringLiteral("Save Language"));
+    save->setObjectName(QStringLiteral("localeSave"));
+    connect(save, &QPushButton::clicked, this, [this, languages, strings, status] {
+        const QString code = languages->currentText();
+        if (code.isEmpty()) {
+            status->setText(QStringLiteral("Pick a language first."));
+            return;
+        }
+        ukiyo::LocaleCatalog out;
+        out.code = code.toStdString();
+        for (int row = 0; row < strings->rowCount(); ++row) {
+            const QTableWidgetItem* k = strings->item(row, 0);
+            const QTableWidgetItem* t = strings->item(row, 1);
+            if (!k || k->text().isEmpty()) continue;
+            out.strings[k->text().toStdString()] = t ? t->text().toStdString() : std::string();
+        }
+        QDir().mkpath(projectRoot_ + QStringLiteral("/assets/locales"));
+        QFile file(projectRoot_ + QStringLiteral("/assets/locales/") + code + QStringLiteral(".json"));
+        if (!file.open(QIODevice::WriteOnly | QIODevice::Truncate)) {
+            status->setText(QStringLiteral("Could not write the language file."));
+            return;
+        }
+        file.write(QByteArray::fromStdString(ukiyo::localeJson(out)));
+        file.close();
+        status->setText(QStringLiteral("Wrote assets/locales/%1.json (%2 strings)").arg(code).arg(out.strings.size()));
+    });
+
+    QPushButton* addLanguage = new QPushButton(QStringLiteral("New Language..."));
+    addLanguage->setObjectName(QStringLiteral("localeNew"));
+    connect(addLanguage, &QPushButton::clicked, this, [this, base, refillLanguages, status] {
+        bool ok = false;
+        const QString code = QInputDialog::getText(this, QStringLiteral("New language"), QStringLiteral("Language code (en, ja, pt-BR)"),
+                                                   QLineEdit::Normal, QString(), &ok);
+        if (!ok || code.trimmed().isEmpty()) return;
+        ukiyo::LocaleCatalog from;
+        std::string err;
+        ukiyo::loadLocale(projectRoot_.toStdString(), base->text().toStdString(), &from, &err);
+        const ukiyo::LocaleCatalog fresh = ukiyo::newLocale(from, code.trimmed().toStdString());
+        QDir().mkpath(projectRoot_ + QStringLiteral("/assets/locales"));
+        QFile file(projectRoot_ + QStringLiteral("/assets/locales/") + code.trimmed() + QStringLiteral(".json"));
+        if (!file.open(QIODevice::WriteOnly | QIODevice::Truncate)) {
+            status->setText(QStringLiteral("Could not write the language file."));
+            return;
+        }
+        file.write(QByteArray::fromStdString(ukiyo::localeJson(fresh)));
+        file.close();
+        refillLanguages();
+        status->setText(QStringLiteral("Created %1 with %2 untranslated keys.").arg(code.trimmed()).arg(fresh.strings.size()));
+    });
+
+    QWidget* row = new QWidget;
+    QHBoxLayout* rh = new QHBoxLayout(row);
+    rh->setContentsMargins(0, 0, 0, 0);
+    rh->addWidget(languages);
+    rh->addWidget(addLanguage);
+    rh->addWidget(save);
+    rh->addStretch(1);
+
+    f->addRow(QStringLiteral("Base language"), base);
+    f->addRow(QStringLiteral("Language"), row);
+    f->addRow(strings);
+    f->addRow(status);
+}
+
+// --- Version control ----------------------------------------------------------------------------
+void MainWindow::fillVcsPage(QVBoxLayout* v) {
+    QFormLayout* f = addSection(v, QStringLiteral("Version Control"));
+    QLabel* branch = new QLabel;
+    branch->setObjectName(QStringLiteral("vcsBranch"));
+    branch->setTextInteractionFlags(Qt::TextSelectableByMouse);
+    QListWidget* changes = new QListWidget;
+    changes->setObjectName(QStringLiteral("vcsChanges"));
+    changes->setMinimumHeight(140);
+    QPlainTextEdit* message = new QPlainTextEdit;
+    message->setObjectName(QStringLiteral("vcsMessage"));
+    message->setMaximumHeight(70);
+    message->setPlaceholderText(QStringLiteral("Commit message (empty writes one from the file list)"));
+    QListWidget* history = new QListWidget;
+    history->setObjectName(QStringLiteral("vcsHistory"));
+    history->setMinimumHeight(110);
+    QLabel* status = new QLabel;
+    status->setObjectName(QStringLiteral("vcsStatus"));
+    status->setWordWrap(true);
+    status->setTextInteractionFlags(Qt::TextSelectableByMouse);
+    auto changesSeen = std::make_shared<std::vector<ukiyo::vcs::Change>>();
+
+    // git, run as argv with the project as its working directory. The editor reads the porcelain output the parser
+    // expects, so what the page lists is exactly what `git status` says.
+    auto git = [this](const QStringList& args, int* exitCode) {
+        QProcess proc;
+        proc.setWorkingDirectory(projectRoot_);
+        proc.start(QStringLiteral("git"), args);
+        if (!proc.waitForStarted(4000)) {
+            if (exitCode) *exitCode = -1;
+            return QString();
+        }
+        proc.waitForFinished(30000);
+        if (exitCode) *exitCode = proc.exitStatus() == QProcess::NormalExit ? proc.exitCode() : -1;
+        return QString::fromLocal8Bit(proc.readAllStandardOutput());
+    };
+    auto toList = [](const std::vector<std::string>& args) {
+        QStringList out;
+        for (const std::string& a : args) out << QString::fromStdString(a);
+        return out;
+    };
+
+    auto refresh = [this, git, toList, changes, history, branch, status, changesSeen] {
+        int code = 0;
+        const QString porcelain = git(toList(ukiyo::vcs::statusArgs()), &code);
+        const QString err = code == 0 ? QString() : QStringLiteral("git exited with %1").arg(code);
+        const ukiyo::vcs::Status st = ukiyo::vcs::parseStatus(porcelain.toStdString(), err.toStdString());
+        changes->clear();
+        changesSeen->clear();
+        if (!st.ok) {
+            status->setText(QString::fromStdString(st.error.empty() ? std::string("Not a git repository.") : st.error));
+            branch->setText(QStringLiteral("(no repository)"));
+            history->clear();
+            return;
+        }
+        branch->setText(QStringLiteral("%1%2%3")
+                            .arg(QString::fromStdString(st.branch))
+                            .arg(st.ahead ? QStringLiteral("  ↑") : QString())
+                            .arg(st.behind ? QStringLiteral("  ↓") : QString()));
+        for (const ukiyo::vcs::Change& c : st.changes) {
+            const char* kind = c.kind == ukiyo::vcs::Change::Kind::Modified ? "modified"
+                             : c.kind == ukiyo::vcs::Change::Kind::Added ? "added"
+                             : c.kind == ukiyo::vcs::Change::Kind::Deleted ? "deleted"
+                             : c.kind == ukiyo::vcs::Change::Kind::Renamed ? "renamed"
+                             : c.kind == ukiyo::vcs::Change::Kind::Untracked ? "untracked"
+                             : c.kind == ukiyo::vcs::Change::Kind::Conflict ? "conflict"
+                             : "changed";
+            changes->addItem(QStringLiteral("%1  %2%3")
+                                 .arg(QString::fromLatin1(kind), QString::fromStdString(c.path),
+                                      c.staged ? QStringLiteral("  (staged)") : QString()));
+        }
+        *changesSeen = st.changes;
+        status->setText(QStringLiteral("%1 change(s)").arg(st.changes.size()));
+        history->clear();
+        for (const ukiyo::vcs::Commit& c : ukiyo::vcs::parseLog(git(toList(ukiyo::vcs::logArgs(20)), nullptr).toStdString())) {
+            history->addItem(QStringLiteral("%1  %2  (%3, %4)")
+                                 .arg(QString::fromStdString(c.hash), QString::fromStdString(c.subject),
+                                      QString::fromStdString(c.author), QString::fromStdString(c.when)));
+        }
+    };
+
+    QPushButton* refreshButton = new QPushButton(QStringLiteral("Refresh"));
+    refreshButton->setObjectName(QStringLiteral("vcsRefresh"));
+    connect(refreshButton, &QPushButton::clicked, this, refresh);
+
+    QPushButton* commit = new QPushButton(QStringLiteral("Commit All"));
+    commit->setObjectName(QStringLiteral("vcsCommit"));
+    connect(commit, &QPushButton::clicked, this, [this, git, toList, message, status, changesSeen, refresh] {
+        if (changesSeen->empty()) {
+            status->setText(QStringLiteral("Nothing to commit."));
+            return;
+        }
+        int code = 0;
+        git(toList(ukiyo::vcs::addAllArgs()), &code);
+        if (code != 0) {
+            status->setText(QStringLiteral("git add failed (%1).").arg(code));
+            return;
+        }
+        std::string text = message->toPlainText().trimmed().toStdString();
+        if (text.empty()) text = ukiyo::vcs::defaultCommitMessage(*changesSeen);
+        git(toList(ukiyo::vcs::commitArgs(text)), &code);
+        if (code != 0) {
+            status->setText(QStringLiteral("git commit failed (%1). Nothing is lost: the changes are staged.").arg(code));
+            return;
+        }
+        message->clear();
+        status->setText(QString::fromStdString(text));
+        refresh();
+    });
+
+    QWidget* buttons = new QWidget;
+    QHBoxLayout* bh = new QHBoxLayout(buttons);
+    bh->setContentsMargins(0, 0, 0, 0);
+    bh->addWidget(refreshButton);
+    bh->addWidget(commit);
+    bh->addStretch(1);
+
+    f->addRow(QStringLiteral("Branch"), branch);
+    f->addRow(changes);
+    f->addRow(message);
+    f->addRow(buttons);
+    f->addRow(status);
+    f->addRow(QStringLiteral("Recent commits"), history);
+    refresh();
 }
 
 } // namespace editor

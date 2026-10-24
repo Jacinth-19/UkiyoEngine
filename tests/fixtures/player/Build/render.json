@@ -1,0 +1,11 @@
+{
+  "format": "ukiyo-build",
+  "version": 1,
+  "name": "Ukiyo Render Fixture",
+  "versionName": "1.0.0",
+  "startScene": "Scenes/Render.ukscene",
+  "font": "../../../editor/res/fonts/IBMPlexSansJP-Regular.ttf",
+  "hudScale": 1.0,
+  "window": { "width": 960, "height": 540, "fullscreen": false, "vsync": true },
+  "scenes": ["Scenes/Render.ukscene"]
+}

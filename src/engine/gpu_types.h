@@ -6,6 +6,20 @@
 
 namespace ukiyo {
 
+// What the shader sees per scene light. Four vec4s: xyz position, w radius; xyz direction, w cos(outer half-angle);
+// rgb colour, w intensity; x type (0 directional, 1 point, 2 spot), y cos(inner half-angle).
+struct GpuLight {
+    glm::vec4 posRadius{0.0f};
+    glm::vec4 dirCosOuter{0.0f};
+    glm::vec4 colorIntensity{0.0f};
+    glm::vec4 params{0.0f};
+};
+static_assert(sizeof(GpuLight) == 64, "GpuLight crosses the C++/GLSL boundary as four vec4s");
+
+// Scene lights in one frame block. The sun is separate (it needs the cascade matrices), so these are point and spot
+// lights only; anything more is dropped by the selection in lights.h.
+constexpr int kFrameLights = 8;
+
 struct FrameUBO {                 // set 0, binding 0 (frame.glsl)
     glm::mat4 view;
     glm::mat4 proj;
@@ -20,8 +34,10 @@ struct FrameUBO {                 // set 0, binding 0 (frame.glsl)
     glm::vec4 cascadeSplits;
     glm::vec4 shadowParams;
     glm::vec4 screenParams;
-    glm::vec4 pointPos[4];
+    glm::vec4 pointPos[4];     // the two stylistic fills a scene without lights gets, as before
     glm::vec4 pointColor[4];
+    glm::vec4 lightParams;     // x = scene light count (0 = use the fills), y = 1 when the sun comes from a scene light
+    GpuLight lights[kFrameLights];
     glm::vec4 toonA;     // RealToon: x hair highlight, y hair shift, z hair exponent, w self shadow on
     glm::vec4 toonB;     // RealToon: x self threshold, y self hardness, z gloss, w gloss power
     glm::vec4 toonC;     // x cel band on (1 = three-step ramp in mtoon; 0 = off), y normal map strength, z material outline noise, w reflection strength
@@ -37,7 +53,20 @@ struct FrameUBO {                 // set 0, binding 0 (frame.glsl)
     glm::vec4 waterDeep;    // water: rgb deep colour, w 1 = camera is under the volume
     glm::vec4 waterWaveD[4]; // water: per wave xy unit direction, z wavelength, w amplitude
     glm::vec4 waterWaveS[4]; // water: per wave x speed multiplier, y steepness
+    glm::vec4 shadowSoft;    // PCSS (docs/PCSS.md): x sun disc tangent, y 1 = soft shadows on, z search radius (m),
+                             // w max penumbra (m)
+    // The sky a scene asks for (settings.skyZenith / skyHorizon / cloudCover / stars / sunDisc). Appended at the end, as
+    // std140 requires of every addition, so the offsets of every field above are unchanged.
+    glm::vec4 skyZenith;     // rgb zenith colour, w cloud cover (0 = clear .. 1 = the full layer)
+    glm::vec4 skyHorizon;    // rgb horizon colour, w star amount (0 = off .. 1 = a full field)
+    glm::vec4 skyParams;     // x sun disc strength, yzw unused
+    // The environment probe (docs/IBL.md, engine/environment.h). One SH probe interpolated at the camera's focus;
+    // envParams = x ambient weight (0 = the shader keeps the hemisphere path), y cubemap present, z intensity,
+    // w mip count. Appended at the end for the same reason.
+    glm::vec4 envSH[9];
+    glm::vec4 envParams;
 };
+static_assert(sizeof(FrameUBO) % 16 == 0, "FrameUBO is std140: every member is a vec4 or a mat4");
 
 struct MaterialUBO {              // set 1, binding 8 (material.glsl)
     glm::vec4 baseColor{1.0f};

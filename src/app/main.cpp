@@ -21,6 +21,7 @@
 #include <cstring>
 #include <chrono>
 #include <exception>
+#include <stdexcept>
 #include <string>
 #include <vector>
 
@@ -30,8 +31,24 @@
 #include "engine/model.h"
 #include "engine/rig.h"
 #include "engine/renderer.h"
+#include "input/input.h"
+#include "input/input_asset.h"
+#include "input/input_glfw.h"
 #include "rhi/rhi.h"
 #include "stb_image_write.h"
+
+// ffmpeg is started through a pipe. MSVC spells the same two functions with a leading underscore and puts them in
+// <stdio.h>, which <cstdio> already pulled in.
+#ifdef _WIN32
+#define popen _popen
+#define pclose _pclose
+#endif
+
+// The repository root, for the default asset paths. CMake defines it; a standalone build of this file uses the working
+// directory, which is where the assets are when the viewer is run the documented way.
+#ifndef UKIYO_ROOT
+#define UKIYO_ROOT "."
+#endif
 
 using namespace ukiyo;
 
@@ -127,6 +144,7 @@ Options parseArgs(int argc, char** argv) {
         else if (a == "--target-y") o.targetY = float(std::atof(next().c_str()));
         else if (a == "--aa") o.settings.aaMode = std::atoi(next().c_str());
         else if (a == "--no-shadows") o.settings.shadows = false;
+        else if (a == "--no-pcss") o.settings.pcss = false;   // a fixed 3x3 tent instead of soft shadows
         else if (a == "--no-grid") o.settings.grid = false;
         else if (a == "--no-bloom") o.settings.bloom = false;
         else if (a == "--no-outlines") o.settings.outlines = false;
@@ -264,10 +282,6 @@ void frameCamera(OrbitCamera& cam, const Model& m, const Options& o) {
 
 struct AppState {
     OrbitCamera* cam = nullptr;
-    RenderSettings* settings = nullptr;
-    bool dragOrbit = false, dragPan = false;
-    double lastX = 0.0, lastY = 0.0;
-    int fbHeight = 720;
     bool autoOrbit = false;
     bool resetCam = false;
     bool saveShot = false;
@@ -275,50 +289,81 @@ struct AppState {
     bool hitRequested = false;
 };
 
-void onMouseButton(GLFWwindow* w, int button, int action, int) {
-    auto* st = static_cast<AppState*>(glfwGetWindowUserPointer(w));
-    bool down = action == GLFW_PRESS;
-    if (button == GLFW_MOUSE_BUTTON_LEFT) st->dragOrbit = down;
-    if (button == GLFW_MOUSE_BUTTON_RIGHT || button == GLFW_MOUSE_BUTTON_MIDDLE) st->dragPan = down;
-    glfwGetCursorPos(w, &st->lastX, &st->lastY);
-}
+// The viewer's controls are an asset, not a switch statement: assets/input/viewer.inputactions is a Unity-shaped file,
+// and driving the viewer from it means every release runs the reader, the composites, the mouse axes and the action
+// phases for real. The names below are the same ones input_test checks in CI (tests/input_test.cpp §12).
+struct ViewerControls {
+    input::State state;
+    input::Action* move = nullptr;
+    input::Action* elevate = nullptr;
+    input::Action* look = nullptr;
+    input::Action* orbit = nullptr;
+    input::Action* pan = nullptr;
+    input::Action* zoom = nullptr;
+    input::Action* quit = nullptr;
+    input::Action* autoOrbit = nullptr;
+    input::Action* resetCamera = nullptr;
+    input::Action* screenshot = nullptr;
+    input::Action* hit = nullptr;
+    input::Action* grid = nullptr;
+    input::Action* bloom = nullptr;
+    input::Action* outlines = nullptr;
+    input::Action* shadows = nullptr;
+    input::Action* sky = nullptr;
+    input::Action* aa[4] = {nullptr, nullptr, nullptr, nullptr};
 
-void onCursor(GLFWwindow* w, double x, double y) {
-    auto* st = static_cast<AppState*>(glfwGetWindowUserPointer(w));
-    float dx = float(x - st->lastX), dy = float(y - st->lastY);
-    st->lastX = x;
-    st->lastY = y;
-    if (st->dragOrbit) st->cam->orbit(-dx * 0.006f, dy * 0.004f);
-    if (st->dragPan) st->cam->pan(dx, dy, float(st->fbHeight));
-}
+    bool load(GLFWwindow* window, std::string* error) {
+        input::glfw_backend::install(state, window);
+        // Run from the repository root (the documented way) or from build/: try both, and report the path that was
+        // actually attempted so a missing asset is obvious.
+        const char* paths[] = {UKIYO_ROOT "/assets/input/viewer.inputactions", "assets/input/viewer.inputactions"};
+        input::AssetLoadResult result;
+        for (const char* path : paths) {
+            result = input::loadAssetFile(state, path);
+            if (result.ok) break;
+        }
+        if (!result.ok) {
+            *error = result.error;
+            return false;
+        }
+        for (const std::string& warning : result.warnings) std::fprintf(stderr, "input: %s\n", warning.c_str());
+        state.enableMap("Viewer");
 
-void onScroll(GLFWwindow* w, double, double yoff) {
-    auto* st = static_cast<AppState*>(glfwGetWindowUserPointer(w));
-    st->cam->zoom(float(yoff));
-}
-
-void onKey(GLFWwindow* w, int key, int, int action, int) {
-    auto* st = static_cast<AppState*>(glfwGetWindowUserPointer(w));
-    if (action != GLFW_PRESS) return;
-    RenderSettings& s = *st->settings;
-    switch (key) {
-    case GLFW_KEY_ESCAPE: st->quit = true; break;
-    case GLFW_KEY_1: s.aaMode = 0; break;
-    case GLFW_KEY_2: s.aaMode = 1; break;
-    case GLFW_KEY_3: s.aaMode = 2; break;
-    case GLFW_KEY_4: s.aaMode = 3; break;
-    case GLFW_KEY_G: s.grid = !s.grid; break;
-    case GLFW_KEY_B: s.bloom = !s.bloom; break;
-    case GLFW_KEY_O: s.outlines = !s.outlines; break;
-    case GLFW_KEY_S: s.shadows = !s.shadows; break;
-    case GLFW_KEY_K: s.sky = !s.sky; break;
-    case GLFW_KEY_SPACE: st->autoOrbit = !st->autoOrbit; break;
-    case GLFW_KEY_R: st->resetCam = true; break;
-    case GLFW_KEY_H: st->hitRequested = true; break;
-    case GLFW_KEY_P: st->saveShot = true; break;
-    default: break;
+        auto get = [&](const char* name) { return state.action("Viewer", name); };
+        move = get("Move");
+        elevate = get("Elevate");
+        look = get("Look");
+        orbit = get("Orbit");
+        pan = get("Pan");
+        zoom = get("Zoom");
+        quit = get("Quit");
+        autoOrbit = get("AutoOrbit");
+        resetCamera = get("ResetCamera");
+        screenshot = get("Screenshot");
+        hit = get("Hit");
+        grid = get("ToggleGrid");
+        bloom = get("ToggleBloom");
+        outlines = get("ToggleOutlines");
+        shadows = get("ToggleShadows");
+        sky = get("ToggleSky");
+        aa[0] = get("Aa1");
+        aa[1] = get("Aa2");
+        aa[2] = get("Aa3");
+        aa[3] = get("Aa4");
+        input::Action* required[] = {move, elevate, look, orbit, pan, zoom, quit, autoOrbit, resetCamera,
+                                     screenshot, hit, grid, bloom, outlines, shadows, sky, aa[0], aa[1], aa[2], aa[3]};
+        for (input::Action* a : required) {
+            if (!a) {
+                *error = "the viewer asset no longer has every action the viewer reads";
+                return false;
+            }
+        }
+        return true;
     }
-}
+};
+
+// GLFW cannot poll the wheel: the callback hands it to the backend, which accumulates it into the next frame's scroll.
+void onScroll(GLFWwindow*, double x, double y) { input::glfw_backend::pushScroll(x, y); }
 
 void writePng(const std::string& path, const std::vector<uint8_t>& rgba, uint32_t w, uint32_t h) {
     if (!stbi_write_png(path.c_str(), int(w), int(h), 4, rgba.data(), int(w * 4)))
@@ -373,6 +418,8 @@ int main(int argc, char** argv) {
         }
         ModelLoadOptions lo;
         lo.smoothNormals = opt.settings.smoothNormals;
+        lo.preserveAlphaTestCoverage = opt.settings.preserveAlphaCoverage;
+        lo.alphaTestThreshold = opt.settings.alphaTestThreshold;
         lo.faceSdfPath = opt.faceSdf;
         if (!opt.faceMaterial.empty()) lo.faceMaterial = opt.faceMaterial;
         auto model = loadModel(*device, opt.model, lo);
@@ -566,15 +613,13 @@ int main(int argc, char** argv) {
         if (!window) { std::fprintf(stderr, "interactive mode needs a window\n"); return 1; }
         AppState st;
         st.cam = &cam;
-        st.settings = &opt.settings;
         int fbw = 0, fbh = 0;
         glfwGetFramebufferSize(window, &fbw, &fbh);
-        st.fbHeight = fbh > 0 ? fbh : 720;
         glfwSetWindowUserPointer(window, &st);
-        glfwSetMouseButtonCallback(window, onMouseButton);
-        glfwSetCursorPosCallback(window, onCursor);
         glfwSetScrollCallback(window, onScroll);
-        glfwSetKeyCallback(window, onKey);
+        ViewerControls controls;
+        std::string inputError;
+        if (!controls.load(window, &inputError)) throw std::runtime_error("input: " + inputError);
 
         auto last = std::chrono::steady_clock::now();
         uint32_t frameIndex = 0;
@@ -582,24 +627,42 @@ int main(int argc, char** argv) {
         while (!glfwWindowShouldClose(window) && !st.quit) {
             glfwPollEvents();
             glfwGetFramebufferSize(window, &fbw, &fbh);
-            st.fbHeight = fbh > 0 ? fbh : st.fbHeight;
 
             auto now = std::chrono::steady_clock::now();
             const float dt = std::min(0.1f, std::chrono::duration<float>(now - last).count());
             last = now;
             const float time = float(glfwGetTime());
 
+            // One input update a frame, after GLFW has collected the events. Every read below is an action.
+            controls.state.update(dt);
+            RenderSettings& s = opt.settings;
+            if (controls.quit->triggered()) st.quit = true;
+            if (controls.autoOrbit->triggered()) st.autoOrbit = !st.autoOrbit;
+            if (controls.resetCamera->triggered()) st.resetCam = true;
+            if (controls.screenshot->triggered()) st.saveShot = true;
+            if (controls.hit->triggered()) st.hitRequested = true;
+            if (controls.grid->triggered()) s.grid = !s.grid;
+            if (controls.bloom->triggered()) s.bloom = !s.bloom;
+            if (controls.outlines->triggered()) s.outlines = !s.outlines;
+            if (controls.shadows->triggered()) s.shadows = !s.shadows;
+            if (controls.sky->triggered()) s.sky = !s.sky;
+            for (int i = 0; i < 4; ++i)
+                if (controls.aa[i]->triggered()) s.aaMode = i;
+
+            // Look is <Mouse>/delta: pixels, y up, the way Unity reports it.
+            const glm::vec2 look = controls.look->readVector2();
+            if (controls.orbit->pressed()) cam.orbit(-look.x * 0.006f, -look.y * 0.004f);
+            if (controls.pan->pressed() && fbh > 0) cam.pan(look.x, -look.y, float(fbh));
+            const float wheel = controls.zoom->readVector2().y;
+            if (wheel != 0.0f) cam.zoom(wheel);
+
             if (st.resetCam) { cam = baseCam; st.resetCam = false; }
             if (st.autoOrbit) cam.yaw += dt * 0.35f;
             const float speed = 1.2f * dt;
-            float fwd = 0.0f, rgt = 0.0f;
-            if (glfwGetKey(window, GLFW_KEY_W) == GLFW_PRESS) fwd += speed;
-            if (glfwGetKey(window, GLFW_KEY_S) == GLFW_PRESS) fwd -= speed;
-            if (glfwGetKey(window, GLFW_KEY_D) == GLFW_PRESS) rgt += speed;
-            if (glfwGetKey(window, GLFW_KEY_A) == GLFW_PRESS) rgt -= speed;
-            if (fwd != 0.0f || rgt != 0.0f) cam.moveTargetPlanar(fwd, rgt);
-            if (glfwGetKey(window, GLFW_KEY_E) == GLFW_PRESS) cam.moveTargetVertical(speed);
-            if (glfwGetKey(window, GLFW_KEY_Q) == GLFW_PRESS) cam.moveTargetVertical(-speed);
+            const glm::vec2 move = controls.move->readVector2();   // x right, y forward
+            if (move.x != 0.0f || move.y != 0.0f) cam.moveTargetPlanar(move.y * speed, move.x * speed);
+            const float elevate = controls.elevate->readFloat();   // E positive, Q negative
+            if (elevate != 0.0f) cam.moveTargetVertical(elevate * speed);
 
             if (!device->beginFrame()) {
                 glfwWaitEventsTimeout(0.02);

@@ -1,4 +1,14 @@
 // Per-frame globals (camera, lights, shadow matrices, sky ambient).
+
+// What one scene light is: position and reach, direction and outer cone, colour and intensity, type and inner cone.
+// Declared outside the block because a uniform block holds instances, not type declarations.
+struct BlockLight {
+    vec4 posRadius;      // xyz position, w radius (0 = unbounded, clamped on the CPU)
+    vec4 dirCosOuter;    // xyz the direction the cone points, w cos(outer half-angle)
+    vec4 colorIntensity; // rgb colour, w intensity
+    vec4 params;         // x type (1 point, 2 spot), y cos(inner half-angle)
+};
+
 UBO(0, 0) FrameBlock {
     mat4 view;
     mat4 proj;
@@ -15,6 +25,9 @@ UBO(0, 0) FrameBlock {
     vec4 screenParams;   // xy internal resolution, z time (s), w frame index
     vec4 pointPos[4];    // xyz position, w radius
     vec4 pointColor[4];  // rgb * intensity
+    vec4 lightParams;    // x = scene light count (0 = the two fills above), y = 1 when a scene light is the key
+    // Scene lights (docs/LIGHTS.md). Directional lights never appear here: they are the sun above, with its cascades.
+    BlockLight lights[8];
     vec4 toonA;          // RealToon: x hair highlight, y hair shift, z hair exponent, w self shadow on (0 = off)
     vec4 toonB;          // RealToon: x self threshold, y self hardness, z gloss, w gloss power
     vec4 toonC;          // x cel band on (1 = three-step ramp in mtoon; 0 = off), y normal map strength, z material outline noise, w reflection strength
@@ -30,4 +43,39 @@ UBO(0, 0) FrameBlock {
     vec4 waterDeep;      // water: rgb deep colour, w 1 = camera is under the volume
     vec4 waterWaveD[4];  // water: per wave xy unit direction, z wavelength, w amplitude
     vec4 waterWaveS[4];  // water: per wave x speed multiplier, y steepness
+    // PCSS (docs/PCSS.md). x is the sun's angular radius as a tangent: 0.00465 for the real sun, larger for a stylised
+    // one. y turns it on; z is the radius in metres the blocker search reads; w caps the penumbra so a distant caster
+    // smears rather than covers the screen. A vec4 at the end of the block, as std140 requires of every addition.
+    vec4 shadowSoft;     // x sun tan radius, y 1 = on, z search radius (m), w max penumbra (m)
+    // The sky a scene asks for (src/engine/renderer.h RenderSettings). Zenith/horizon are the gradient; the fourth
+    // components are the cloud cover and the star amount; skyParams.x is the sun disc strength.
+    vec4 skyZenith;      // rgb zenith colour, w cloud cover (0 = clear .. 1 = the full layer)
+    vec4 skyHorizon;     // rgb horizon colour, w star amount (0 = off .. 1 = a full field)
+    vec4 skyParams;      // x sun disc strength, yzw unused
+    // The environment probe (docs/IBL.md): second-order spherical harmonics, one coefficient per slot as (r, g, b),
+    // interpolated on the CPU at the camera's focus, in colour units (a white environment evaluates to white).
+    vec4 envSH[9];
+    // x ambient weight (0 = the hemisphere path above), y 1 = uEnvCube holds the prefiltered environment, z
+    // intensity, w mip count. A vec4 at the end of the block, as std140 requires of every addition.
+    vec4 envParams;
 } frame;
+
+// The environment probe evaluated at a normalised direction: the nine basis terms against the packed coefficients.
+// Coefficients and basis agree with engine/environment.cpp (shBasis / evalSh); the terms are written out because a
+// uniform block cannot hold a helper.
+vec3 shIrradiance(vec3 n) {
+    vec3 v = frame.envSH[0].rgb * 0.282095;
+    v += frame.envSH[1].rgb * (0.488603 * n.y);
+    v += frame.envSH[2].rgb * (0.488603 * n.z);
+    v += frame.envSH[3].rgb * (0.488603 * n.x);
+    v += frame.envSH[4].rgb * (1.092548 * n.x * n.y);
+    v += frame.envSH[5].rgb * (1.092548 * n.y * n.z);
+    v += frame.envSH[6].rgb * (0.315392 * (3.0 * n.z * n.z - 1.0));
+    v += frame.envSH[7].rgb * (1.092548 * n.x * n.z);
+    v += frame.envSH[8].rgb * (0.546274 * (n.x * n.x - n.y * n.y));
+    return v;
+}
+
+// The prefiltered environment cubemap (level 0 = the environment, higher mips = wider GGX lobes). Only referenced by
+// shaders that sample it; declaring it here keeps the descriptor layout identical for every Frame-set pipeline.
+TEX(0, 8) uniform samplerCube uEnvCube;

@@ -25,15 +25,55 @@ namespace {
 constexpr GLuint kPushUboBinding = 1;   // see common.glsl PUSH macro
 constexpr GLsizei kVertexStride = 96;   // sizeof(rhi::Vertex)
 
+// Block-compressed internal formats. The S3TC enums come from GL_EXT_texture_compression_s3tc (not core), which
+// Mesa and the proprietary drivers expose on every desktop GL 4.x context this engine targets; the values are
+// defined here so the build does not depend on the header having them.
+#ifndef GL_COMPRESSED_RGB_S3TC_DXT1_EXT
+#define GL_COMPRESSED_RGB_S3TC_DXT1_EXT 0x83F0
+#endif
+#ifndef GL_COMPRESSED_RGBA_S3TC_DXT5_EXT
+#define GL_COMPRESSED_RGBA_S3TC_DXT5_EXT 0x83F3
+#endif
+#ifndef GL_COMPRESSED_SRGB_S3TC_DXT1_EXT
+#define GL_COMPRESSED_SRGB_S3TC_DXT1_EXT 0x8C4C
+#endif
+#ifndef GL_COMPRESSED_SRGB_ALPHA_S3TC_DXT5_EXT
+#define GL_COMPRESSED_SRGB_ALPHA_S3TC_DXT5_EXT 0x8C4F
+#endif
+#ifndef GL_COMPRESSED_RG_RGTC2
+#define GL_COMPRESSED_RG_RGTC2 0x8DBD
+#endif
+
 GLenum toGLInternal(Format f) {
     switch (f) {
+    case Format::ASTC_4x4:
+    case Format::ASTC_4x4_SRGB:
+        throw std::runtime_error("ASTC is not available on the GL backend; ask supportsAstc() first");
     case Format::RGBA8: return GL_RGBA8;
     case Format::RGBA8_SRGB: return GL_SRGB8_ALPHA8;
     case Format::RGBA16F: return GL_RGBA16F;
     case Format::D32F: return GL_DEPTH_COMPONENT32F;
     case Format::Backbuffer: return GL_RGBA8;
+    case Format::BC1: return GL_COMPRESSED_RGB_S3TC_DXT1_EXT;
+    case Format::BC1_SRGB: return GL_COMPRESSED_SRGB_S3TC_DXT1_EXT;
+    case Format::BC3: return GL_COMPRESSED_RGBA_S3TC_DXT5_EXT;
+    case Format::BC3_SRGB: return GL_COMPRESSED_SRGB_ALPHA_S3TC_DXT5_EXT;
+    case Format::BC5: return GL_COMPRESSED_RG_RGTC2;
     }
     return GL_RGBA8;
+}
+
+// Bytes in one 4x4 block of a compressed format (0 = not compressed). Kept beside toGLInternal so the level sizes
+// and the upload sizes cannot drift apart.
+int glBlockBytes(Format f) {
+    switch (f) {
+    case Format::BC1:
+    case Format::BC1_SRGB: return 8;
+    case Format::BC3:
+    case Format::BC3_SRGB:
+    case Format::BC5: return 16;
+    default: return 0;
+    }
 }
 
 GLuint compileStage(GLenum type, const std::string& source, const std::string& name) {
@@ -72,14 +112,49 @@ private:
 
 class GLTexture final : public Texture {
 public:
-    GLTexture(const TextureDesc& d, const void* rgba) : desc_(d) {
+    GLTexture(const TextureDesc& d, const void* rgba, const MipChain* chain) : desc_(d) {
         levels_ = d.mipmaps ? static_cast<GLsizei>(std::floor(std::log2(std::max(d.width, d.height)))) + 1 : 1;
-        glCreateTextures(GL_TEXTURE_2D, 1, &id_);
-        glTextureStorage2D(id_, levels_, toGLInternal(d.format), static_cast<GLsizei>(d.width), static_cast<GLsizei>(d.height));
-        if (rgba) {
+        const bool cube = d.faces == 6;
+        glCreateTextures(cube ? GL_TEXTURE_CUBE_MAP : GL_TEXTURE_2D, 1, &id_);
+        glTextureStorage2D(id_, levels_, toGLInternal(d.format), static_cast<GLsizei>(d.width),
+                           static_cast<GLsizei>(d.height));
+        const int blockB = glBlockBytes(d.format);
+        if (chain && !chain->empty() && blockB > 0) {
+            // A compressed chain (engine/texture_compress.cpp): one glCompressedTextureSubImage2D per level, the
+            // extent being the level's virtual size — the driver rounds to blocks itself.
+            const GLsizei n = std::min(levels_, static_cast<GLsizei>(chain->size()));
+            const GLenum fmt = toGLInternal(d.format);
+            for (GLsizei i = 0; i < n; ++i) {
+                const GLsizei lw = std::max<GLsizei>(1, static_cast<GLsizei>(d.width) >> i);
+                const GLsizei lh = std::max<GLsizei>(1, static_cast<GLsizei>(d.height) >> i);
+                const GLsizei bytes =
+                    GLsizei((std::max<GLsizei>(1, (lw + 3) / 4) * std::max<GLsizei>(1, (lh + 3) / 4)) * blockB);
+                glCompressedTextureSubImage2D(id_, i, 0, 0, lw, lh, fmt, bytes, (*chain)[size_t(i)].data());
+            }
+        } else if (chain && !chain->empty()) {
+            // A chain built on the CPU (alpha-coverage-preserving mips, or the environment's prefiltered cube):
+            // upload every level, generate nothing. A cubemap's chain is face-major (face 0's whole chain first);
+            // DSA's sub-image-3D treats the six faces as z layers 0..5.
+            const GLsizei n = std::min(levels_, static_cast<GLsizei>(chain->size()) /
+                                                        static_cast<GLsizei>(cube ? 6 : 1));
+            const GLsizei faceCount = cube ? 6 : 1;
+            for (GLsizei f = 0; f < faceCount; ++f) {
+                for (GLsizei i = 0; i < n; ++i) {
+                    const GLsizei lw = std::max<GLsizei>(1, static_cast<GLsizei>(d.width) >> i);
+                    const GLsizei lh = std::max<GLsizei>(1, static_cast<GLsizei>(d.height) >> i);
+                    const uint8_t* pixels = (*chain)[size_t(f * n + i)].data();
+                    if (cube)
+                        glTextureSubImage3D(id_, i, 0, 0, f, lw, lh, 1, GL_RGBA, GL_UNSIGNED_BYTE, pixels);
+                    else
+                        glTextureSubImage2D(id_, i, 0, 0, lw, lh, GL_RGBA, GL_UNSIGNED_BYTE, pixels);
+                }
+            }
+        } else if (rgba && blockB == 0) {
             glTextureSubImage2D(id_, 0, 0, 0, static_cast<GLsizei>(d.width), static_cast<GLsizei>(d.height),
                                 GL_RGBA, GL_UNSIGNED_BYTE, rgba);
             if (levels_ > 1) glGenerateTextureMipmap(id_);
+        } else if (blockB > 0) {
+            throw std::runtime_error("a compressed texture is created from a chain of block bytes, not from pixels");
         }
         GLenum filter = d.filter == Filter::Nearest ? GL_NEAREST : GL_LINEAR;
         GLenum minF = (levels_ > 1) ? (d.filter == Filter::Nearest ? GL_NEAREST_MIPMAP_LINEAR : GL_LINEAR_MIPMAP_LINEAR) : filter;
@@ -88,11 +163,21 @@ public:
         glTextureParameteri(id_, GL_TEXTURE_MAG_FILTER, static_cast<GLint>(filter));
         glTextureParameteri(id_, GL_TEXTURE_WRAP_S, static_cast<GLint>(wrap));
         glTextureParameteri(id_, GL_TEXTURE_WRAP_T, static_cast<GLint>(wrap));
+        if (cube) glTextureParameteri(id_, GL_TEXTURE_WRAP_R, static_cast<GLint>(wrap));
     }
     ~GLTexture() override { glDeleteTextures(1, &id_); }
     uint32_t width() const override { return desc_.width; }
     uint32_t height() const override { return desc_.height; }
     Format format() const override { return desc_.format; }
+    void update(uint32_t x, uint32_t y, uint32_t w, uint32_t h, const void* rgba8) override {
+        if (glBlockBytes(desc_.format) > 0) throw std::runtime_error("compressed textures do not take partial updates");
+        if (rgba8 == nullptr || w == 0 || h == 0) return;
+        if (x + w > desc_.width || y + h > desc_.height) throw std::runtime_error("texture update out of range");
+        // Row 0 is the top row of the image, matching the Vulkan copy (GL's origin is the vertex's, not the texture's).
+        glTextureSubImage2D(id_, 0, static_cast<GLint>(x), static_cast<GLint>(y), static_cast<GLsizei>(w),
+                            static_cast<GLsizei>(h), GL_RGBA, GL_UNSIGNED_BYTE, rgba8);
+        if (levels_ > 1) glGenerateTextureMipmap(id_);
+    }
     GLuint id() const { return id_; }
 
 private:
@@ -110,6 +195,7 @@ public:
 
 class GLDescriptorSet final : public DescriptorSet {
 public:
+    SetType type = SetType::Frame;   // the Compute set binds its buffers as SSBOs, every other set as uniform blocks
     void setBuffer(uint32_t binding, Buffer* buffer) override {
         GLuint id = static_cast<GLBuffer*>(buffer)->id();
         upsert(buffers_, binding, id);
@@ -163,12 +249,23 @@ public:
         glVertexArrayAttribFormat(vao_, 6, 2, GL_FLOAT, GL_FALSE, 72);
         glEnableVertexArrayAttrib(vao_, 7);
         glVertexArrayAttribFormat(vao_, 7, 4, GL_FLOAT, GL_FALSE, 80);
-        for (GLuint a = 0; a < 5; ++a) glVertexArrayAttribBinding(vao_, a, 0);
+        // Every enabled attribute reads from the one interleaved buffer. An attribute left unbound reads from its own
+        // (empty) binding slot, which in GL is not an error: it silently yields zeros, so a shader's colour input is
+        // black and nothing on screen says why. All eight are routed to binding 0 — the same buffer, one stride.
+        for (GLuint a = 0; a < 8; ++a) glVertexArrayAttribBinding(vao_, a, 0);
         glBindVertexArray(vao_);
 
         glCreateBuffers(1, &pushUbo_);
         glNamedBufferStorage(pushUbo_, 128, nullptr, GL_DYNAMIC_STORAGE_BIT);
         glBindBufferBase(GL_UNIFORM_BUFFER, kPushUboBinding, pushUbo_);
+
+        // The profiler's GPU brackets (docs/PROFILER.md): two timestamp queries per slot. The query counter is GL
+        // 4.3 core; a context that somehow lacks it leaves the pointers null and the API reports no timings.
+        if (glad_glGenQueries && glad_glQueryCounter && glad_glGetQueryObjectui64v) {
+            glGenQueries(static_cast<GLsizei>(kGpuTimeSlots * 2), timeQ_);
+            times_ = true;
+            gpuTimes_.assign(kGpuTimeSlots, 0.0f);
+        }
 
         width_ = cfg.width;
         height_ = cfg.height;
@@ -179,7 +276,7 @@ public:
             d.height = cfg.height;
             d.format = Format::RGBA8;
             d.filter = Filter::Nearest;
-            offscreenColor_ = std::make_unique<GLTexture>(d, nullptr);
+            offscreenColor_ = std::make_unique<GLTexture>(d, nullptr, nullptr);
             glCreateFramebuffers(1, &offscreenFbo_);
             glNamedFramebufferTexture(offscreenFbo_, GL_COLOR_ATTACHMENT0, offscreenColor_->id(), 0);
         } else {
@@ -192,6 +289,7 @@ public:
 
     ~GLDevice() override {
         glFinish();
+        if (times_) glDeleteQueries(static_cast<GLsizei>(kGpuTimeSlots * 2), timeQ_);
         if (offscreenFbo_) glDeleteFramebuffers(1, &offscreenFbo_);
         glDeleteBuffers(1, &pushUbo_);
         glDeleteVertexArrays(1, &vao_);
@@ -207,18 +305,44 @@ public:
     Format backbufferFormat() const override { return Format::RGBA8; }
     bool presentFlipsY() const override { return false; }
 
+    bool supportsBlockCompression() const override { return true; }   // S3TC is universal on desktop GL 4.x
+    // ASTC stays a phone format here: desktop GL support is optional and the desktop backend has BCn, which its
+    // hardware prefers. An ASTC texture reaching the GL backend is a loader bug and refuses loudly.
+    bool supportsAstc() const override { return false; }
+
     std::unique_ptr<Buffer> createBuffer(BufferUsage, size_t size) override {
         return std::make_unique<GLBuffer>(std::max<size_t>(size, 16));
     }
 
-    std::unique_ptr<Texture> createTexture(const TextureDesc& desc, const void* rgba8) override {
-        return std::make_unique<GLTexture>(desc, rgba8);
+    std::unique_ptr<Texture> createTexture(const TextureDesc& desc, const void* rgba8,
+                                           const MipChain* mipChain) override {
+        return std::make_unique<GLTexture>(desc, rgba8, mipChain);
     }
 
     std::unique_ptr<Pipeline> createPipeline(const PipelineDesc& desc) override {
         auto p = std::make_unique<GLPipeline>();
         p->desc = desc;
-        std::string dir = UKIYO_SHADER_DIR "/gl/";
+        std::string dir = shaderRoot() + "/gl/";
+        if (!desc.computeShader.empty()) {
+            // A compute program is one stage and has no rasteriser state to pair with it. The same include-expanded
+            // GLSL the Vulkan step compiled to .comp.spv, read here as <name>.comp.glsl.
+            const std::string csrc = readText(dir + desc.computeShader + ".comp.glsl");
+            GLuint cs = compileStage(GL_COMPUTE_SHADER, csrc, desc.computeShader + ".comp");
+            GLuint prog = glCreateProgram();
+            glAttachShader(prog, cs);
+            glLinkProgram(prog);
+            glDeleteShader(cs);
+            GLint ok = 0;
+            glGetProgramiv(prog, GL_LINK_STATUS, &ok);
+            if (!ok) {
+                char log[4096];
+                glGetProgramInfoLog(prog, sizeof(log), nullptr, log);
+                glDeleteProgram(prog);
+                throw std::runtime_error("GL link error (compute " + desc.computeShader + "):\n" + log);
+            }
+            p->program = prog;
+            return p;
+        }
         std::string vsrc = readText(dir + desc.vertexShader + ".vert.glsl");
         std::string fsrc;
         if (!desc.fragmentGlsl.empty()) {
@@ -249,11 +373,17 @@ public:
         return p;
     }
 
-    std::unique_ptr<DescriptorSet> createDescriptorSet(SetType) override {
-        return std::make_unique<GLDescriptorSet>();
+    std::unique_ptr<DescriptorSet> createDescriptorSet(SetType type) override {
+        auto set = std::make_unique<GLDescriptorSet>();
+        set->type = type;
+        return set;
     }
 
     bool beginFrame() override {
+        // Resolve last frame's brackets first: the swap after it has pushed the driver's queue at least as far as
+        // that frame, and the read below only asks for queries already finished (never waits — the profiler's one
+        // frame of latency is the point). A query still running keeps its slot's previous value.
+        resolveGpuTimes();
         if (!headless_) {
             int fw = 0, fh = 0;
             glfwGetFramebufferSize(window_, &fw, &fh);
@@ -262,6 +392,34 @@ public:
             height_ = static_cast<uint32_t>(fh);
         }
         return true;
+    }
+
+    // GPU timestamps (docs/PROFILER.md): glQueryCounter pairs written outside every render pass, resolved at the
+    // next beginFrame. A bracket the frame did not write still answers with its previous result, which is why the
+    // readiness check is per slot and the old value is what a skipped slot keeps.
+    void beginGpuTime(uint32_t slot) override {
+        if (!times_ || slot >= kGpuTimeSlots) return;
+        glQueryCounter(timeQ_[slot * 2], GL_TIMESTAMP);
+    }
+    void endGpuTime(uint32_t slot) override {
+        if (!times_ || slot >= kGpuTimeSlots) return;
+        glQueryCounter(timeQ_[slot * 2 + 1], GL_TIMESTAMP);
+    }
+    std::vector<float> gpuTimesMs() override { return times_ ? gpuTimes_ : std::vector<float>{}; }
+
+    void resolveGpuTimes() {
+        if (!times_) return;
+        for (uint32_t s = 0; s < kGpuTimeSlots; ++s) {
+            GLuint ready = 0;
+            glGetQueryObjectuiv(timeQ_[s * 2], GL_QUERY_RESULT_AVAILABLE, &ready);
+            if (!ready) continue;
+            glGetQueryObjectuiv(timeQ_[s * 2 + 1], GL_QUERY_RESULT_AVAILABLE, &ready);
+            if (!ready) continue;
+            GLuint64 a = 0, b = 0;
+            glGetQueryObjectui64v(timeQ_[s * 2], GL_QUERY_RESULT, &a);
+            glGetQueryObjectui64v(timeQ_[s * 2 + 1], GL_QUERY_RESULT, &b);
+            gpuTimes_[s] = float(double(b > a ? b - a : 0) / 1.0e6);
+        }
     }
 
     void endFrame(bool capture) override {
@@ -350,11 +508,15 @@ public:
         auto* p = static_cast<GLPipeline*>(pipeline);
         const PipelineDesc& d = p->desc;
         glUseProgram(p->program);
+        if (!d.computeShader.empty()) return;   // no rasteriser state belongs to a dispatch; leave none to leak
         if (d.cull == Cull::None) glDisable(GL_CULL_FACE);
         else { glEnable(GL_CULL_FACE); glCullFace(d.cull == Cull::Back ? GL_BACK : GL_FRONT); }
         if (d.depthTest) glEnable(GL_DEPTH_TEST); else glDisable(GL_DEPTH_TEST);
         glDepthFunc(GL_LEQUAL);
         glDepthMask(d.depthWrite ? GL_TRUE : GL_FALSE);
+        // Wireframe is rasteriser state in GL rather than pipeline state: set it on every bind so a pipeline switch
+        // cannot leak it into the next draw.
+        glPolygonMode(GL_FRONT_AND_BACK, d.wireframe ? GL_LINE : GL_FILL);
         switch (d.blend) {
         case Blend::None: glDisable(GL_BLEND); break;
         case Blend::Alpha:
@@ -370,7 +532,8 @@ public:
 
     void bindDescriptorSet(uint32_t, DescriptorSet* set) override {
         auto* s = static_cast<GLDescriptorSet*>(set);
-        for (auto& [binding, id] : s->buffers_) glBindBufferBase(GL_UNIFORM_BUFFER, binding, id);
+        const GLenum target = s->type == SetType::Compute ? GL_SHADER_STORAGE_BUFFER : GL_UNIFORM_BUFFER;
+        for (auto& [binding, id] : s->buffers_) glBindBufferBase(target, binding, id);
         for (auto& [binding, id] : s->textures_) glBindTextureUnit(binding, id);
     }
 
@@ -396,6 +559,27 @@ public:
         glBindVertexArray(vao_);
         glDrawElementsInstanced(GL_TRIANGLES, static_cast<GLsizei>(indexCount), GL_UNSIGNED_INT, nullptr,
                                 static_cast<GLsizei>(instanceCount));
+    }
+
+    void dispatch(uint32_t x, uint32_t y, uint32_t z) override {
+        // The same two barriers Vulkan gets inside dispatch(): prior writes visible to the compute stage, its writes
+        // visible to the command and attribute reads the indirect draws take afterwards.
+        glMemoryBarrier(GL_SHADER_STORAGE_BARRIER_BIT);
+        glDispatchCompute(x, y, z);
+        glMemoryBarrier(GL_SHADER_STORAGE_BARRIER_BIT | GL_COMMAND_BARRIER_BIT | GL_VERTEX_ATTRIB_ARRAY_BARRIER_BIT);
+    }
+
+    void drawIndexedIndirect(Buffer* buffer, size_t offset, uint32_t drawCount) override {
+        glBindVertexArray(vao_);
+        // One glDrawElementsIndirect per command rather than glMultiDrawElementsIndirect: the stride form is core
+        // 4.6, this engine's GL floor is 4.5, and sixteen zero commands are sixteen no-ops. The command layout is
+        // the same five uint32s Vulkan uses, at a 20-byte stride.
+        glBindBuffer(GL_DRAW_INDIRECT_BUFFER, static_cast<GLBuffer*>(buffer)->id());
+        for (uint32_t i = 0; i < drawCount; ++i) {
+            glDrawElementsIndirect(GL_TRIANGLES, GL_UNSIGNED_INT,
+                                   reinterpret_cast<const void*>(offset + size_t(i) * 20));
+        }
+        glBindBuffer(GL_DRAW_INDIRECT_BUFFER, 0);
     }
 
     void drawFullscreen() override {
@@ -426,6 +610,9 @@ private:
     GLuint offscreenFbo_ = 0;
     std::unique_ptr<GLTexture> offscreenColor_;
     std::vector<uint8_t> capture_;
+    GLuint timeQ_[kGpuTimeSlots * 2]{};   // [begin, end] per slot
+    bool times_ = false;
+    std::vector<float> gpuTimes_;
 };
 
 } // namespace

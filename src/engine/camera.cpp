@@ -24,7 +24,19 @@ glm::mat4 OrbitCamera::view() const {
 }
 
 glm::mat4 OrbitCamera::proj(float aspect) const {
-    return glm::perspectiveRH_ZO(fovY, aspect, nearZ, farZ);
+    if (!orthographic) return glm::perspectiveRH_ZO(fovY, aspect, nearZ, farZ);
+    // The eye stays where the orbit maths put it, so depth is linear between the same near and far planes; a designer
+    // switching views sees the same objects in the same place, drawn without perspective.
+    const float halfH = std::max(orthoHeight, 0.01f) * 0.5f;
+    const float halfW = halfH * std::max(aspect, 0.01f);
+    return glm::orthoRH_ZO(-halfW, halfW, -halfH, halfH, nearZ, farZ);
+}
+
+void OrbitCamera::fly(float forwardAmt, float rightAmt, float upAmt) {
+    // A fly camera moves the eye and carries the target with it, so the orbit parameters stay valid and the next drag
+    // continues from where the flight ended.
+    const glm::vec3 move = forward() * forwardAmt + right() * rightAmt + glm::vec3(0.0f, upAmt, 0.0f);
+    target += move;
 }
 
 void OrbitCamera::orbit(float dYaw, float dPitch) {
@@ -33,12 +45,17 @@ void OrbitCamera::orbit(float dYaw, float dPitch) {
 }
 
 void OrbitCamera::zoom(float steps) {
+    if (orthographic) {
+        orthoHeight = std::clamp(orthoHeight * std::pow(0.9f, steps), 0.25f, 400.0f);
+        return;
+    }
     distance = std::clamp(distance * std::pow(0.9f, steps), 0.4f, 60.0f);
 }
 
 void OrbitCamera::pan(float dxPixels, float dyPixels, float viewportHeight) {
-    // Scale so the content under the cursor follows the mouse.
-    float worldPerPixel = 2.0f * distance * std::tan(fovY * 0.5f) / viewportHeight;
+    // Scale so the content under the cursor follows the mouse. In ortho the visible height is the whole story.
+    const float worldPerPixel = orthographic ? orthoHeight / std::max(viewportHeight, 1.0f)
+                                             : 2.0f * distance * std::tan(fovY * 0.5f) / viewportHeight;
     target -= right() * (dxPixels * worldPerPixel);
     target += up() * (dyPixels * worldPerPixel);
 }

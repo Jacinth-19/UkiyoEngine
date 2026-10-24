@@ -1,0 +1,142 @@
+=== lantern-run ===
+[Vulkan Loader] INFO:           Using Vulkan Loader D:\a\UkiyoEngine\UkiyoEngine\dist\lantern-run-windows\vulkan-1.dll
+[Vulkan Loader] INFO:           Vulkan Loader Version 1.4.363
+[Vulkan Loader] INFO:           vkCreateInstance: applicationName: "Ukiyo Engine", applicationVersion: 0, engineName: "", engineVersion: 0, apiVersion: 1.3.0
+[Vulkan Loader] INFO:           vkCreateInstance: Requested 0 instance layer(s):
+[Vulkan Loader] INFO:           vkCreateInstance: Requested 0 instance extension(s):
+[Vulkan Loader] INFO:           No valid vk_loader_settings.json file found, no loader settings will be active
+[Vulkan Loader] INFO:           Loader is running with elevated permissions. Environment variable VK_LOADER_LAYERS_ENABLE will be ignored
+[Vulkan Loader] INFO:           Loader is running with elevated permissions. Environment variable VK_LOADER_LAYERS_DISABLE will be ignored
+[Vulkan Loader] INFO:           Loader is running with elevated permissions. Environment variable VK_LOADER_LAYERS_ALLOW will be ignored
+[Vulkan Loader] INFO:           Loader is running with elevated permissions. Environment variable VK_IMPLICIT_LAYER_PATH will be ignored
+[Vulkan Loader] INFO:           Loader is running with elevated permissions. Environment variable VK_ADD_IMPLICIT_LAYER_PATH will be ignored
+[Vulkan Loader] INFO:           windows_get_app_package_manifest_path: Failed to find mapping layers packages by family name
+[Vulkan Loader] LAYER:          Searching for implicit layer manifest files
+[Vulkan Loader] LAYER:             In following locations:
+[Vulkan Loader] LAYER:             Found no files
+[Vulkan Loader] LAYER:          Checking for Layer Manifest files in Registry at HKEY_LOCAL_MACHINE\SOFTWARE\Khronos\Vulkan\ImplicitLayers
+[Vulkan Loader] INFO | LAYER:   windows_get_device_registry_files: opening device VMBUS\{da0a7802-e377-4aac-8e77-0558eb1073f8}\{5620e0c7-8062-4dce-aeb7-520c7ef76171}
+[Vulkan Loader] DEBUG | DRIVER: windows_get_device_registry_entry: Device ID(1) Does not contain a value for "VulkanImplicitLayers"
+[Vulkan Loader] INFO | LAYER:   windows_get_device_registry_files: Opening child device 2 - DISPLAY\MSH062E\5&1A097CD8&0&UID5527112
+[Vulkan Loader] DEBUG | LAYER:  windows_get_device_registry_files: GUID for 2 is not SoftwareComponent skipping
+[Vulkan Loader] LAYER:          windows_get_device_registry_files: found no registry files
+[Vulkan Loader] LAYER:          Found no registry files in HKEY_LOCAL_MACHINE\SOFTWARE\Khronos\Vulkan\ImplicitLayers
+[Vulkan Loader] INFO:           Loader is running with elevated permissions. Environment variable VK_LAYER_PATH will be ignored
+[Vulkan Loader] INFO:           Loader is running with elevated permissions. Environment variable VK_ADD_LAYER_PATH will be ignored
+[Vulkan Loader] LAYER:          Searching for explicit layer manifest files
+[Vulkan Loader] LAYER:             In following locations:
+[Vulkan Loader] LAYER:             Found no files
+[Vulkan Loader] LAYER:          Checking for Layer Manifest files in Registry at HKEY_LOCAL_MACHINE\SOFTWARE\Khronos\Vulkan\ExplicitLayers
+[Vulkan Loader] INFO | LAYER:   windows_get_device_registry_files: opening device VMBUS\{da0a7802-e377-4aac-8e77-0558eb1073f8}\{5620e0c7-8062-4dce-aeb7-520c7ef76171}
+[Vulkan Loader] DEBUG | DRIVER: windows_get_device_registry_entry: Device ID(1) Does not contain a value for "VulkanExplicitLayers"
+[Vulkan Loader] INFO | LAYER:   windows_get_device_registry_files: Opening child device 2 - DISPLAY\MSH062E\5&1A097CD8&0&UID5527112
+[Vulkan Loader] DEBUG | LAYER:  windows_get_device_registry_files: GUID for 2 is not SoftwareComponent skipping
+[Vulkan Loader] LAYER:          windows_get_device_registry_files: found no registry files
+[Vulkan Loader] INFO | LAYER:   Located json file "C:\VulkanSDK\1.4.363.0\Bin\VkLayer_api_dump.json" from registry "HKEY_LOCAL_MACHINE\SOFTWARE\Khronos\Vulkan\ExplicitLayers"
+[Vulkan Loader] INFO | LAYER:   Located json file "C:\VulkanSDK\1.4.363.0\Bin\VkLayer_gfxreconstruct.json" from registry "HKEY_LOCAL_MACHINE\SOFTWARE\Khronos\Vulkan\ExplicitLayers"
+[Vulkan Loader] INFO | LAYER:   Located json file "C:\VulkanSDK\1.4.363.0\Bin\VkLayer_khronos_synchronization2.json" from registry "HKEY_LOCAL_MACHINE\SOFTWARE\Khronos\Vulkan\ExplicitLayers"
+[Vulkan Loader] INFO | LAYER:   Located json file "C:\VulkanSDK\1.4.363.0\Bin\VkLayer_khronos_validation.json" from registry "HKEY_LOCAL_MACHINE\SOFTWARE\Khronos\Vulkan\ExplicitLayers"
+[Vulkan Loader] INFO | LAYER:   Located json file "C:\VulkanSDK\1.4.363.0\Bin\VkLayer_monitor.json" from registry "HKEY_LOCAL_MACHINE\SOFTWARE\Khronos\Vulkan\ExplicitLayers"
+[Vulkan Loader] INFO | LAYER:   Located json file "C:\VulkanSDK\1.4.363.0\Bin\VkLayer_screenshot.json" from registry "HKEY_LOCAL_MACHINE\SOFTWARE\Khronos\Vulkan\ExplicitLayers"
+[Vulkan Loader] INFO | LAYER:   Located json file "C:\VulkanSDK\1.4.363.0\Bin\VkLayer_khronos_profiles.json" from registry "HKEY_LOCAL_MACHINE\SOFTWARE\Khronos\Vulkan\ExplicitLayers"
+[Vulkan Loader] INFO | LAYER:   Located json file "C:\VulkanSDK\1.4.363.0\Bin\VkLayer_khronos_shader_object.json" from registry "HKEY_LOCAL_MACHINE\SOFTWARE\Khronos\Vulkan\ExplicitLayers"
+[Vulkan Loader] INFO | LAYER:   Located json file "C:\VulkanSDK\1.4.363.0\Bin\VkLayer_crash_diagnostic.json" from registry "HKEY_LOCAL_MACHINE\SOFTWARE\Khronos\Vulkan\ExplicitLayers"
+[Vulkan Loader] INFO:           Found manifest file C:\VulkanSDK\1.4.363.0\Bin\VkLayer_api_dump.json (file version 1.2.0)
+[Vulkan Loader] INFO:           Found manifest file C:\VulkanSDK\1.4.363.0\Bin\VkLayer_gfxreconstruct.json (file version 1.2.0)
+[Vulkan Loader] INFO:           Found manifest file C:\VulkanSDK\1.4.363.0\Bin\VkLayer_khronos_synchronization2.json (file version 1.2.0)
+[Vulkan Loader] INFO:           Found manifest file C:\VulkanSDK\1.4.363.0\Bin\VkLayer_khronos_validation.json (file version 1.2.0)
+[Vulkan Loader] INFO:           Found manifest file C:\VulkanSDK\1.4.363.0\Bin\VkLayer_monitor.json (file version 1.0.0)
+[Vulkan Loader] INFO:           Found manifest file C:\VulkanSDK\1.4.363.0\Bin\VkLayer_screenshot.json (file version 1.2.0)
+[Vulkan Loader] INFO:           Found manifest file C:\VulkanSDK\1.4.363.0\Bin\VkLayer_khronos_profiles.json (file version 1.2.1)
+[Vulkan Loader] INFO:           Found manifest file C:\VulkanSDK\1.4.363.0\Bin\VkLayer_khronos_shader_object.json (file version 1.2.0)
+[Vulkan Loader] INFO:           Found manifest file C:\VulkanSDK\1.4.363.0\Bin\VkLayer_crash_diagnostic.json (file version 1.2.0)
+[Vulkan Loader] INFO:           Loader is running with elevated permissions. Environment variable VK_LOADER_DRIVERS_SELECT will be ignored
+[Vulkan Loader] INFO:           Loader is running with elevated permissions. Environment variable VK_LOADER_DRIVERS_DISABLE will be ignored
+[Vulkan Loader] INFO:           Loader is running with elevated permissions. Environment variable VK_DRIVER_FILES will be ignored
+[Vulkan Loader] INFO:           Loader is running with elevated permissions. Environment variable VK_ICD_FILENAMES will be ignored
+[Vulkan Loader] INFO:           Loader is running with elevated permissions. Environment variable VK_ADD_DRIVER_FILES will be ignored
+[Vulkan Loader] INFO:           windows_get_app_package_manifest_path: Failed to find mapping layers packages by family name
+[Vulkan Loader] DRIVER:         Searching for driver manifest files
+[Vulkan Loader] DRIVER:            In following locations:
+[Vulkan Loader] DRIVER:            Found no files
+[Vulkan Loader] DRIVER:         Checking for Driver Manifest files in Registry at HKEY_LOCAL_MACHINE\SOFTWARE\Khronos\Vulkan\Drivers
+[Vulkan Loader] INFO | DRIVER:  windows_get_device_registry_files: opening device VMBUS\{da0a7802-e377-4aac-8e77-0558eb1073f8}\{5620e0c7-8062-4dce-aeb7-520c7ef76171}
+[Vulkan Loader] DEBUG | DRIVER: windows_get_device_registry_entry: Device ID(1) Does not contain a value for "VulkanDriverName"
+[Vulkan Loader] INFO | DRIVER:  windows_get_device_registry_files: Opening child device 2 - DISPLAY\MSH062E\5&1A097CD8&0&UID5527112
+[Vulkan Loader] DEBUG | DRIVER: windows_get_device_registry_files: GUID for 2 is not SoftwareComponent skipping
+[Vulkan Loader] DRIVER:         windows_get_device_registry_files: found no registry files
+[Vulkan Loader] DRIVER:         Found no registry files in HKEY_LOCAL_MACHINE\SOFTWARE\Khronos\Vulkan\Drivers
+[Vulkan Loader] ERROR | DRIVER: windows_read_data_files_in_registry: Registry lookup failed to get ICD manifest files.  Possibly missing Vulkan driver?
+[Vulkan Loader] ERROR | DRIVER: vkCreateInstance: Found no drivers!
+player: vkCreateInstance failed with VkResult -9
+=== afterglow ===
+[Vulkan Loader] INFO:           Using Vulkan Loader D:\a\UkiyoEngine\UkiyoEngine\dist\afterglow-windows\vulkan-1.dll
+[Vulkan Loader] INFO:           Vulkan Loader Version 1.4.363
+[Vulkan Loader] INFO:           vkCreateInstance: applicationName: "Ukiyo Engine", applicationVersion: 0, engineName: "", engineVersion: 0, apiVersion: 1.3.0
+[Vulkan Loader] INFO:           vkCreateInstance: Requested 0 instance layer(s):
+[Vulkan Loader] INFO:           vkCreateInstance: Requested 0 instance extension(s):
+[Vulkan Loader] INFO:           No valid vk_loader_settings.json file found, no loader settings will be active
+[Vulkan Loader] INFO:           Loader is running with elevated permissions. Environment variable VK_LOADER_LAYERS_ENABLE will be ignored
+[Vulkan Loader] INFO:           Loader is running with elevated permissions. Environment variable VK_LOADER_LAYERS_DISABLE will be ignored
+[Vulkan Loader] INFO:           Loader is running with elevated permissions. Environment variable VK_LOADER_LAYERS_ALLOW will be ignored
+[Vulkan Loader] INFO:           Loader is running with elevated permissions. Environment variable VK_IMPLICIT_LAYER_PATH will be ignored
+[Vulkan Loader] INFO:           Loader is running with elevated permissions. Environment variable VK_ADD_IMPLICIT_LAYER_PATH will be ignored
+[Vulkan Loader] INFO:           windows_get_app_package_manifest_path: Failed to find mapping layers packages by family name
+[Vulkan Loader] LAYER:          Searching for implicit layer manifest files
+[Vulkan Loader] LAYER:             In following locations:
+[Vulkan Loader] LAYER:             Found no files
+[Vulkan Loader] LAYER:          Checking for Layer Manifest files in Registry at HKEY_LOCAL_MACHINE\SOFTWARE\Khronos\Vulkan\ImplicitLayers
+[Vulkan Loader] INFO | LAYER:   windows_get_device_registry_files: opening device VMBUS\{da0a7802-e377-4aac-8e77-0558eb1073f8}\{5620e0c7-8062-4dce-aeb7-520c7ef76171}
+[Vulkan Loader] DEBUG | DRIVER: windows_get_device_registry_entry: Device ID(1) Does not contain a value for "VulkanImplicitLayers"
+[Vulkan Loader] INFO | LAYER:   windows_get_device_registry_files: Opening child device 2 - DISPLAY\MSH062E\5&1A097CD8&0&UID5527112
+[Vulkan Loader] DEBUG | LAYER:  windows_get_device_registry_files: GUID for 2 is not SoftwareComponent skipping
+[Vulkan Loader] LAYER:          windows_get_device_registry_files: found no registry files
+[Vulkan Loader] LAYER:          Found no registry files in HKEY_LOCAL_MACHINE\SOFTWARE\Khronos\Vulkan\ImplicitLayers
+[Vulkan Loader] INFO:           Loader is running with elevated permissions. Environment variable VK_LAYER_PATH will be ignored
+[Vulkan Loader] INFO:           Loader is running with elevated permissions. Environment variable VK_ADD_LAYER_PATH will be ignored
+[Vulkan Loader] LAYER:          Searching for explicit layer manifest files
+[Vulkan Loader] LAYER:             In following locations:
+[Vulkan Loader] LAYER:             Found no files
+[Vulkan Loader] LAYER:          Checking for Layer Manifest files in Registry at HKEY_LOCAL_MACHINE\SOFTWARE\Khronos\Vulkan\ExplicitLayers
+[Vulkan Loader] INFO | LAYER:   windows_get_device_registry_files: opening device VMBUS\{da0a7802-e377-4aac-8e77-0558eb1073f8}\{5620e0c7-8062-4dce-aeb7-520c7ef76171}
+[Vulkan Loader] DEBUG | DRIVER: windows_get_device_registry_entry: Device ID(1) Does not contain a value for "VulkanExplicitLayers"
+[Vulkan Loader] INFO | LAYER:   windows_get_device_registry_files: Opening child device 2 - DISPLAY\MSH062E\5&1A097CD8&0&UID5527112
+[Vulkan Loader] DEBUG | LAYER:  windows_get_device_registry_files: GUID for 2 is not SoftwareComponent skipping
+[Vulkan Loader] LAYER:          windows_get_device_registry_files: found no registry files
+[Vulkan Loader] INFO | LAYER:   Located json file "C:\VulkanSDK\1.4.363.0\Bin\VkLayer_api_dump.json" from registry "HKEY_LOCAL_MACHINE\SOFTWARE\Khronos\Vulkan\ExplicitLayers"
+[Vulkan Loader] INFO | LAYER:   Located json file "C:\VulkanSDK\1.4.363.0\Bin\VkLayer_gfxreconstruct.json" from registry "HKEY_LOCAL_MACHINE\SOFTWARE\Khronos\Vulkan\ExplicitLayers"
+[Vulkan Loader] INFO | LAYER:   Located json file "C:\VulkanSDK\1.4.363.0\Bin\VkLayer_khronos_synchronization2.json" from registry "HKEY_LOCAL_MACHINE\SOFTWARE\Khronos\Vulkan\ExplicitLayers"
+[Vulkan Loader] INFO | LAYER:   Located json file "C:\VulkanSDK\1.4.363.0\Bin\VkLayer_khronos_validation.json" from registry "HKEY_LOCAL_MACHINE\SOFTWARE\Khronos\Vulkan\ExplicitLayers"
+[Vulkan Loader] INFO | LAYER:   Located json file "C:\VulkanSDK\1.4.363.0\Bin\VkLayer_monitor.json" from registry "HKEY_LOCAL_MACHINE\SOFTWARE\Khronos\Vulkan\ExplicitLayers"
+[Vulkan Loader] INFO | LAYER:   Located json file "C:\VulkanSDK\1.4.363.0\Bin\VkLayer_screenshot.json" from registry "HKEY_LOCAL_MACHINE\SOFTWARE\Khronos\Vulkan\ExplicitLayers"
+[Vulkan Loader] INFO | LAYER:   Located json file "C:\VulkanSDK\1.4.363.0\Bin\VkLayer_khronos_profiles.json" from registry "HKEY_LOCAL_MACHINE\SOFTWARE\Khronos\Vulkan\ExplicitLayers"
+[Vulkan Loader] INFO | LAYER:   Located json file "C:\VulkanSDK\1.4.363.0\Bin\VkLayer_khronos_shader_object.json" from registry "HKEY_LOCAL_MACHINE\SOFTWARE\Khronos\Vulkan\ExplicitLayers"
+[Vulkan Loader] INFO | LAYER:   Located json file "C:\VulkanSDK\1.4.363.0\Bin\VkLayer_crash_diagnostic.json" from registry "HKEY_LOCAL_MACHINE\SOFTWARE\Khronos\Vulkan\ExplicitLayers"
+[Vulkan Loader] INFO:           Found manifest file C:\VulkanSDK\1.4.363.0\Bin\VkLayer_api_dump.json (file version 1.2.0)
+[Vulkan Loader] INFO:           Found manifest file C:\VulkanSDK\1.4.363.0\Bin\VkLayer_gfxreconstruct.json (file version 1.2.0)
+[Vulkan Loader] INFO:           Found manifest file C:\VulkanSDK\1.4.363.0\Bin\VkLayer_khronos_synchronization2.json (file version 1.2.0)
+[Vulkan Loader] INFO:           Found manifest file C:\VulkanSDK\1.4.363.0\Bin\VkLayer_khronos_validation.json (file version 1.2.0)
+[Vulkan Loader] INFO:           Found manifest file C:\VulkanSDK\1.4.363.0\Bin\VkLayer_monitor.json (file version 1.0.0)
+[Vulkan Loader] INFO:           Found manifest file C:\VulkanSDK\1.4.363.0\Bin\VkLayer_screenshot.json (file version 1.2.0)
+[Vulkan Loader] INFO:           Found manifest file C:\VulkanSDK\1.4.363.0\Bin\VkLayer_khronos_profiles.json (file version 1.2.1)
+[Vulkan Loader] INFO:           Found manifest file C:\VulkanSDK\1.4.363.0\Bin\VkLayer_khronos_shader_object.json (file version 1.2.0)
+[Vulkan Loader] INFO:           Found manifest file C:\VulkanSDK\1.4.363.0\Bin\VkLayer_crash_diagnostic.json (file version 1.2.0)
+[Vulkan Loader] INFO:           Loader is running with elevated permissions. Environment variable VK_LOADER_DRIVERS_SELECT will be ignored
+[Vulkan Loader] INFO:           Loader is running with elevated permissions. Environment variable VK_LOADER_DRIVERS_DISABLE will be ignored
+[Vulkan Loader] INFO:           Loader is running with elevated permissions. Environment variable VK_DRIVER_FILES will be ignored
+[Vulkan Loader] INFO:           Loader is running with elevated permissions. Environment variable VK_ICD_FILENAMES will be ignored
+[Vulkan Loader] INFO:           Loader is running with elevated permissions. Environment variable VK_ADD_DRIVER_FILES will be ignored
+[Vulkan Loader] INFO:           windows_get_app_package_manifest_path: Failed to find mapping layers packages by family name
+[Vulkan Loader] DRIVER:         Searching for driver manifest files
+[Vulkan Loader] DRIVER:            In following locations:
+[Vulkan Loader] DRIVER:            Found no files
+[Vulkan Loader] DRIVER:         Checking for Driver Manifest files in Registry at HKEY_LOCAL_MACHINE\SOFTWARE\Khronos\Vulkan\Drivers
+[Vulkan Loader] INFO | DRIVER:  windows_get_device_registry_files: opening device VMBUS\{da0a7802-e377-4aac-8e77-0558eb1073f8}\{5620e0c7-8062-4dce-aeb7-520c7ef76171}
+[Vulkan Loader] DEBUG | DRIVER: windows_get_device_registry_entry: Device ID(1) Does not contain a value for "VulkanDriverName"
+[Vulkan Loader] INFO | DRIVER:  windows_get_device_registry_files: Opening child device 2 - DISPLAY\MSH062E\5&1A097CD8&0&UID5527112
+[Vulkan Loader] DEBUG | DRIVER: windows_get_device_registry_files: GUID for 2 is not SoftwareComponent skipping
+[Vulkan Loader] DRIVER:         windows_get_device_registry_files: found no registry files
+[Vulkan Loader] DRIVER:         Found no registry files in HKEY_LOCAL_MACHINE\SOFTWARE\Khronos\Vulkan\Drivers
+[Vulkan Loader] ERROR | DRIVER: windows_read_data_files_in_registry: Registry lookup failed to get ICD manifest files.  Possibly missing Vulkan driver?
+[Vulkan Loader] ERROR | DRIVER: vkCreateInstance: Found no drivers!
+player: vkCreateInstance failed with VkResult -9

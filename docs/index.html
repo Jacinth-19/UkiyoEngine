@@ -1,0 +1,1048 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Ukiyo Hub — design preview</title>
+<style>
+  :root {
+    --ink: #0c0e12;
+    --desk: #0a0b0e;
+    --window: #131519;
+    --page: #171a20;
+    --rail: #101216;
+    --line: #232a33;
+    --line-soft: #1c222a;
+    --text: #eef3f9;
+    --text-2: #aab6c4;
+    --text-3: #7e8b9b;
+    --text-4: #5d6a7a;
+    --accent: #4a9ef0;
+    --accent-2: #2f7fd0;
+    --mint: #7ee3d4;
+    --rose: #e8748f;
+    --green: #5fd0a0;
+    --radius: 12px;
+    --sans: "Inter", "Segoe UI", system-ui, -apple-system, "Helvetica Neue", Arial, sans-serif;
+  }
+
+  * { box-sizing: border-box; }
+
+  html, body {
+    height: 100%;
+    margin: 0;
+    font-family: var(--sans);
+    color: var(--text);
+    background:
+      radial-gradient(1100px 600px at 22% -10%, #16273a 0%, rgba(22, 39, 58, 0) 62%),
+      radial-gradient(900px 520px at 100% 110%, #221a2c 0%, rgba(34, 26, 44, 0) 60%),
+      #0a0b0e;
+    -webkit-font-smoothing: antialiased;
+    overflow: hidden;
+  }
+
+  /* ------------------------------------------------------------------ chrome */
+
+  .stage {
+    height: 100%;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 28px;
+  }
+
+  .window {
+    width: min(1200px, calc(100vw - 56px));
+    height: min(780px, calc(100vh - 96px));
+    min-height: 560px;
+    display: flex;
+    border-radius: 14px;
+    overflow: hidden;
+    background: var(--page);
+    border: 1px solid #262b33;
+    box-shadow:
+      0 40px 120px rgba(0, 0, 0, .62),
+      0 4px 18px rgba(0, 0, 0, .45),
+      inset 0 1px 0 rgba(255, 255, 255, .04);
+    position: relative;
+  }
+
+  .windowbar {
+    position: absolute;
+    inset: 0 0 auto 0;
+    height: 34px;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 0 14px;
+    background: linear-gradient(#15181d, #121419);
+    border-bottom: 1px solid #0a0b0e;
+    z-index: 5;
+  }
+  .dot { width: 11px; height: 11px; border-radius: 50%; }
+  .dot.r { background: #e0655f; }
+  .dot.y { background: #e0b45f; }
+  .dot.g { background: #61c454; }
+  .windowbar .title {
+    position: absolute; left: 50%; transform: translateX(-50%);
+    font-size: 11px; letter-spacing: .4px; color: #7c8899;
+  }
+
+  /* --------------------------------------------------------------------- rail */
+
+  .rail {
+    width: 236px;
+    flex: 0 0 236px;
+    background: var(--rail);
+    border-right: 1px solid #0a0b0e;
+    padding: 60px 18px 20px 22px;
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+  }
+
+  .wordmark {
+    font-size: 27px;
+    font-weight: 900;
+    letter-spacing: 6px;
+    line-height: 1;
+    color: #f2f6fb;
+  }
+  .submark {
+    margin-top: 6px;
+    font-size: 9px;
+    font-weight: 700;
+    letter-spacing: 3px;
+    color: #6f8ba6;
+  }
+  .rule {
+    width: 30px; height: 2px; border-radius: 1px;
+    background: var(--accent);
+    margin: 20px 0 22px;
+  }
+
+  .nav {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+  }
+  .nav button {
+    all: unset;
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 9px 12px;
+    border-radius: 7px;
+    border: 1px solid transparent;
+    font-size: 12.5px;
+    color: var(--text-2);
+    cursor: pointer;
+    transition: background .12s ease, color .12s ease, border-color .12s ease;
+  }
+  .nav button svg { width: 17px; height: 17px; opacity: .85; }
+  .nav button:hover { background: #1a1e25; color: #e4ecf5; }
+  .nav button.active {
+    background: #1c2836;
+    border-color: #27384c;
+    color: #9fd6ff;
+  }
+  .nav button.active svg { opacity: 1; }
+
+  .rail .spacer { flex: 1; }
+  .rail .caption {
+    font-size: 9px; font-weight: 700; letter-spacing: .8px;
+    color: #566274; margin-bottom: 5px;
+  }
+  .rail .path {
+    font-size: 10px; line-height: 1.45; color: #6d7987;
+    word-break: break-all; margin-bottom: 8px;
+  }
+
+  /* -------------------------------------------------------------------- pages */
+
+  .pages { flex: 1; min-width: 0; display: flex; flex-direction: column; padding-top: 34px; }
+  .page { flex: 1; min-height: 0; padding: 26px 34px 20px; display: flex; flex-direction: column; gap: 16px; }
+  .page::-webkit-scrollbar { width: 9px; }
+  .page::-webkit-scrollbar-thumb { background: #242a33; border-radius: 6px; }
+  .page[hidden] { display: none; }
+  #page-templates { overflow: auto; }
+
+  .page-head { display: flex; align-items: flex-end; gap: 12px; }
+  .page-head .titles { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 3px; }
+  h1 { margin: 0; font-size: 26px; font-weight: 700; letter-spacing: -.2px; color: #f1f5fa; }
+  .lede { margin: 0; font-size: 12.5px; line-height: 1.5; color: #8a96a6; max-width: 640px; }
+  .count { font-size: 11px; color: #647284; }
+
+  .search {
+    display: flex; align-items: center; gap: 8px;
+    width: 210px; padding: 7px 10px;
+    background: #14171c; border: 1px solid #252c35; border-radius: 6px;
+    color: #6d7b8c; font-size: 12px;
+  }
+  .search input {
+    all: unset; flex: 1; min-width: 0; color: #d7e0ea; font-size: 12px;
+  }
+  .search input::placeholder { color: #5f6b7a; }
+
+  .btn {
+    all: unset;
+    display: inline-flex; align-items: center; gap: 7px;
+    padding: 8px 14px; border-radius: 5px;
+    font-size: 12px; font-weight: 600; cursor: pointer;
+    border: 1px solid #2a323c; background: #1b2027; color: #cfd9e4;
+    white-space: nowrap;
+    transition: background .12s ease, border-color .12s ease;
+  }
+  .btn svg { width: 15px; height: 15px; }
+  .btn:hover { background: #222934; border-color: #38424f; }
+  .btn.primary {
+    background: var(--accent-2); border-color: #2668ab; color: #fff;
+  }
+  .btn.primary:hover { background: #3b8fdf; }
+  .btn.small { padding: 6px 12px; font-size: 11.5px; }
+
+  .scroll { flex: 1; min-height: 0; overflow: auto; padding-right: 4px; display: flex; flex-direction: column; gap: 10px; }
+  .scroll::-webkit-scrollbar { width: 9px; }
+  .scroll::-webkit-scrollbar-thumb { background: #242a33; border-radius: 6px; }
+
+  /* ------------------------------------------------------------- project cards */
+
+  .card {
+    position: relative;
+    display: flex; align-items: center; gap: 14px;
+    background: #191d24;
+    border: 1px solid #232a33;
+    border-radius: 9px;
+    padding: 0 12px 0 0;
+    cursor: pointer;
+    overflow: hidden;
+    transition: background .14s ease, border-color .14s ease, transform .14s ease;
+  }
+  .card:hover { background: #1e242c; border-color: #2e3a47; }
+  .card .stripe { width: 4px; align-self: stretch; border-radius: 2px; }
+  .card .body { flex: 1; min-width: 0; padding: 12px 0; display: flex; flex-direction: column; gap: 4px; }
+  .card .row { display: flex; align-items: center; gap: 8px; }
+  .card .name { font-size: 14px; font-weight: 600; color: #eef3f9; }
+  .card .path { font-size: 11px; color: #7e8b9b; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .card .meta { font-size: 10.5px; color: #5f6b7a; }
+  .badge {
+    font-size: 9.5px; font-weight: 700; letter-spacing: .5px; text-transform: uppercase;
+    color: #93a6ba; background: #222932; border: 1px solid #2b333e;
+    padding: 2px 7px; border-radius: 20px;
+  }
+  .badge.missing { color: #e69a9c; background: #2a1e21; border-color: #3d282c; }
+
+  .iconbtn {
+    all: unset; width: 26px; height: 26px; border-radius: 5px;
+    display: grid; place-items: center; color: #7d8a9a; cursor: pointer;
+  }
+  .iconbtn:hover { background: #262d36; color: #cfd9e4; }
+  .iconbtn svg { width: 16px; height: 16px; }
+
+  /* ----------------------------------------------------------------- templates */
+
+  .template-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 14px; }
+  .template {
+    background: #191d24; border: 1px solid #232a33; border-radius: 10px;
+    padding: 16px 18px 18px; display: flex; flex-direction: column; gap: 9px;
+  }
+  .template .bar { height: 3px; border-radius: 1px; width: 100%; margin-bottom: 4px; }
+  .template h3 { margin: 0; font-size: 15px; font-weight: 650; color: #f1f5fa; }
+  .template .tag { font-size: 11.5px; color: #8fa0b3; }
+  .template .desc { font-size: 11.5px; line-height: 1.55; color: #7b8899; }
+  .template ul { list-style: none; margin: 4px 0 0; padding: 0; display: flex; flex-direction: column; gap: 6px; }
+  .template li { display: flex; gap: 7px; font-size: 11px; line-height: 1.45; color: #93a3b5; }
+  .template li svg { flex: 0 0 13px; width: 13px; height: 13px; margin-top: 1px; color: #74c09a; }
+  .template .btn { margin-top: auto; align-self: flex-start; }
+
+  .hint { font-size: 10.5px; line-height: 1.5; color: #6d7987; }
+  code { font-family: "JetBrains Mono", ui-monospace, Menlo, monospace; font-size: .94em; color: #9db4ca; }
+
+  /* --------------------------------------------------------------------- about */
+
+  .about { overflow: auto; display: flex; flex-direction: column; gap: 14px; padding-right: 4px; }
+  .about p { margin: 0; font-size: 12.5px; line-height: 1.72; color: #93a1b3; max-width: 860px; }
+  .features { display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px; }
+  .feature { background: #191d24; border: 1px solid #232a33; border-radius: 9px; padding: 13px 14px; }
+  .feature h4 { margin: 0 0 5px; font-size: 12.5px; font-weight: 650; color: #dfe8f2; }
+  .feature p { font-size: 11px; line-height: 1.5; color: #7b8899; }
+  .about-foot { margin-top: auto; display: flex; align-items: center; gap: 10px; }
+  .about-foot .version { margin-left: auto; font-size: 10.5px; color: #5f6b7a; }
+
+  /* -------------------------------------------------------------------- splash */
+
+  .overlay {
+    position: absolute; inset: 0; z-index: 20;
+    display: grid; place-items: center;
+    background: rgba(6, 8, 11, .74);
+    backdrop-filter: blur(3px);
+    opacity: 0; pointer-events: none;
+    transition: opacity .18s ease;
+  }
+  .overlay.open { opacity: 1; pointer-events: auto; }
+
+  /* The Qt splash is laid out on a 960 x 540 grid and scales from its width, so the
+     preview uses the same trick: --u is one design pixel. */
+  .splash {
+    --u: 1px;
+    position: relative;
+    width: min(960px, calc(100% - 48px));
+    aspect-ratio: 16 / 9;
+    max-height: calc(100% - 48px);
+    border-radius: 14px;
+    overflow: hidden;
+    background: #1a2844;
+    border: 1px solid rgba(241, 235, 223, .14);
+    box-shadow: 0 40px 110px rgba(0, 0, 0, .72);
+    transform: scale(.985);
+    opacity: 0;
+    transition: transform .28s cubic-bezier(.2, .7, .2, 1), opacity .22s ease;
+  }
+  .overlay.open .splash { transform: none; opacity: 1; }
+  .splash.fading { opacity: 0; transform: scale(1.008); transition: opacity .34s ease, transform .34s ease; }
+
+  /* Beat 2: the artwork. */
+  .scene { position: absolute; inset: 0; opacity: 0; transition: opacity .45s ease; }
+  .splash.live .scene { opacity: 1; }
+  .scene img.art {
+    position: absolute; inset: -3%; width: 106%; height: 106%;
+    object-fit: cover;
+    animation: drift 26s ease-in-out infinite alternate;
+  }
+  @keyframes drift {
+    from { transform: scale(1.015) translate3d(-5px, 2px, 0); }
+    to   { transform: scale(1.045) translate3d(6px, -3px, 0); }
+  }
+  .scene .tint { position: absolute; inset: 0; background: rgba(8, 12, 20, .18); }
+  .scene .scrim {
+    position: absolute; inset: 0;
+    background: linear-gradient(180deg, rgba(8,12,20,0) 34%, rgba(8,12,20,.21) 70%, rgba(8,12,20,.50) 100%);
+  }
+
+  .scene .mark, .scene .sub, .scene .version,
+  .scene .eyebrow, .scene .heading, .scene .stage,
+  .scene .pct, .scene .caption { position: absolute; }
+
+  .scene .mark {
+    left: calc(44 * var(--u)); top: calc(35 * var(--u));
+    font-size: calc(20 * var(--u)); font-weight: 800; letter-spacing: calc(6.4 * var(--u));
+    color: #f1ebdf; line-height: 1;
+  }
+  .scene .sub {
+    left: calc(45 * var(--u)); top: calc(65 * var(--u));
+    font-size: calc(7 * var(--u)); font-weight: 600; letter-spacing: calc(2.4 * var(--u));
+    color: rgba(134, 141, 150, .90); line-height: 1;
+  }
+  .scene .version {
+    right: calc(44 * var(--u)); top: calc(40 * var(--u));
+    font-size: calc(8 * var(--u)); letter-spacing: calc(.8 * var(--u));
+    color: rgba(134, 141, 150, .86); line-height: 1;
+  }
+  .scene .eyebrow {
+    left: calc(44 * var(--u)); top: calc(188 * var(--u));
+    font-size: calc(7 * var(--u)); font-weight: 700; letter-spacing: calc(2.2 * var(--u));
+    color: rgba(196, 184, 166, .94); line-height: 1;
+  }
+  .scene .heading {
+    left: calc(44 * var(--u)); top: calc(208 * var(--u));
+    font-size: calc(26 * var(--u)); font-weight: 700; letter-spacing: calc(.2 * var(--u));
+    color: #f1ebdf; line-height: 1.15; max-width: calc(500 * var(--u));
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  }
+  .scene .stage {
+    left: calc(44 * var(--u)); top: calc(252 * var(--u));
+    font-size: calc(11 * var(--u)); color: #bfbfc2; line-height: 1;
+    max-width: calc(500 * var(--u));
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  }
+  .scene .pct {
+    left: calc(44 * var(--u)); top: calc(269 * var(--u)); width: calc(340 * var(--u));
+    text-align: right; font-size: calc(8 * var(--u)); color: #d0cabe; line-height: 1;
+  }
+  .scene .bar {
+    position: absolute; left: calc(44 * var(--u)); top: calc(286 * var(--u));
+    width: calc(340 * var(--u)); height: max(2px, calc(2 * var(--u)));
+    background: rgba(241, 235, 223, .18);
+  }
+  .scene .bar .fill {
+    position: relative; height: 100%; width: 2%; background: #cc4832;
+    transition: width .16s linear; overflow: hidden;
+  }
+  .scene .bar .fill::after {
+    content: ''; position: absolute; top: 0; bottom: 0; width: calc(70 * var(--u));
+    background: linear-gradient(90deg, rgba(241,235,223,0), rgba(241,235,223,.30), rgba(241,235,223,0));
+    animation: sweep 2.6s linear infinite;
+  }
+  @keyframes sweep { from { left: calc(-70 * var(--u)); } to { left: 100%; } }
+  .scene .caption {
+    left: calc(44 * var(--u)); top: calc(505 * var(--u));
+    font-size: calc(8 * var(--u)); color: #868d96; line-height: 1;
+    max-width: calc(872 * var(--u));
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  }
+
+  /* Beat 1: the mark. */
+  .logo {
+    position: absolute; inset: 0; z-index: 3;
+    background: #1a2844;
+    display: grid; place-items: center;
+    transition: opacity .45s ease;
+  }
+  .splash.live .logo { opacity: 0; pointer-events: none; }
+  .logo .inner { text-align: center; transform: translateY(calc(-8 * var(--u))); }
+  .logo .word {
+    font-size: calc(34 * var(--u)); font-weight: 800; letter-spacing: calc(13 * var(--u));
+    color: #f1ebdf; line-height: 1;
+  }
+  .logo .rule {
+    width: calc(54 * var(--u)); height: max(2px, calc(2 * var(--u)));
+    background: #cc4832; margin: calc(21 * var(--u)) auto calc(22 * var(--u));
+  }
+  .logo .sub {
+    font-size: calc(8 * var(--u)); font-weight: 600; letter-spacing: calc(4.8 * var(--u));
+    color: rgba(196, 184, 166, .88); line-height: 1;
+  }
+
+  /* -------------------------------------------------------------------- dialog */
+
+  .dialog {
+    width: min(820px, calc(100% - 60px));
+    max-height: calc(100% - 60px);
+    background: #171a20;
+    border: 1px solid #2a323d;
+    border-radius: 12px;
+    box-shadow: 0 40px 110px rgba(0, 0, 0, .68);
+    padding: 22px 26px 20px;
+    display: flex; flex-direction: column; gap: 13px;
+    transform: translateY(8px) scale(.99);
+    opacity: 0;
+    transition: transform .22s cubic-bezier(.2,.7,.2,1), opacity .18s ease;
+  }
+  .overlay.open .dialog { transform: none; opacity: 1; }
+  .dialog h2 { margin: 0; font-size: 24px; font-weight: 700; color: #f1f5fa; }
+  .dialog .lede { font-size: 12px; }
+  .dialog-body { display: grid; grid-template-columns: 1fr 1.18fr; gap: 24px; min-height: 0; }
+  .field-label {
+    font-size: 9px; font-weight: 700; letter-spacing: 1.1px; color: #6d7b8c; margin-bottom: 6px;
+  }
+  .input {
+    width: 100%; background: #14171c; border: 1px solid #2a323d; border-radius: 6px;
+    color: #dbe5ef; font-size: 12.5px; padding: 8px 10px; font-family: inherit;
+  }
+  .input:focus { outline: none; border-color: #3c5b7c; box-shadow: 0 0 0 3px rgba(74, 158, 240, .12); }
+  .field { margin-bottom: 13px; }
+  .field .with-btn { display: flex; gap: 8px; }
+  .pathbox {
+    background: #14171c; border: 1px solid #232a33; border-radius: 6px;
+    padding: 8px 10px; font-size: 11px; color: #8fa3b8; word-break: break-all;
+  }
+  .note { font-size: 10.5px; line-height: 1.55; color: #6d7987; }
+
+  .choices { display: flex; flex-direction: column; gap: 8px; }
+  .choice {
+    display: flex; gap: 0; align-items: stretch;
+    background: #1a1e25; border: 1px solid #252d37; border-radius: 8px;
+    cursor: pointer; overflow: hidden; text-align: left;
+    transition: background .12s ease, border-color .12s ease;
+  }
+  .choice:hover { background: #1f252d; }
+  .choice.selected { border-color: #3a628c; background: #1b2530; }
+  .choice .accent { width: 4px; flex: 0 0 4px; border-radius: 2px; }
+  .choice .text { padding: 9px 12px; display: flex; flex-direction: column; gap: 2px; }
+  .choice .n { font-size: 12.5px; font-weight: 620; color: #e8eff7; }
+  .choice .t { font-size: 10.5px; line-height: 1.45; color: #8b99aa; }
+  .choice .tick { margin-left: auto; padding: 0 12px; display: grid; place-items: center; color: #7ee3d4; opacity: 0; }
+  .choice.selected .tick { opacity: 1; }
+  .choice .tick svg { width: 16px; height: 16px; }
+
+  .dialog-foot { display: flex; align-items: center; gap: 8px; margin-top: 2px; }
+  .dialog-foot .spacer { flex: 1; }
+  .dialog-error { font-size: 11px; color: #e58184; }
+
+  /* --------------------------------------------------------------- preview bar */
+
+  .previewbar {
+    position: fixed; left: 50%; bottom: 16px; transform: translateX(-50%);
+    display: flex; align-items: center; gap: 6px;
+    padding: 6px 8px; border-radius: 999px;
+    background: rgba(16, 19, 24, .86);
+    border: 1px solid #262d36;
+    box-shadow: 0 12px 34px rgba(0, 0, 0, .5);
+    backdrop-filter: blur(10px);
+    z-index: 60;
+    font-size: 11px; color: #7f8c9c;
+  }
+  .previewbar .who { padding: 0 8px 0 10px; letter-spacing: .3px; }
+  .previewbar button {
+    all: unset; padding: 5px 11px; border-radius: 999px; cursor: pointer;
+    color: #a7b4c3; font-size: 11px;
+  }
+  .previewbar button:hover { background: #202730; color: #e2ebf4; }
+  .previewbar .split { width: 1px; height: 16px; background: #2a323c; margin: 0 4px; }
+
+  @media (max-width: 1100px) {
+    .template-grid { grid-template-columns: 1fr; }
+    .features { grid-template-columns: repeat(2, 1fr); }
+  }
+</style>
+</head>
+<body>
+
+<div class="stage">
+  <div class="window" id="window">
+    <div class="windowbar">
+      <span class="dot r"></span><span class="dot y"></span><span class="dot g"></span>
+      <span class="title">Ukiyo Hub</span>
+    </div>
+
+    <!-- rail -->
+    <aside class="rail">
+      <div class="wordmark">UKIYO</div>
+      <div class="submark">PROJECT HUB</div>
+      <div class="rule"></div>
+      <nav class="nav" id="nav">
+        <button data-page="projects" class="active">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/></svg>
+          Projects
+        </button>
+        <button data-page="templates">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="7" height="7" rx="1.4"/><rect x="14" y="3" width="7" height="7" rx="1.4"/><rect x="3" y="14" width="7" height="7" rx="1.4"/><rect x="14" y="14" width="7" height="7" rx="1.4"/></svg>
+          Templates
+        </button>
+        <button data-page="about">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="M12 11v5"/><circle cx="12" cy="7.7" r=".9" fill="currentColor" stroke="none"/></svg>
+          About
+        </button>
+      </nav>
+      <div class="spacer"></div>
+      <div class="caption">ENGINE</div>
+      <div class="path" id="enginePath">~/UkiyoEngine</div>
+      <div class="path" style="color:#566274">v0.1 · world editor inside</div>
+    </aside>
+
+    <!-- pages -->
+    <main class="pages">
+      <!-- projects -->
+      <section class="page" id="page-projects">
+        <div class="page-head">
+          <div class="titles">
+            <h1>Projects</h1>
+            <p class="lede">Pick up where you left off, or start something new. Everything here opens in the Ukiyo World Editor.</p>
+            <div class="count" id="count">No projects yet</div>
+          </div>
+          <label class="search">
+            <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round"><circle cx="11" cy="11" r="7"/><path d="m16.5 16.5 4 4"/></svg>
+            <input id="search" placeholder="Search projects">
+          </label>
+          <button class="btn" id="openFolder">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/></svg>
+            Open folder
+          </button>
+          <button class="btn primary" id="newProject">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.1" stroke-linecap="round"><path d="M12 5v14M5 12h14"/></svg>
+            New project
+          </button>
+        </div>
+
+        <div class="scroll" id="list"></div>
+      </section>
+
+      <!-- templates -->
+      <section class="page" id="page-templates" hidden>
+        <div class="titles" style="display:flex;flex-direction:column;gap:3px">
+          <h1>Templates</h1>
+          <p class="lede">Every project starts as one of these. The files are plain text and live in the project, so a template is only a beginning.</p>
+        </div>
+        <div class="template-grid" id="templateGrid"></div>
+        <div class="hint">Templates are written by <code>engine::createProject</code> (<code>src/engine/project_template.cpp</code>). Add one there and it appears here and in the new-project dialog.</div>
+      </section>
+
+      <!-- about -->
+      <section class="page" id="page-about" hidden>
+        <div class="titles" style="display:flex;flex-direction:column;gap:3px">
+          <h1>Ukiyo Engine</h1>
+          <p class="lede">A Vulkan engine and world editor for stylised anime characters and worlds.</p>
+        </div>
+        <div class="about">
+          <p>Ukiyo is a small engine built around a toon and anime pipeline: the Custom Anime tonemap, outlines, a face SDF, and a shader graph that writes <code>.ukshader</code> files. Terrain, foliage and water are part of the editor, with physics through Jolt, navigation through Recast and Detour, Lua scripting, particles, audio through miniaudio, and UDP networking with reliable sessions.</p>
+          <p>Projects are folders. This hub creates one from a template, records it in <code>ukiyo.project.json</code>, and hands it to the editor with <code>--project</code>. Nothing is installed and nothing is downloaded.</p>
+          <div class="features">
+            <div class="feature"><h4>Anime pipeline</h4><p>Toon shading, outlines, face SDF and a node-based shader graph.</p></div>
+            <div class="feature"><h4>World building</h4><p>Terrain with layers and foliage, water with Gerstner waves, prefabs.</p></div>
+            <div class="feature"><h4>Lighting</h4><p>Cascaded sun shadows, SSAO and traced bounce light at half resolution.</p></div>
+            <div class="feature"><h4>Game systems</h4><p>Jolt physics, Recast navigation, Lua scripts, particles and audio.</p></div>
+            <div class="feature"><h4>Networking</h4><p>UDP client and server sessions with reliable, ordered messages.</p></div>
+          </div>
+        </div>
+        <div class="about-foot">
+          <button class="btn small">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/></svg>
+            Open engine folder
+          </button>
+          <button class="btn small">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/></svg>
+            Open projects folder
+          </button>
+          <div class="version">v0.1 · built on the engine in this checkout</div>
+        </div>
+      </section>
+    </main>
+
+    <!-- new project dialog -->
+    <div class="overlay" id="dialogOverlay">
+      <div class="dialog" id="dialog">
+        <div>
+          <h2>New project</h2>
+          <p class="lede" style="margin-top:6px">Give the project a name and a folder, then pick a starting point. The project is built in place; nothing is downloaded.</p>
+        </div>
+        <div class="dialog-body">
+          <div>
+            <div class="field">
+              <div class="field-label">PROJECT NAME</div>
+              <input class="input" id="projectName" value="My Ukiyo Project" maxlength="64" spellcheck="false">
+            </div>
+            <div class="field">
+              <div class="field-label">LOCATION</div>
+              <div class="with-btn">
+                <input class="input" id="projectLocation" value="~/Documents/Ukiyo Projects" spellcheck="false">
+                <button class="btn">Browse…</button>
+              </div>
+            </div>
+            <div class="field">
+              <div class="field-label">THE PROJECT WILL BE CREATED AT</div>
+              <div class="pathbox" id="pathPreview"></div>
+            </div>
+            <div class="note">Scenes, ProjectSettings and the starter script are written into the folder. Template art stays with the engine, so the project stays small.</div>
+          </div>
+          <div>
+            <div class="field-label">START FROM</div>
+            <div class="choices" id="choices"></div>
+          </div>
+        </div>
+        <div class="dialog-error" id="dialogError" hidden></div>
+        <div class="dialog-foot">
+          <div class="spacer"></div>
+          <button class="btn" id="cancelDialog">Cancel</button>
+          <button class="btn primary" id="createProject">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.1" stroke-linecap="round"><path d="M12 5v14M5 12h14"/></svg>
+            Create project
+          </button>
+        </div>
+      </div>
+    </div>
+
+    <!-- splash -->
+    <div class="overlay" id="splashOverlay">
+      <div class="splash" id="splash">
+        <div class="scene">
+          <img class="art" src="splash.png" alt=""
+               onerror="if(!this.dataset.fallback){this.dataset.fallback=1;this.src='../editor/res/splash.png';}else{this.style.display='none';}">
+          <div class="tint"></div>
+          <div class="scrim"></div>
+          <div class="mark">UKIYO</div>
+          <div class="sub">ENGINE</div>
+          <div class="version">v0.1</div>
+          <div class="eyebrow" id="splashEyebrow">CREATING PROJECT</div>
+          <div class="heading" id="splashHeading">Coastal Test</div>
+          <div class="stage" id="splashStatus">Preparing the project</div>
+          <div class="pct" id="splashPercent">2%</div>
+          <div class="bar"><div class="fill" id="splashFill"></div></div>
+          <div class="caption" id="splashCaption">~/Documents/Ukiyo Projects/Coastal Test</div>
+        </div>
+        <div class="logo">
+          <div class="inner">
+            <div class="word">UKIYO</div>
+            <div class="rule"></div>
+            <div class="sub">ENGINE</div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<div class="previewbar">
+  <span class="who">Ukiyo Hub · design preview</span>
+  <span class="split"></span>
+  <button data-jump="projects">Projects</button>
+  <button data-jump="templates">Templates</button>
+  <button data-jump="about">About</button>
+  <span class="split"></span>
+  <button id="demoCreate">New project flow</button>
+  <button id="demoOpen">Opening splash</button>
+</div>
+
+<script>
+// ----------------------------------------------------------------- data
+const TEMPLATES = [
+  {
+    id: 'empty',
+    name: 'Empty Scene',
+    accent: '#4a9ef0',
+    tagline: 'A clean stage with light, outlines and a camera.',
+    description: 'The shortest path to something of your own: one empty object, a studio key light, anime tonemapping, and the grid and outlines switched on.',
+    bullets: ['One empty object at the origin', 'Studio light and anime tonemap', 'Grid, outlines and bloom ready', 'Scripts/hello.lua starter'],
+    steps: [
+      [0.03, 'Preparing {name}'],
+      [0.12, 'Writing the project manifest'],
+      [0.24, 'Creating ProjectSettings'],
+      [0.40, 'Building the main scene'],
+      [0.74, 'Building the main scene'],
+      [0.92, 'Checking the project'],
+      [1.00, 'Ready'],
+    ],
+  },
+  {
+    id: 'anime',
+    name: 'Anime Character',
+    accent: '#e8748f',
+    tagline: 'Seed-san under anime lighting, framed for a portrait.',
+    description: 'A character showcase in the style the engine is built for. Seed-san loads from the engine assets, so the project stays a few kilobytes.',
+    bullets: ['Seed-san linked from the engine assets', 'Portrait camera and anime tonemap', 'Outlines and bloom on', 'A scene ready to light'],
+    steps: [
+      [0.03, 'Preparing {name}'],
+      [0.12, 'Writing the project manifest'],
+      [0.24, 'Creating ProjectSettings'],
+      [0.40, 'Linking the character from the engine assets'],
+      [0.74, 'Building the main scene'],
+      [0.84, 'Checking the linked engine assets'],
+      [0.92, 'Checking the project'],
+      [1.00, 'Ready'],
+    ],
+  },
+  {
+    id: 'terrain',
+    name: 'Terrain Lab',
+    accent: '#5fd0a0',
+    tagline: 'A 256 m tile with hills, a lake basin and pines.',
+    description: 'A sculpted heightmap with layered materials, grass and pine foliage, and a water plane in the basin. The fastest way to see the world tools working.',
+    bullets: ['257 × 257 generated heightmap', 'Grass and pine foliage layers', 'Water plane with Gerstner waves', 'Terrain material layers set up'],
+    steps: [
+      [0.03, 'Preparing {name}'],
+      [0.12, 'Writing the project manifest'],
+      [0.24, 'Creating ProjectSettings'],
+      [0.38, 'Sculpting the terrain: 257 x 257 samples'],
+      [0.62, 'Scattering grass and pines'],
+      [0.74, 'Building the main scene'],
+      [0.92, 'Checking the project'],
+      [1.00, 'Ready'],
+    ],
+  },
+];
+
+const state = {
+  page: 'projects',
+  templateId: 'anime',
+  // Two projects so the card layout is visible; delete them to see the first-run empty state.
+  projects: [
+    {
+      name: 'Kitsune Alley',
+      root: '~/Documents/Ukiyo Projects/Kitsune Alley',
+      template: 'terrain',
+      when: '2 hours ago',
+    },
+    {
+      name: 'Portrait Study',
+      root: '~/Documents/Ukiyo Projects/Portrait Study',
+      template: 'anime',
+      when: 'yesterday',
+    },
+  ],
+  filter: '',
+  lastCreated: null,
+};
+
+const $ = (id) => document.getElementById(id);
+const esc = (s) => s.replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
+
+// ----------------------------------------------------------------- icons
+const icons = {
+  tick: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="m8 12.4 2.6 2.6L16 9.6"/></svg>',
+  more: '<svg viewBox="0 0 24 24" fill="currentColor"><circle cx="12" cy="5" r="1.6"/><circle cx="12" cy="12" r="1.6"/><circle cx="12" cy="19" r="1.6"/></svg>',
+};
+
+// ----------------------------------------------------------------- rail / pages
+function setPage(page) {
+  state.page = page;
+  document.querySelectorAll('#nav button').forEach((b) => b.classList.toggle('active', b.dataset.page === page));
+  ['projects', 'templates', 'about'].forEach((p) => { $('page-' + p).hidden = p !== page; });
+}
+
+document.querySelectorAll('#nav button').forEach((b) => {
+  b.addEventListener('click', () => setPage(b.dataset.page));
+});
+document.querySelectorAll('[data-jump]').forEach((b) => {
+  b.addEventListener('click', () => setPage(b.dataset.jump));
+});
+
+// ----------------------------------------------------------------- projects
+function renderProjects() {
+  const list = $('list');
+  const filter = state.filter.toLowerCase();
+  const shown = state.projects.filter((p) =>
+    !filter || p.name.toLowerCase().includes(filter) || p.root.toLowerCase().includes(filter));
+
+  $('count').textContent = state.projects.length === 0
+    ? 'No projects yet'
+    : shown.length === state.projects.length
+      ? (shown.length === 1 ? '1 project' : shown.length + ' projects')
+      : shown.length + ' of ' + state.projects.length + ' projects';
+
+  if (state.projects.length === 0) {
+    list.innerHTML = `
+      <div class="card" style="flex-direction:column;align-items:stretch;cursor:default;overflow:hidden">
+        <div style="height:190px;background:url('splash.png') center/cover;filter:saturate(1.02)"></div>
+        <div style="padding:18px 20px 20px;display:flex;flex-direction:column;gap:8px">
+          <div style="font-size:16px;font-weight:650;color:#eef3f9">No projects yet</div>
+          <div style="font-size:12px;line-height:1.6;color:#8a96a6;max-width:560px">
+            Start with a template: a clean scene, an anime character, or a terrain tile with a lake.
+            The hub writes the project and opens it in the editor.
+          </div>
+          <button class="btn primary" style="align-self:flex-start;margin-top:6px" onclick="openDialog('terrain')">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.1" stroke-linecap="round"><path d="M12 5v14M5 12h14"/></svg>
+            Create your first project
+          </button>
+        </div>
+      </div>`;
+    return;
+  }
+
+  list.innerHTML = shown.map((p) => {
+    const t = TEMPLATES.find((x) => x.id === p.template) || { name: 'Project', accent: '#4a9ef0' };
+    return `
+      <div class="card" data-open="${esc(p.root)}">
+        <div class="stripe" style="background:${t.accent}"></div>
+        <div class="body">
+          <div class="row">
+            <div class="name">${esc(p.name)}</div>
+            <div class="badge">${esc(t.name)}</div>
+          </div>
+          <div class="path">${esc(p.root)}</div>
+          <div class="meta">Opened ${esc(p.when)} &nbsp;·&nbsp; ${esc(t.name)}</div>
+        </div>
+        <button class="btn small" data-open="${esc(p.root)}">Open</button>
+        <button class="iconbtn" title="More">${icons.more}</button>
+      </div>`;
+  }).join('') || `<div class="hint">No project matches “${esc(state.filter)}”.</div>`;
+
+  list.querySelectorAll('.iconbtn').forEach((el) => {
+    el.addEventListener('click', (e) => e.stopPropagation());
+  });
+
+  list.querySelectorAll('[data-open]').forEach((el) => {
+    el.addEventListener('click', (e) => {
+      e.stopPropagation();
+      playSplash(el.dataset.open.split('/').pop(), el.dataset.open, [
+        [0.15, 'Reading the project manifest'],
+        [0.62, 'Checking the main scene'],
+        [0.86, 'Starting the Ukiyo editor'],
+        [1.00, 'Ready'],
+      ], 'OPENING PROJECT');
+    });
+  });
+}
+
+$('search').addEventListener('input', (e) => {
+  state.filter = e.target.value.trim();
+  renderProjects();
+});
+$('openFolder').addEventListener('click', () => {
+  alert('The real hub opens a folder picker. This preview does not touch your disk.');
+});
+
+function remember(name, root, template) {
+  if (!state.projects.some((p) => p.root === root)) {
+    state.projects.unshift({ name, root, template, when: 'just now' });
+  }
+  renderProjects();
+}
+
+// ----------------------------------------------------------------- templates
+function renderTemplates() {
+  $('templateGrid').innerHTML = TEMPLATES.map((t) => `
+    <div class="template">
+      <div class="bar" style="background:${t.accent}"></div>
+      <h3>${t.name}</h3>
+      <div class="tag">${t.tagline}</div>
+      <div class="desc">${t.description}</div>
+      <ul>${t.bullets.map((b) => `<li>${icons.tick}<span>${b}</span></li>`).join('')}</ul>
+      <button class="btn small" data-template="${t.id}">Use this template</button>
+    </div>`).join('');
+
+  document.querySelectorAll('[data-template]').forEach((b) => {
+    b.addEventListener('click', () => openDialog(b.dataset.template));
+  });
+}
+
+// ----------------------------------------------------------------- dialog
+function openDialog(templateId) {
+  state.templateId = templateId || state.templateId;
+  $('dialogError').hidden = true;
+  $('dialogOverlay').classList.add('open');
+  renderChoices();
+  updatePath();
+  setTimeout(() => $('projectName').select(), 60);
+}
+
+function closeDialog() {
+  $('dialogOverlay').classList.remove('open');
+}
+
+function renderChoices() {
+  $('choices').innerHTML = TEMPLATES.map((t) => `
+    <div class="choice ${t.id === state.templateId ? 'selected' : ''}" data-choice="${t.id}">
+      <div class="accent" style="background:${t.accent}"></div>
+      <div class="text">
+        <div class="n">${t.name}</div>
+        <div class="t">${t.tagline}</div>
+      </div>
+      <div class="tick">${icons.tick}</div>
+    </div>`).join('');
+
+  document.querySelectorAll('[data-choice]').forEach((el) => {
+    el.addEventListener('click', () => {
+      state.templateId = el.dataset.choice;
+      renderChoices();
+    });
+  });
+}
+
+function updatePath() {
+  const name = $('projectName').value.trim() || '(no name)';
+  const base = $('projectLocation').value.replace(/\/+$/, '');
+  $('pathPreview').textContent = base + '/' + name;
+}
+
+$('projectName').addEventListener('input', updatePath);
+$('projectLocation').addEventListener('input', updatePath);
+$('newProject').addEventListener('click', () => openDialog());
+$('cancelDialog').addEventListener('click', closeDialog);
+$('createProject').addEventListener('click', () => {
+  const name = $('projectName').value.trim();
+  if (!name) {
+    $('dialogError').hidden = false;
+    $('dialogError').textContent = 'Give the project a name.';
+    return;
+  }
+  const root = $('projectLocation').value.replace(/\/+$/, '') + '/' + name;
+  closeDialog();
+  const t = TEMPLATES.find((x) => x.id === state.templateId);
+  playSplash(name, root, t.steps, 'CREATING PROJECT', () => {
+    remember(name, root, t.id);
+    state.lastCreated = root;
+  });
+});
+
+// ----------------------------------------------------------------- splash
+let splashRun = 0;
+
+// --u is one design pixel: the Qt splash is designed on 960 x 540 and scales from
+// its width, and this preview does the same.
+function fitSplash() {
+  const splash = $('splash');
+  if (!splash) return;
+  splash.style.setProperty('--u', (splash.clientWidth / 960) + 'px');
+}
+window.addEventListener('resize', fitSplash);
+
+function playSplash(heading, caption, steps, eyebrow, onDone) {
+  const run = ++splashRun;
+  const overlay = $('splashOverlay');
+  const splash = $('splash');
+  const fill = $('splashFill');
+  const pct = $('splashPercent');
+  const status = $('splashStatus');
+
+  $('splashHeading').textContent = heading;
+  $('splashCaption').textContent = caption;
+  $('splashEyebrow').textContent = eyebrow || 'LOADING';
+  splash.classList.remove('fading', 'live');
+  overlay.classList.add('open');
+  fitSplash();
+
+  let shown = 0.02;
+  let target = 0.02;
+  let stepIndex = 0;
+  let done = false;
+
+  const setStep = (i) => {
+    const [fraction, text] = steps[i];
+    target = fraction;
+    status.textContent = text;
+  };
+  setStep(0);
+  fill.style.width = '2%';
+  pct.textContent = '2%';
+
+  // The mark holds for one beat, then the artwork comes in.
+  setTimeout(() => {
+    if (run === splashRun) splash.classList.add('live');
+  }, 950);
+
+  let last = performance.now();
+  function frame(now) {
+    if (run !== splashRun) return;
+    const dt = Math.min(64, now - last);
+    last = now;
+
+    if (!done && stepIndex < steps.length - 1 && shown >= steps[stepIndex][0] - 0.004) {
+      stepIndex += 1;
+      setStep(stepIndex);
+    }
+    // The same ease as the Qt splash: about nine units a second toward the real value.
+    shown += (target - shown) * Math.min(1, dt * 0.009);
+    if (Math.abs(shown - target) < 0.0006) shown = target;
+
+    const percent = Math.round(shown * 100);
+    fill.style.width = percent + '%';
+    pct.textContent = percent + '%';
+
+    if (!done && shown >= 0.999) {
+      done = true;
+      setTimeout(() => {
+        if (run !== splashRun) return;
+        splash.classList.add('fading');
+        setTimeout(() => {
+          if (run !== splashRun) return;
+          overlay.classList.remove('open');
+          splash.classList.remove('fading', 'live');
+          if (onDone) onDone();
+        }, 340);
+      }, 520);
+      return;
+    }
+    requestAnimationFrame(frame);
+  }
+  requestAnimationFrame(frame);
+}
+
+// preview bar demos
+$('demoCreate').addEventListener('click', () => {
+  setPage('projects');
+  openDialog('terrain');
+});
+$('demoOpen').addEventListener('click', () => {
+  playSplash('Portrait Study', '~/Documents/Ukiyo Projects/Portrait Study', [
+    [0.15, 'Reading the project manifest'],
+    [0.62, 'Checking the main scene'],
+    [0.86, 'Starting the Ukiyo editor'],
+    [1.00, 'Ready'],
+  ], 'OPENING PROJECT');
+});
+
+// escape closes overlays
+document.addEventListener('keydown', (e) => {
+  if (e.key === 'Escape') {
+    closeDialog();
+    if ($('splashOverlay').classList.contains('open')) splashRun++;
+    $('splashOverlay').classList.remove('open');
+  }
+});
+
+// ----------------------------------------------------------------- boot
+renderTemplates();
+renderProjects();
+setPage('projects');
+</script>
+</body>
+</html>

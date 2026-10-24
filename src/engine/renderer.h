@@ -8,14 +8,20 @@
 #include <map>
 #include <memory>
 #include <optional>
+#include <utility>
 #include <vector>
 
 #include <glm/glm.hpp>
 
 #include "engine/camera.h"
 #include "engine/gpu_types.h"
+#include "engine/environment.h"
+#include "engine/hud.h"
 #include "engine/graph_material.h"
+#include "engine/lights.h"
 #include "engine/model.h"
+#include "engine/trail.h"
+#include "engine/trail_renderer.h"
 #include "engine/water.h"
 #include "rhi/rhi.h"
 
@@ -24,8 +30,21 @@ namespace ukiyo {
 struct RenderSettings {
     int aaMode = 3;                 // 0 off, 1 FXAA, 2 SSAA 2x, 3 SSAA 2x + FXAA, 4 TAA (FXAA on reset frames)
     bool shadows = true;
+    // Percentage-closer soft shadows (docs/PCSS.md): the shadow edge's width comes from the sun's disc, the blocker's
+    // distance and the receiver's, instead of from a fixed filter radius. Costs 48 shadow-map taps per pixel where the
+    // pixel is near a shadow edge; off falls back to the 3x3 tent filter.
+    bool pcss = true;
+    float pcssSunTanRadius = 0.02f;    // the sun's angular radius as a tangent; 0.00465 is the real sun, 0.02 reads well
+    float pcssSearchRadius = 0.25f;    // metres across the receiver the blocker search reads
+    float pcssMaxPenumbra = 0.5f;      // metres; wider than this reads as a smudge, not a shadow
+    // Wireframe view (Flax 1.13's view): geometry passes are drawn as their edges, so the triangles, the LODs and the
+    // virtual-geometry cuts are visible instead of guessed at. Every fullscreen pass stays filled, and the shadow map
+    // stays solid. Off by default; toggling it rebuilds the pipelines once.
+    bool wireframe = false;
     bool depthPrepass = true;       // opaque toon draws write depth before the colour pass
     bool frustumCull = true;        // colour passes skip static draws outside the camera frustum
+    bool vgeom = true;              // virtual geometry (item 21) for static primitives that have a tree
+    float vgeomPixels = 1.0f;       // projected error budget: a cluster refines while its error exceeds this many px
     bool sky = true;
     bool grid = true;
     bool outlines = true;
@@ -71,9 +90,50 @@ struct RenderSettings {
     // Screen-space and grading effects. Each is off at its default, so existing renders are unchanged.
     float fogDensity = 0.0f;         // exponential view-distance fog per metre (0 = off). No height term.
     glm::vec3 fogColor{0.62f, 0.72f, 0.86f};
+    // Sky and ambient: a scene says what hour it is. The sky is drawn by shaders/sky.frag from the two colours below,
+    // and the ambient is the hemisphere every shaded surface reads (frame.skyColor / frame.groundColor). They are three
+    // settings rather than one on purpose: a night scene wants a dark ambient so the lanterns carry the frame, but a
+    // dusk scene wants an orange horizon over a blue ambient. Defaults are the daytime sky the engine had before these
+    // existed, so a scene that says nothing renders exactly as it did.
+    glm::vec3 skyZenith{0.20f, 0.46f, 0.92f};    // the sky overhead
+    glm::vec3 skyHorizon{0.80f, 0.91f, 1.00f};   // the sky at the horizon, and the base of the gradient
+    glm::vec3 ambientSky{0.62f, 0.72f, 0.92f};   // hemisphere light from above (multiplied by 0.9 by the renderer)
+    glm::vec3 ambientGround{0.50f, 0.45f, 0.48f}; // hemisphere light bounced from below
+    float cloudCover = 1.0f;         // 0 = clear sky, 1 = the full procedural cloud layer
+    float stars = 0.0f;              // 0 = off, 1 = a full star field; only visible where the sky is dark
+    float sunDisc = 1.0f;            // the sun disc and halo in the sky; 0 hides them behind a night sky
     float fogSun = 0.0f;             // sun in-scatter into the fog, 0..1 (needs fogDensity > 0)
     float ssao = 0.0f;               // ambient occlusion strength, 0..1 (normal pre-pass)
+    // Multi-bounce ambient occlusion (GH-115426): the AO term restored by the light that bounces between the surfaces
+    // doing the occluding, weighted by each surface's albedo. Off leaves the plain single-bounce multiply; it has no
+    // effect while `ssao` is 0. Needs the albedo the normal pre-pass writes, and falls back to single-bounce on
+    // geometry that pre-pass does not cover (terrain, foliage, grass, graph materials).
+    bool multiBounceAO = true;
+    // Screen-space contact shadows (GH-118045): the short shadows a cascaded shadow map cannot resolve, marched in the
+    // depth buffer towards the sun. 0 is off. Length and thickness are metres; steps is the depth fetch count.
+    float contactShadows = 0.0f;
+    float contactShadowLength = 0.35f;
+    float contactShadowThickness = 0.08f;
+    int contactShadowSteps = 24;
+    // Alpha-coverage-preserving mips (GH-104289): the base-colour chain of an alpha-masked material keeps the level-0
+    // test coverage, so a cutout does not dissolve into its average at distance. It is a load-time option, so a change
+    // takes effect when the model is loaded again.
+    bool preserveAlphaCoverage = true;
+    float alphaTestThreshold = 0.5f;
+    // Environment lighting (docs/IBL.md, engine/environment.h). Disabled by default: the renderer keeps the
+    // two-colour hemisphere ambient and the gradient reflection, so existing scenes render unchanged.
+    env::Settings environment;
     float ssr = 0.0f;                // screen-space reflections, 0..1 (normal pre-pass)
+    // Real-time diffuse GI (the iGPU path tracer): half-resolution traced bounce light, temporally accumulated and
+    // composited at full resolution. 0 = off, 1 = one bounce at full strength. Needs a heightfield (setHeightfield) and
+    // a normal pre-pass (it is turned on automatically when this is above zero, as SSAO is).
+    float gi = 0.0f;                 // indirect diffuse strength, 0..1
+    float giRadius = 12.0f;          // how far a bounce ray marches, metres
+    float giRays = 8.0f;             // rays per half-resolution pixel per frame, 1..8
+    float giHistory = 0.0625f;       // weight of one frame's samples in the accumulation (1/16 is 16 frames)
+    // Two à-trous iterations over the accumulated GI before it is composited. ~50 taps at half resolution; it halves
+    // the variance at one ray per pixel, which is what lets the pass stay cheap on an iGPU. See shaders/gi_denoise.frag.
+    bool giDenoise = true;
     float depthNormalOutline = 0.0f; // depth and normal edge lines, 0..1 (normal pre-pass)
     float flare = 0.0f;              // lens flare around the sun, 0..1 (occluded by geometry)
     float motionBlur = 0.0f;         // motion blur shutter, 0..2. Runs BEFORE TAA, so it also smears TAA history.
@@ -117,6 +177,17 @@ struct RenderSettings {
 
 // A terrain chunk to draw (item 18). The buffers belong to the terrain instance. The model moves the chunk from tile
 // space to the world, and the bounds are in tile space.
+// Everything the real-time GI pass needs to know about the scene's heightfield. A heightmap is a height function, so
+// the estimator needs no acceleration structure: it marches the same samples the terrain is built from. Set once per
+// terrain tile; a scene without terrain simply leaves it empty and the pass does not run.
+struct HeightfieldGpu {
+    rhi::Texture* height = nullptr;   // R = height normalised to 0..1, one texel per grid sample
+    uint32_t size = 0;                // samples per side (the texture is size x size)
+    float cellSize = 1.0f;            // metres between samples
+    float heightScale = 1.0f;         // metres for a normalised height of 1
+    glm::vec3 origin{0.0f};           // world position of sample (0, 0)
+};
+
 struct TerrainDraw {
     rhi::Buffer* vertices = nullptr;
     rhi::Buffer* indices = nullptr;
@@ -140,6 +211,26 @@ struct FoliageDraw {
     glm::vec3 boundsMax{0.0f};
     glm::vec2 fade{60.0f, 90.0f};
     glm::vec3 tint{0.3f, 0.5f, 0.2f};
+};
+
+// One grass batch to draw (item 19): up to kGrassBatch blades of one tuft mesh, drawn as one instanced call. The
+// bands are metres from the camera: full density inside x, half at y, nothing past z. `wind` is the strength (m), the
+// frequency (cycles/s), the spatial scale (rad/m) and the flutter (m). `windDir` holds the ground direction in xy.
+// `pusher` is a body standing in the grass: xy its ground position, z the reach in metres, w the push in metres (w = 0
+// turns it off). All of it goes in the push block, so the shader needs no extra buffer.
+struct GrassDraw {
+    rhi::Buffer* vertices = nullptr;
+    rhi::Buffer* indices = nullptr;
+    rhi::DescriptorSet* instances = nullptr;   // ShaderMaterial set with the rows and colours (binding 15)
+    uint32_t indexCount = 0;
+    uint32_t instanceCount = 0;
+    glm::mat4 model{1.0f};
+    glm::vec3 boundsMin{0.0f};
+    glm::vec3 boundsMax{0.0f};
+    glm::vec3 bands{24.0f, 48.0f, 95.0f};
+    glm::vec4 wind{0.22f, 0.45f, 0.11f, 0.05f};
+    glm::vec2 windDir{0.85f, 0.53f};
+    glm::vec4 pusher{0.0f};
 };
 
 // Kaze's Unity Volume values (Bloom Volume and Color Grading Volume), as set in the Unity screenshot.
@@ -171,9 +262,36 @@ public:
     void render(const OrbitCamera& cam, const std::vector<Model*>& models,
                 float time, uint32_t frameIndex, const RenderSettings& settings);
 
+    // ---- HUD ------------------------------------------------------------------------------------------------
+    // The glyph atlas is borrowed and must outlive the renderer. drawHud() is called after render() and before
+    // device.endFrame(); it opens and closes its own pass on the presentation target, so the scene render is untouched.
+    void setHudAtlas(FontAtlas* atlas);
+    // Draws the canvas vertices (pixels, origin top-left). Returns the vertices drawn; 0 when there is no atlas.
+    uint32_t drawHud(const std::vector<HudVertex>& vertices, uint32_t screenW, uint32_t screenH);
+
+    // Trails to draw this frame. The renderer keeps the pointers only for the duration of render(): the caller owns
+    // the Trail objects, and they must outlive the call. Alpha trails are drawn after the blended materials so they
+    // composite over them; additive trails (sword arcs, light streaks) are drawn after those. Each list is one draw.
+    void setTrails(const std::vector<const Trail*>& alpha, const std::vector<const Trail*>& additive = {});
+    // Triangles the trail draw produced in the last render().
+    uint32_t lastTrailTriangles() const { return trailTriangles_; }
+
+    // The GPU brackets of the last render(), filled from the frame the device resolved when this one began — one
+    // frame of latency by design, so the read never waits (docs/PROFILER.md). Empty when the backend reports no
+    // timestamps. The names are the renderer's own: shadows, depth, scene, post, hud.
+    struct GpuStat {
+        const char* name;
+        float ms;
+    };
+    const std::vector<GpuStat>& lastGpuStats() const { return gpuStats_; }
+
     // Mesh draw calls issued by the last render(), across the shadow and scene passes.
     uint32_t lastDrawCalls() const { return drawCalls_; }
     uint32_t lastTriangles() const { return triangles_; }
+
+    // Totals of the virtual-geometry cuts collected by the last render(): clusters chosen, source triangles those
+    // clusters hold, and subtrees rejected by the frustum. Zero when no primitive in the scene has a tree.
+    VGeomStats lastVGeomStats() const { return vgeomStats_; }
 
     // Draws a primitive with a Shader Graph material instead of its MToon material. Pass nullptr to
     // restore the MToon path. The renderer does not own the GraphMaterial; it must outlive the draws.
@@ -194,16 +312,51 @@ public:
 
     // Sets the water volume drawn by render() (item 16). Pass nullptr to remove it. The renderer keeps a copy.
     void setWater(const WaterVolume* volume);
+    // The scene's lights (item 6). Every enabled point and spot light is ranked against the camera each frame and the
+    // best kFrameLights are packed into the frame block; directional lights become the key light. An empty list means
+    // "no authored lights", and the frame keeps the two stylistic fills it has always had, so old scenes do not change.
+    void setSceneLights(std::vector<SceneLight> lights);
+    const std::vector<SceneLight>& sceneLights() const { return sceneLights_; }
+    // The environment (docs/IBL.md): bakes the cubemap from the procedural sky or an equirectangular panorama, the
+    // probe volumes, and the whole-scene probe, all on the CPU, and binds the prefiltered cube at Frame binding 8.
+    // The panorama path in settings.environment.panorama must already be resolved (the player resolves it against the
+    // project root, like the grading LUT). Returns false with `error` set when a panorama cannot be read; the ambient
+    // then stays off. Passing settings whose environment is disabled clears the environment again.
+    bool setEnvironment(const RenderSettings& settings, std::string* error);
+    // True when a scene turned the environment on and the bake succeeded.
+    bool hasEnvironment() const { return envIntensity_ > 0.0f; }
+    // How many scene lights the last frame actually shaded with, and whether a directional scene light took over the
+    // key. Both zero/false on a scene with no authored lights.
+    int lastSceneLightCount() const { return lastSceneLightCount_; }
+    bool lastKeyLightFromScene() const { return lastKeyFromScene_; }
     // The terrain chunks to draw this frame (item 18). The buffers belong to the terrain instances, so pass the list
     // again every frame.
     void setTerrain(const std::vector<TerrainDraw>& chunks) { terrain_ = chunks; }
+    void setHeightfield(const HeightfieldGpu& field) { heightfield_ = field; }
     void setFoliage(const std::vector<FoliageDraw>& batches) { foliage_ = batches; }
+    void setGrass(const std::vector<GrassDraw>& batches) { grass_ = batches; }
     bool hasWater() const { return water_.has_value(); }
     bool hasGradingLut() const { return hasLut_; }
     // Removes every override. Call before a GraphMaterial is destroyed or its model is replaced.
     void clearGraphMaterials() { graphMaterials_.clear(); }
 
 private:
+    // One frame's selection for one draw. The CPU path keeps the clusters the walk chose and the contiguous runs
+    // of the cluster index stream they form. The GPU path (docs/VGEOM.md §7) selects on the compute queue instead:
+    // the cut owns a region of the frame's work buffer — [idCount, cmdCount][ids pow2][commands cap*5], in uints —
+    // and every pass draws it with one drawIndexedIndirect over the command region, where each written entry is a
+    // merged run and every unwritten slot is a zero command that draws nothing.
+    struct VGeomCut {
+        std::vector<uint32_t> clusters;                      // CPU path only
+        std::vector<std::pair<uint32_t, uint32_t>> runs;     // CPU path only: (firstIndex, indexCount)
+        bool gpu = false;                                    // selected by the compute kernel
+        const Primitive* prim = nullptr;
+        glm::mat4 model{1.0f};
+        uint32_t idBase = 0;   // uint offset of the id region (idCount lives two uints before it)
+        uint32_t pow2 = 0;     // id region padded to this power of two for the kernel's sort
+        uint32_t cmdBase = 0;  // uint offset of the command region
+        uint32_t cmdCap = 0;   // command capacity: one slot per cluster — the unmerged worst case
+    };
     struct Rec {
         Model* model;
         int node;
@@ -212,16 +365,27 @@ private:
         float fade = 0.0f;     // distance fade of the model (colour passes)
         bool inView = true;    // false when the camera frustum culls the draw (colour passes skip it)
         int lod = 0;           // mesh LOD level for this draw (0 = full detail); static draws only
+        const VGeomCut* vgeomCut = nullptr;   // null when the primitive has no tree or the setting is off
     };
 
     void rebuildTargets(uint32_t scale);
     void buildPipelines();
+    bool wireframe_ = false;        // the mode the current pipelines were built for
     void buildPostSets();
     std::unique_ptr<rhi::Texture> makeLutTexture(const uint8_t* rgba, uint32_t size = 16) const;   // size N: N*N x N strip
 
     rhi::Device& dev_;
+    // Trails for the current frame, and the two pipelines that draw them (created on first use).
+    std::vector<const Trail*> trailAlpha_;
+    std::vector<const Trail*> trailAdditive_;
+    std::unique_ptr<TrailRenderer> trailAlphaRenderer_;
+    std::unique_ptr<TrailRenderer> trailAdditiveRenderer_;
+    uint32_t trailTriangles_ = 0;
+
     uint32_t drawCalls_ = 0;
     uint32_t triangles_ = 0;     // triangles in the mesh draws of the last frame
+    VGeomStats vgeomStats_{};
+    std::vector<GpuStat> gpuStats_;
     float bloomScale_ = 0.5f;     // bloom size the targets were built with
     uint32_t scale_ = 0;          // internal resolution scale (1 or 2); 0 = not built
     uint32_t displayW_ = 0, displayH_ = 0;
@@ -229,13 +393,28 @@ private:
 
     // Fixed-size resources.
     std::unique_ptr<rhi::Buffer> frameUbo_;
+    std::unique_ptr<class HudRenderer> hud_;
+    FontAtlas* hudAtlas_ = nullptr;
     std::unique_ptr<rhi::Texture> shadowAtlas_;     // 4096, 2x2 cascades of 2048
     std::unique_ptr<rhi::Texture> dummyTex_;        // used by the shadow pass's Frame set
+    std::unique_ptr<rhi::Texture> dummyCube_;       // 1x1 white cube: the Frame set's binding 8 when no environment
+    std::unique_ptr<rhi::Texture> envCube_;         // the scene's prefiltered environment (docs/IBL.md)
+    std::vector<env::ProbeVolume> envVolumes_;      // baked probe lattices, interpolated at the camera focus
+    env::Sh envWholeScene_;                         // the fallback probe: environment plus lights at the origin
+    float envIntensity_ = 0.0f;                     // 0 = environment off, the hemisphere ambient stays
+    int envMips_ = 1;                               // the reflection chain's mip count
     std::unique_ptr<rhi::DescriptorSet> frameSet_;
     std::unique_ptr<rhi::DescriptorSet> shadowFrameSet_;
 
     // Pipelines.
     std::unique_ptr<rhi::Pipeline> pShadow_, pSky_, pGrid_, pGridWater_, pOutline_;
+    // The virtual-geometry compute cut (docs/VGEOM.md §7): the pipeline is built once (stays null when vgeom_cut
+    // cannot be built, which leaves vgGpu_ false and the CPU walk in charge), per-primitive descriptor sets, and
+    // the frame's work and view buffers — both uploaded fresh on frames the GPU path runs.
+    std::unique_ptr<rhi::Pipeline> pVGeomCut_;
+    bool vgGpu_ = false;
+    std::unique_ptr<rhi::Buffer> vgWork_, vgView_;
+    std::map<const Primitive*, std::unique_ptr<rhi::DescriptorSet>> vgSets_;
     std::unique_ptr<rhi::Pipeline> pMToon_[2][2];   // [blend][doubleSided]
     std::unique_ptr<rhi::Pipeline> pDepth_[2];      // depth prepass, [doubleSided]
     std::unique_ptr<rhi::Pipeline> pMmdToon_[2][2];  // MMD-style toon look [blend][doubleSided]
@@ -249,13 +428,29 @@ private:
     std::unique_ptr<rhi::Pipeline> pWater_;         // water surface (water.vert / water.frag)
     std::unique_ptr<rhi::Pipeline> pUnderwater_;    // underwater fog (underwater.frag)
     std::unique_ptr<rhi::Pipeline> pTerrain_;       // terrain chunks (terrain.vert / terrain.frag)
+    std::unique_ptr<rhi::Pipeline> pTerrainShadow_;  // the same chunks as shadow casters (terrain_shadow.vert)
     std::vector<TerrainDraw> terrain_;
+    HeightfieldGpu heightfield_;
+    // Real-time GI (the iGPU path tracer): a half-resolution trace, a temporal accumulator and a composite that the
+    // effects pass folds in. The two GI targets and their sets are built with the rest of the resolution-dependent
+    // targets; the pass does nothing when no heightfield is set or gi_ is zero.
+    std::unique_ptr<rhi::Texture> gi_, giDenoise_, giHist_[2];
+    std::unique_ptr<rhi::Pipeline> pGiTrace_, pGiAccum_, pGiDenoise_;
+    std::unique_ptr<rhi::DescriptorSet> setGiTrace_, setGiAccum_[2], setGiDenoise_[2], setGiDenoiseB_;
+    uint32_t giFrame_ = 0;
+    uint32_t giWrite_ = 0;
     std::unique_ptr<rhi::Pipeline> pFoliage_;       // foliage batches (foliage.vert / foliage.frag)
     std::vector<FoliageDraw> foliage_;
+    std::unique_ptr<rhi::Pipeline> pGrass_;         // grass batches (grass.vert / grass.frag)
+    std::vector<GrassDraw> grass_;
 
     // Water (item 16). The grid is a fixed 128 x 128 rest grid over [0,1]^2, displaced in water.vert.
     std::optional<WaterVolume> water_;
+    std::vector<SceneLight> sceneLights_;
+    int lastSceneLightCount_ = 0;
+    bool lastKeyFromScene_ = false;
     std::unique_ptr<rhi::Buffer> waterVb_, waterIb_;
+    std::unique_ptr<rhi::Buffer> contactUbo_;   // 16 bytes: the effects pass's contact-shadow parameters (Post binding 7)
     uint32_t waterIndexCount_ = 0;
 
     // Resolution-dependent targets.
@@ -263,6 +458,8 @@ private:
     std::unique_ptr<rhi::Texture> velocity_;       // RGBA16F motion vectors in UV units (TAA, motion blur)
     std::unique_ptr<rhi::Texture> refr_;           // half-size RGBA16F: scene colour (rgb) and view depth (a), for water
     std::unique_ptr<rhi::Texture> normal_;         // RGBA8 view-space normals; alpha 1 = opaque surface
+    std::unique_ptr<rhi::Texture> albedo_;         // RGBA8 linear base colour for multi-bounce AO; alpha 1 = present
+    std::unique_ptr<rhi::Texture> noAlbedo_;       // 1x1 transparent, bound at Post 6 when multi-bounce AO is off
     std::unique_ptr<rhi::Texture> fxHdr_;          // HDR after the effects pass: input to TAA, bloom, tonemap
     std::array<std::unique_ptr<rhi::Texture>, 2> expo_;   // 1x1 auto-exposure state; expo_[0] is read by tonemap
     std::unique_ptr<rhi::Texture> lut_;             // 256x16 grading strip; identity until a LUT is loaded

@@ -20,12 +20,15 @@
 #include <Jolt/Physics/Collision/Shape/BoxShape.h>
 #include <Jolt/Physics/Collision/Shape/MeshShape.h>
 #include <Jolt/Physics/Collision/Shape/SphereShape.h>
+#include <Jolt/Physics/Collision/Shape/CapsuleShape.h>
+#include <Jolt/Physics/Character/CharacterVirtual.h>
 #include <Jolt/Physics/Collision/ContactListener.h>
 #include <set>
 #include <Jolt/Physics/PhysicsSettings.h>
 #include <Jolt/Physics/PhysicsSystem.h>
 #include <Jolt/RegisterTypes.h>
 
+#include "engine/transform.h"
 #include "engine/water.h"
 
 
@@ -90,6 +93,7 @@ void initJoltOnce() {
 
 JPH::Vec3 toJolt(const glm::vec3& v) { return JPH::Vec3(v.x, v.y, v.z); }
 glm::vec3 fromJolt(JPH::Vec3 v) { return glm::vec3(v.GetX(), v.GetY(), v.GetZ()); }
+JPH::Quat toJolt(const glm::quat& q) { return JPH::Quat(q.x, q.y, q.z, q.w); }
 
 // An unordered body pair as a key: the smaller handle first. Returned by value (std::minmax would hand back
 // references to temporaries here).
@@ -171,9 +175,28 @@ struct PhysicsWorld::Impl {
     float alpha = 1.0f;
     std::unordered_map<uint32_t, Pose> prev;
     // Body changes requested while `defer` is on. They run at the start of the next step().
-    struct Deferred { enum class Op { SetPosition, AddImpulse, Remove } op; uint32_t h; glm::vec3 v; };
+    struct Deferred {
+        enum class Op { SetPosition, SetRotation, AddImpulse, Remove } op;
+        uint32_t h;
+        glm::vec3 v;
+        glm::quat q{1.0f, 0.0f, 0.0f, 0.0f};
+    };
     std::vector<Deferred> deferred;
     bool defer = false;
+    // Characters (item 4). CharacterVirtual is not a body, so it is not in the body map; the handle is ours.
+    struct CharacterEntry {
+        JPH::Ref<JPH::CharacterVirtual> character;
+        float height = 1.8f;
+        float radius = 0.3f;
+        float stepHeight = 0.4f;
+        float stickToFloor = 0.35f;
+        float jumpSpeed = 5.0f;
+        float yaw = 0.0f;
+        float verticalVelocity = 0.0f;
+        float airTime = 0.0f;   // seconds since the character was last on the ground; a jump is allowed briefly after
+    };
+    std::unordered_map<uint32_t, CharacterEntry> characters;
+    uint32_t nextCharacter = 1;
 };
 
 static PhysicsWorld::Impl::Pose readPose(const JPH::BodyInterface& bi, uint32_t h) {
@@ -224,11 +247,11 @@ void PhysicsWorld::setSolverSteps(int velocity, int position) {
 int PhysicsWorld::velocitySolverSteps() const { return static_cast<int>(impl_->system.GetPhysicsSettings().mNumVelocitySteps); }
 int PhysicsWorld::positionSolverSteps() const { return static_cast<int>(impl_->system.GetPhysicsSettings().mNumPositionSteps); }
 
-PhysicsWorld::Handle PhysicsWorld::addStaticBox(const glm::vec3& c, const glm::vec3& h) {
+PhysicsWorld::Handle PhysicsWorld::addStaticBox(const glm::vec3& c, const glm::vec3& h, const glm::vec3& rotationDeg) {
     JPH::BoxShapeSettings settings(toJolt(h));
     JPH::ShapeRefC shape = settings.Create().Get();
-    JPH::BodyCreationSettings bcs(shape, JPH::RVec3(c.x, c.y, c.z), JPH::Quat::sIdentity(), JPH::EMotionType::Static,
-                                  Layers::NON_MOVING);
+    JPH::BodyCreationSettings bcs(shape, JPH::RVec3(c.x, c.y, c.z), toJolt(eulerToQuat(rotationDeg)),
+                                  JPH::EMotionType::Static, Layers::NON_MOVING);
     JPH::BodyID id = impl_->system.GetBodyInterface().CreateAndAddBody(bcs, JPH::EActivation::DontActivate);
     ++bodies_;
     return id.GetIndexAndSequenceNumber();
@@ -265,9 +288,10 @@ PhysicsWorld::Handle PhysicsWorld::addDynamicSphere(const glm::vec3& p, float ra
     return id.GetIndexAndSequenceNumber();
 }
 
-PhysicsWorld::Handle PhysicsWorld::addDynamicBox(const glm::vec3& p, const glm::vec3& h, float mass) {
+PhysicsWorld::Handle PhysicsWorld::addDynamicBox(const glm::vec3& p, const glm::vec3& h, float mass,
+                                                 const glm::vec3& rotationDeg) {
     JPH::BoxShapeSettings settings(toJolt(h));
-    JPH::BodyCreationSettings bcs(settings.Create().Get(), JPH::RVec3(p.x, p.y, p.z), JPH::Quat::sIdentity(),
+    JPH::BodyCreationSettings bcs(settings.Create().Get(), JPH::RVec3(p.x, p.y, p.z), toJolt(eulerToQuat(rotationDeg)),
                                   JPH::EMotionType::Dynamic, Layers::MOVING);
     bcs.mOverrideMassProperties = JPH::EOverrideMassProperties::CalculateInertia;
     bcs.mMassPropertiesOverride.mMass = mass;
@@ -292,6 +316,103 @@ void PhysicsWorld::removeBody(Handle h) {
     impl_->prev.erase(h);
     impl_->mass.erase(h);
     --bodies_;
+}
+
+CharacterHandle PhysicsWorld::addCharacter(const glm::vec3& feet, const CharacterSettings& settings) {
+    CharacterSettings s = settings;
+    s.radius = std::clamp(s.radius, 0.15f, 2.0f);
+    s.height = std::max(s.height, 2.0f * s.radius + 0.05f);
+    s.maxSlopeDeg = std::clamp(s.maxSlopeDeg, 5.0f, 89.0f);
+    s.stepHeight = std::clamp(s.stepHeight, 0.0f, s.height * 0.5f);
+    s.stickToFloor = std::clamp(s.stickToFloor, 0.0f, 2.0f);
+    s.jumpSpeed = std::clamp(s.jumpSpeed, 0.0f, 30.0f);
+
+    // The capsule's cylinder half height: `height` counts the two hemispherical caps.
+    const float halfCylinder = std::max((s.height - 2.0f * s.radius) * 0.5f, 0.01f);
+    JPH::RefConst<JPH::Shape> shape = new JPH::CapsuleShape(halfCylinder, s.radius);
+
+    JPH::CharacterVirtualSettings vc;
+    vc.mShape = shape;
+    vc.mMaxSlopeAngle = JPH::DegreesToRadians(s.maxSlopeDeg);
+    // The supporting plane sits at the bottom of the capsule, so a step is measured from the feet.
+    vc.mSupportingVolume = JPH::Plane(JPH::Vec3::sAxisY(), -s.radius);
+    vc.mMass = s.mass;
+
+    const uint32_t h = impl_->nextCharacter++;
+    JPH::CharacterVirtual* ch = new JPH::CharacterVirtual(
+        &vc, JPH::RVec3(feet.x, feet.y + s.height * 0.5f, feet.z), JPH::Quat::sIdentity(), &impl_->system);
+    Impl::CharacterEntry e;
+    e.character = ch;
+    e.height = s.height;
+    e.radius = s.radius;
+    e.stepHeight = s.stepHeight;
+    e.stickToFloor = s.stickToFloor;
+    e.jumpSpeed = s.jumpSpeed;
+    impl_->characters.emplace(h, e);
+    return h;
+}
+
+void PhysicsWorld::removeCharacter(CharacterHandle h) { impl_->characters.erase(h); }
+
+bool PhysicsWorld::hasCharacter(CharacterHandle h) const { return impl_->characters.count(h) != 0; }
+
+void PhysicsWorld::setCharacterYaw(CharacterHandle h, float yawRadians) {
+    const auto it = impl_->characters.find(h);
+    if (it == impl_->characters.end()) return;
+    it->second.yaw = yawRadians;
+    it->second.character->SetRotation(JPH::Quat::sRotation(JPH::Vec3::sAxisY(), yawRadians));
+}
+
+bool PhysicsWorld::moveCharacter(CharacterHandle h, const glm::vec3& planar, bool jump, float dt, CharacterState* out) {
+    const auto it = impl_->characters.find(h);
+    if (it == impl_->characters.end()) return false;
+    Impl::CharacterEntry& e = it->second;
+    dt = std::clamp(dt, 1.0f / 240.0f, 0.1f);
+
+    JPH::CharacterVirtual* ch = e.character;
+    const bool grounded = ch->GetGroundState() == JPH::CharacterBase::EGroundState::OnGround;
+    e.airTime = grounded ? 0.0f : e.airTime + dt;
+    // Coyote time: a jump pressed within 0.1 s of walking off an edge still fires, which is what players expect.
+    const bool canJump = grounded || e.airTime <= 0.1f;
+    if (!grounded) e.verticalVelocity += impl_->system.GetGravity().GetY() * dt;
+    if (canJump && jump) {
+        e.verticalVelocity = e.jumpSpeed;
+        e.airTime = 1.0f;   // one jump per airtime; the coyote window is spent
+    } else if (grounded) {
+        e.verticalVelocity = std::min(e.verticalVelocity, 0.0f);   // landing clears the fall
+    }
+
+    JPH::Vec3 v(planar.x, e.verticalVelocity, planar.z);
+    // A moving platform carries the character; add its velocity so standing still does not slide off.
+    if (grounded) v += ch->GetGroundVelocity();
+    ch->SetLinearVelocity(v);
+
+    JPH::CharacterVirtual::ExtendedUpdateSettings us;
+    us.mStickToFloorStepDown = JPH::Vec3(0.0f, -e.stickToFloor, 0.0f);
+    us.mWalkStairsStepUp = JPH::Vec3(0.0f, e.stepHeight, 0.0f);
+    ch->ExtendedUpdate(dt, impl_->system.GetGravity(), us, JPH::BroadPhaseLayerFilter(), JPH::ObjectLayerFilter(),
+                       JPH::BodyFilter(), JPH::ShapeFilter(), impl_->temp);
+    e.verticalVelocity = ch->GetLinearVelocity().GetY();
+
+    if (out) *out = CharacterState{};
+    if (out) characterState(h, out);
+    return true;
+}
+
+bool PhysicsWorld::characterState(CharacterHandle h, CharacterState* out) const {
+    const auto it = impl_->characters.find(h);
+    if (it == impl_->characters.end() || !out) return false;
+    const JPH::CharacterVirtual* ch = it->second.character;
+    const JPH::RVec3 p = ch->GetPosition();
+    out->position = glm::vec3(p.GetX(), p.GetY() - it->second.height * 0.5f, p.GetZ());
+    const JPH::Vec3 v = ch->GetLinearVelocity();
+    out->velocity = glm::vec3(v.GetX(), v.GetY(), v.GetZ());
+    const auto state = ch->GetGroundState();
+    out->grounded = state == JPH::CharacterBase::EGroundState::OnGround;
+    out->onSteepGround = state == JPH::CharacterBase::EGroundState::OnSteepGround;
+    const JPH::Vec3 n = ch->GetGroundNormal();
+    out->groundNormal = glm::vec3(n.GetX(), n.GetY(), n.GetZ());
+    return true;
 }
 
 void PhysicsWorld::setInterpolation(bool on) {
@@ -330,6 +451,20 @@ void PhysicsWorld::setPosition(Handle h, const glm::vec3& p) {
     if (it != impl_->prev.end()) it->second = readPose(impl_->system.GetBodyInterface(), h);
 }
 
+glm::vec3 PhysicsWorld::rotationDeg(Handle h) const { return quatToEuler(rotation(h)); }
+
+void PhysicsWorld::setRotation(Handle h, const glm::vec3& rotationDeg) {
+    if (impl_->defer) {
+        impl_->deferred.push_back({Impl::Deferred::Op::SetRotation, h, glm::vec3(0.0f), eulerToQuat(rotationDeg)});
+        return;
+    }
+    impl_->system.GetBodyInterface().SetRotation(JPH::BodyID(h), toJolt(eulerToQuat(rotationDeg)),
+                                                 JPH::EActivation::Activate);
+    // A turned body jumps. Its previous pose becomes the new one, so nothing is blended across the jump.
+    const auto it = impl_->prev.find(h);
+    if (it != impl_->prev.end()) it->second = readPose(impl_->system.GetBodyInterface(), h);
+}
+
 void PhysicsWorld::addImpulse(Handle h, const glm::vec3& impulse) {
     if (impl_->defer) {
         impl_->deferred.push_back({Impl::Deferred::Op::AddImpulse, h, impulse});
@@ -358,6 +493,13 @@ void PhysicsWorld::applyDeferred() {
     for (const Impl::Deferred& op : ops) {
         switch (op.op) {
         case Impl::Deferred::Op::SetPosition: setPosition(op.h, op.v); break;
+        case Impl::Deferred::Op::SetRotation:
+            impl_->system.GetBodyInterface().SetRotation(JPH::BodyID(op.h), toJolt(op.q), JPH::EActivation::Activate);
+            {   // A turned body jumps: its previous pose becomes the new one, so nothing blends across the jump.
+                const auto it = impl_->prev.find(op.h);
+                if (it != impl_->prev.end()) it->second = readPose(impl_->system.GetBodyInterface(), op.h);
+            }
+            break;
         case Impl::Deferred::Op::AddImpulse: addImpulse(op.h, op.v); break;
         case Impl::Deferred::Op::Remove: removeBody(op.h); break;
         }

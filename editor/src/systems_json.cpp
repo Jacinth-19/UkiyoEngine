@@ -209,6 +209,16 @@ QJsonObject toJson(const ukiyo::SystemsComponents& c, const QString& root) {
         b["halfExtents"] = h;
         o["body"] = b;
     }
+    if (c.character.enabled) {
+        QJsonObject ch;
+        ch["radius"] = double(c.character.radius);
+        ch["height"] = double(c.character.height);
+        ch["maxSlope"] = double(c.character.maxSlopeDeg);
+        ch["stepHeight"] = double(c.character.stepHeight);
+        ch["jump"] = double(c.character.jumpSpeed);
+        ch["speed"] = double(c.character.speed);
+        o["character"] = ch;
+    }
     if (c.agent.enabled) {
         QJsonObject a;
         a["maxSpeed"] = double(c.agent.maxSpeed);
@@ -279,6 +289,16 @@ ukiyo::SystemsComponents fromJson(const QJsonObject& o, const QString& root) {
         const QJsonArray h = b.value("halfExtents").toArray();
         if (h.size() == 3)
             c.body.halfExtents = glm::vec3(float(h[0].toDouble(0.5)), float(h[1].toDouble(0.5)), float(h[2].toDouble(0.5)));
+    }
+    if (o.contains("character")) {
+        const QJsonObject ch = o["character"].toObject();
+        c.character.enabled = true;
+        c.character.radius = float(ch.value("radius").toDouble(c.character.radius));
+        c.character.height = float(ch.value("height").toDouble(c.character.height));
+        c.character.maxSlopeDeg = float(ch.value("maxSlope").toDouble(c.character.maxSlopeDeg));
+        c.character.stepHeight = float(ch.value("stepHeight").toDouble(c.character.stepHeight));
+        c.character.jumpSpeed = float(ch.value("jump").toDouble(c.character.jumpSpeed));
+        c.character.speed = float(ch.value("speed").toDouble(c.character.speed));
     }
     if (o.contains("agent")) {
         c.agent.enabled = true;

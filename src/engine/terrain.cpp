@@ -8,14 +8,6 @@
 
 namespace ukiyo {
 
-namespace {
-
-float clampIndex(int v, uint32_t size) {
-    return float(std::clamp(v, 0, int(size) - 1));
-}
-
-}  // namespace
-
 float Heightmap::heightAt(int x, int z) const {
     const int cx = std::clamp(x, 0, int(size) - 1);
     const int cz = std::clamp(z, 0, int(size) - 1);
@@ -80,6 +72,23 @@ ChunkMesh buildChunk(const Heightmap& map, uint32_t cx, uint32_t cz, uint32_t ce
         }
     }
     return mesh;
+}
+
+void appendTerrainTriangles(const Heightmap& map, const glm::vec3& origin, uint32_t cells,
+                            std::vector<glm::vec3>* vertices, std::vector<uint32_t>* indices) {
+    if (!vertices || !indices) return;
+    const uint32_t n = chunksPerSide(map, cells);
+    for (uint32_t cz = 0; cz < n; ++cz) {
+        for (uint32_t cx = 0; cx < n; ++cx) {
+            const ChunkMesh m = buildChunk(map, cx, cz, cells);
+            if (m.positions.empty()) continue;
+            const uint32_t base = static_cast<uint32_t>(vertices->size());
+            vertices->reserve(vertices->size() + m.positions.size());
+            for (const glm::vec3& p : m.positions) vertices->push_back(p + origin);
+            indices->reserve(indices->size() + m.indices.size());
+            for (const uint32_t i : m.indices) indices->push_back(base + i);
+        }
+    }
 }
 
 bool loadHeightmapU16(const std::string& path, uint32_t size, Heightmap* out, std::string* error) {

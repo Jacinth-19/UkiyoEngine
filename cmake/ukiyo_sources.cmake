@@ -1,0 +1,106 @@
+# Every translation unit the engine is made of, listed once.
+#
+# The desktop targets and the Android app build the same engine, so the lists live here rather than in two places. The
+# Android build removes the three files that cannot exist on a phone (see CMakeLists.txt): the desktop GL backend, the
+# GLSL-to-SPIR-V compiler that needs glslang, and GLAD. Anything added to the engine belongs in one of these lists; if
+# it is desktop-only it also belongs in that REMOVE_ITEM.
+
+set(UKIYO_CORE_SOURCES
+  src/rhi/gl_device.cpp
+  src/rhi/vk_device.cpp
+  src/rhi/shader_paths.cpp
+  src/engine/anim.cpp
+  src/engine/camera.cpp
+  src/engine/transform.cpp
+  src/engine/gizmo_math.cpp
+  src/engine/lights.cpp
+  src/engine/environment.cpp
+  src/engine/texture_compress.cpp
+  # astc-encoder 5.7.0's core, globbed so a vendored upgrade cannot leave one file behind the link's back.
+  third_party/astcenc/astcenc_averages_and_directions.cpp
+  third_party/astcenc/astcenc_block_sizes.cpp
+  third_party/astcenc/astcenc_color_quantize.cpp
+  third_party/astcenc/astcenc_color_unquantize.cpp
+  third_party/astcenc/astcenc_compress_symbolic.cpp
+  third_party/astcenc/astcenc_compute_variance.cpp
+  third_party/astcenc/astcenc_decompress_symbolic.cpp
+  third_party/astcenc/astcenc_diagnostic_trace.cpp
+  third_party/astcenc/astcenc_entry.cpp
+  third_party/astcenc/astcenc_find_best_partitioning.cpp
+  third_party/astcenc/astcenc_ideal_endpoints_and_weights.cpp
+  third_party/astcenc/astcenc_image.cpp
+  third_party/astcenc/astcenc_integer_sequence.cpp
+  third_party/astcenc/astcenc_mathlib.cpp
+  third_party/astcenc/astcenc_mathlib_softfloat.cpp
+  third_party/astcenc/astcenc_partition_tables.cpp
+  third_party/astcenc/astcenc_percentile_tables.cpp
+  third_party/astcenc/astcenc_pick_best_endpoint_format.cpp
+  third_party/astcenc/astcenc_quantization.cpp
+  third_party/astcenc/astcenc_symbolic_physical.cpp
+  third_party/astcenc/astcenc_weight_align.cpp
+  third_party/astcenc/astcenc_weight_quant_xfer_tables.cpp
+  src/engine/text_atlas.cpp
+  src/engine/msdf.cpp
+  src/engine/hud.cpp
+  src/engine/hud_renderer.cpp
+  src/engine/build_manifest.cpp
+  src/engine/scene_runtime.cpp
+  src/engine/async_load.cpp
+  src/engine/property_search.cpp
+  src/engine/plugin_host.cpp
+  src/engine/json_patch.cpp
+  src/engine/asset_db.cpp
+  src/engine/vcs.cpp
+  src/engine/localisation.cpp
+  src/engine/search.cpp
+  src/player/hud_layout.cpp
+  src/engine/face.cpp
+  src/engine/model.cpp
+  src/engine/pmx_glb.cpp
+  src/engine/vfs.cpp
+  src/engine/shader_compiler.cpp
+  src/engine/material_asset.cpp
+  src/engine/project_settings.cpp
+  src/engine/project_template.cpp
+  src/engine/script_project.cpp
+  src/engine/graph_material.cpp
+  src/engine/water.cpp
+  src/engine/terrain.cpp
+  src/engine/terrain_gpu.cpp
+  src/engine/terrain_layers.cpp
+  src/engine/foliage.cpp
+  src/engine/grass.cpp
+  src/engine/vgeom.cpp
+  src/engine/motion_match.cpp
+  src/engine/terrain_edit.cpp
+  third_party/meshoptimizer/simplifier.cpp
+  third_party/meshoptimizer/allocator.cpp
+  src/engine/material_preview.cpp
+  src/engine/particle_renderer.cpp
+  src/engine/trail.cpp
+  src/engine/trail_renderer.cpp
+  src/engine/browser_zoom.cpp
+  src/engine/texture_mips.cpp
+  src/engine/renderer.cpp
+  src/engine/rig.cpp
+  src/third_party_impl.cpp
+  third_party/glad/src/gl.c)
+
+set(UKIYO_SYSTEMS_SOURCES
+  src/systems/physics.cpp
+  src/systems/navigation.cpp
+  src/systems/audio.cpp
+  src/systems/anim_state.cpp
+  src/systems/script.cpp
+  src/systems/script_runtime.cpp
+  src/systems/vfx.cpp
+  src/systems/network.cpp
+  src/systems/save_game.cpp
+  src/systems/world.cpp)
+
+# The input system is portable; only its GLFW poller is not, and that is a separate target.
+set(UKIYO_INPUT_SOURCES
+  src/input/input.cpp
+  src/input/input_asset.cpp
+  src/input/input_users.cpp
+  src/input/rebind.cpp)

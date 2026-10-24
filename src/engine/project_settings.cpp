@@ -81,7 +81,7 @@ void normalize(ProjectSettings& s) {
     s.velocitySolverSteps = clampTo(s.velocitySolverSteps, 1, 32);
     s.positionSolverSteps = clampTo(s.positionSolverSteps, 1, 32);
 
-    // Input: an action needs a name and a key. Duplicate names keep the first entry.
+    // Input: an action needs a name and a binding (a key or a control path). Duplicate names keep the first entry.
     std::vector<InputAction> actions;
     std::set<std::string> actionNames;
     for (const InputAction& a : s.inputActions) {
@@ -104,6 +104,15 @@ void normalize(ProjectSettings& s) {
         scenes.push_back(p);
     }
     s.buildScenes = scenes;
+
+    s.buildStartScene = trimmed(s.buildStartScene);
+    if (!s.buildStartScene.empty() && !sceneSeen.count(s.buildStartScene)) s.buildStartScene.clear();
+    s.buildFont = trimmed(s.buildFont);
+    // The same limits the manifest enforces, applied here so a typo in a spin box cannot write an unloadable build.
+    if (s.buildWidth < 320) s.buildWidth = 320;
+    if (s.buildWidth > 7680) s.buildWidth = 7680;
+    if (s.buildHeight < 240) s.buildHeight = 240;
+    if (s.buildHeight > 4320) s.buildHeight = 4320;
 }
 
 std::string projectSettingsPath(const std::string& projectRoot) {
@@ -169,6 +178,11 @@ bool loadProjectSettings(const std::string& path, ProjectSettings& out, std::str
         out.productName = b.value("productName", out.productName);
         if (b.contains("scenes") && b["scenes"].is_array())
             for (const auto& s : b["scenes"]) if (s.is_string()) out.buildScenes.push_back(s.get<std::string>());
+        out.buildStartScene = b.value("startScene", out.buildStartScene);
+        out.buildFont = b.value("font", out.buildFont);
+        out.buildWidth = b.value("width", out.buildWidth);
+        out.buildHeight = b.value("height", out.buildHeight);
+        out.buildFullscreen = b.value("fullscreen", out.buildFullscreen);
     }
     normalize(out);
     return true;
@@ -192,7 +206,13 @@ bool saveProjectSettings(const std::string& path, const ProjectSettings& in, std
     nlohmann::json input = nlohmann::json::array();
     for (const InputAction& a : s.inputActions) input.push_back({{"name", a.name}, {"key", a.key}});
     j["input"] = input;
-    j["build"] = {{"productName", s.productName}, {"scenes", s.buildScenes}};
+    j["build"] = {{"productName", s.productName},
+                  {"scenes", s.buildScenes},
+                  {"startScene", s.buildStartScene},
+                  {"font", s.buildFont},
+                  {"width", s.buildWidth},
+                  {"height", s.buildHeight},
+                  {"fullscreen", s.buildFullscreen}};
 
     std::filesystem::create_directories(std::filesystem::path(path).parent_path());
     std::ofstream out(path);

@@ -12,7 +12,11 @@ namespace engine {
 
 struct InputAction {
     std::string name;   // e.g. "Jump"
-    std::string key;    // portable key text, e.g. "Space", "W", "Left"
+    // What the action is bound to: a control path naming its device ("<Keyboard>/space", "<Gamepad>/buttonSouth",
+    // "<Mouse>/leftButton", "<Touchscreen>/primaryTouch/press"), or a bare portable key ("Space", "W", "Left") for a
+    // project file written before paths. The editor writes paths; a bare key is the keyboard's path and is still
+    // read. Touch positions on a binding are screen fractions (0..1, origin top-left), not Unity's pixels.
+    std::string key;
 };
 
 struct ProjectSettings {
@@ -34,9 +38,15 @@ struct ProjectSettings {
     // Input actions. A script asks for an action, and the action resolves to a key.
     std::vector<InputAction> inputActions;
 
-    // Build. Scenes are project-relative .ukscene paths, in build order.
+    // Build. Scenes are project-relative .ukscene paths, in build order. These fields are exactly what the player's
+    // manifest needs, so the Build page can write Build/build.json without asking anything twice.
     std::string productName = "Ukiyo Game";
     std::vector<std::string> buildScenes;
+    std::string buildStartScene;      // project-relative; empty means the first scene
+    std::string buildFont;            // project-relative .ttf for the HUD; empty means no text
+    int buildWidth = 1280;
+    int buildHeight = 720;
+    bool buildFullscreen = false;
 };
 
 // The built-in names for the first eight layer slots and the tags that always exist.

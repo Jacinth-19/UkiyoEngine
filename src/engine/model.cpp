@@ -1,6 +1,8 @@
 // VRM / glTF loader. Geometry, skins and textures come from cgltf; the VRM
 // extensions (VRMC_vrm, VRMC_materials_mtoon, and the VRM 0.x "VRM" block) are
 // read from the GLB JSON chunk with nlohmann::json.
+#include "engine/texture_compress.h"
+#include "engine/texture_mips.h"
 #include "engine/vfs.h"
 #include "engine/vfs_cgltf.h"
 #include "engine/model.h"
@@ -16,6 +18,7 @@
 #include <algorithm>
 #include <array>
 #include <map>
+#include <tuple>
 #include <cctype>
 #include <cmath>
 #include <cstdio>
@@ -34,6 +37,15 @@
 #include "stb_image.h"
 
 namespace ukiyo {
+
+namespace {
+// The default is on: a shipped game wants its textures compressed, and the games are why the loader exists.
+bool g_compressedModelTextures = true;
+} // namespace
+
+void setCompressedModelTextures(bool on) { g_compressedModelTextures = on; }
+bool compressedModelTextures() { return g_compressedModelTextures; }
+
 namespace {
 
 using json = nlohmann::json;
@@ -153,6 +165,8 @@ public:
     bool smoothNormals = false;   // set before run()
     std::string faceSdfPath;      // set before run()
     std::string faceMaterial;     // set before run()
+    bool preserveAlphaTestCoverage = true;   // set before run()
+    float alphaTestThreshold = 0.5f;         // set before run()
 
     void run() {
         detectFormat();
@@ -576,9 +590,12 @@ private:
         m_.textures.push_back(std::move(ntex));
     }
 
-    rhi::Texture* texture(int idx, bool srgb) {
+    // `masked` asks for an alpha-coverage-preserving chain at the material's cutoff: the same image can be shared between
+    // an opaque material and a cutout, and the two need different chains, so the cutoff is part of the cache key.
+    rhi::Texture* texture(int idx, bool srgb, bool masked = false, float cutoff = 0.5f) {
         if (idx < 0 || idx >= static_cast<int>(data_->textures_count)) return white_;
-        auto key = std::make_pair(idx, srgb);
+        const int cutoffKey = int(std::clamp(cutoff, 0.0f, 1.0f) * 255.0f + 0.5f);
+        auto key = std::make_tuple(idx, srgb, masked, cutoffKey);
         auto it = cache_.find(key);
         if (it != cache_.end()) return it->second;
 
@@ -607,7 +624,37 @@ private:
         d.mipmaps = true;
         d.filter = rhi::Filter::Linear;
         d.wrap = rhi::Wrap::Repeat;
-        auto tex = dev_.createTexture(d, px);
+        // Alpha-coverage-preserving mips for cutouts (GH-104289). The chain is built here, on the CPU, because the
+        // coverage search cannot run inside a blit; every other texture keeps the backend's own filtering.
+        rhi::MipChain chain;
+        if (masked && preserveAlphaTestCoverage) {
+            const float threshold = cutoff > 0.0f ? cutoff : alphaTestThreshold;
+            const std::vector<MipLevel> levels = buildMipChain(px, uint32_t(w), uint32_t(h), true, threshold);
+            chain.reserve(levels.size());
+            for (const MipLevel& level : levels) chain.push_back(level.rgba);
+        }
+        // Block compression (batch 7): every level of the chain — the coverage-preserving one included, which ran
+        // first — compresses to the best format the device samples: ASTC 4x4 where the GPU has it (phones), BC1
+        // (opaque colour) or BC3 (any alpha) where it does not (desktop), and raw RGBA8 where it has neither.
+        // Small textures stay raw: a block of metadata saves nothing.
+        if (g_compressedModelTextures && w >= 8 && h >= 8 &&
+            (dev_.supportsAstc() || dev_.supportsBlockCompression())) {
+            if (chain.empty()) chain = texc::rgbaMipChain(px, w, h);
+            const bool alpha = texc::hasAlpha(chain[0].data(), w, h);
+            const bool astc = dev_.supportsAstc();
+            rhi::Format f;
+            if (astc) {
+                f = srgb ? rhi::Format::ASTC_4x4_SRGB : rhi::Format::ASTC_4x4;
+            } else if (alpha) {
+                f = srgb ? rhi::Format::BC3_SRGB : rhi::Format::BC3;
+            } else {
+                f = srgb ? rhi::Format::BC1_SRGB : rhi::Format::BC1;
+            }
+            const texc::Chain compressedChain = texc::compressChain(chain, w, h, f);
+            d.format = compressedChain.format;
+            chain = compressedChain.levels;
+        }
+        auto tex = dev_.createTexture(d, chain.empty() ? px : nullptr, chain.empty() ? nullptr : &chain);
         stbi_image_free(px);
         rhi::Texture* raw = tex.get();
         m_.textures.push_back(std::move(tex));
@@ -743,7 +790,7 @@ private:
             mat->ubo = dev_.createBuffer(rhi::BufferUsage::Uniform, sizeof(MaterialUBO));
             mat->ubo->upload(&p, sizeof(p));
             mat->set = dev_.createDescriptorSet(rhi::SetType::Material);
-            mat->set->setTexture(4, texture(baseIdx, true));
+            mat->set->setTexture(4, texture(baseIdx, true, mat->mask, p.flags.y));
             mat->set->setTexture(5, texture(shadeIdx, true));
             mat->set->setTexture(6, texture(emisIdx, true));
             // RealToon: a normal map (linear data) and a gloss mask from the metallic-roughness texture.
@@ -1039,7 +1086,7 @@ private:
         m_.textures.push_back(std::move(tex));
         return faceSdf_;
     }
-    std::map<std::pair<int, bool>, rhi::Texture*> cache_;
+    std::map<std::tuple<int, bool, bool, int>, rhi::Texture*> cache_;
     std::vector<Material*> materialPtrs_;
     Material* defaultMaterial_ = nullptr;
     std::vector<int> meshFirst_;
@@ -1112,6 +1159,8 @@ std::unique_ptr<Model> loadModel(rhi::Device& device, const std::string& path, c
     loader.smoothNormals = lopts.smoothNormals;
     loader.faceSdfPath = lopts.faceSdfPath;
     loader.faceMaterial = lopts.faceMaterial;
+    loader.preserveAlphaTestCoverage = lopts.preserveAlphaTestCoverage;
+    loader.alphaTestThreshold = lopts.alphaTestThreshold;
     loader.run();
     return model;
 }
@@ -1644,6 +1693,81 @@ int buildModelLods(rhi::Device& device, Model& model, const std::vector<float>& 
             ++built;
         }
     }
+    return built;
+}
+
+int buildModelVGeom(rhi::Device& device, Model& model, const VGeomSettings& settings, const std::string& cachePath) {
+    constexpr size_t kMinSourceTriangles = 256;
+    // A skinned draw moves the vertices every frame, so the tree's rest-pose error is not the error on screen. This is
+    // a static mesh feature; leave the model on its ordinary index buffer rather than cull it wrongly.
+    for (const DrawItem& d : model.draws)
+        if (d.skin >= 0) return 0;
+
+    std::vector<uint32_t> candidates;
+    std::vector<uint64_t> hashes;
+    for (uint32_t i = 0; i < model.primitives.size(); ++i) {
+        Primitive& p = model.primitives[i];
+        p.vgeom = VGeomMesh{};
+        p.vgeomIndices.reset();
+        p.vgeomClusters.reset();
+        p.vgeomChildren.reset();
+        if (p.cpuVertices.size() < 3 || p.cpuIndices.size() < kMinSourceTriangles * 3 || !p.morphPos.empty()) continue;
+        candidates.push_back(i);
+        hashes.push_back(vgeomHash(&p.cpuVertices[0].pos.x, p.cpuVertices.size(), sizeof(rhi::Vertex),
+                                   p.cpuIndices.data(), p.cpuIndices.size()));
+    }
+    if (candidates.empty()) return 0;
+
+    std::vector<VGeomMesh> meshes(candidates.size());
+    if (!cachePath.empty()) loadVGeomSet(meshes, cachePath, hashes, settings);
+
+    bool builtAny = false;
+    std::vector<VGeomMesh> finalMeshes(candidates.size());
+    for (size_t k = 0; k < candidates.size(); ++k) {
+        Primitive& p = model.primitives[candidates[k]];
+        VGeomMesh mesh = std::move(meshes[k]);
+        if (!mesh.valid() || mesh.sourceHash != hashes[k]) {
+            mesh = buildVGeom(&p.cpuVertices[0].pos.x, p.cpuVertices.size(), sizeof(rhi::Vertex), p.cpuIndices.data(),
+                              p.cpuIndices.size(), settings);
+            builtAny = true;
+        }
+        if (!mesh.valid()) continue;
+        finalMeshes[k] = mesh;   // kept for the cache write below; the primitive owns the moved copy
+        p.vgeomIndices = device.createBuffer(rhi::BufferUsage::Index, mesh.indices.size() * sizeof(uint32_t));
+        p.vgeomIndices->upload(mesh.indices.data(), mesh.indices.size() * sizeof(uint32_t));
+        // The compute cut reads the tree from storage buffers (docs/VGEOM.md §7). The children stream is always
+        // created — a single-cluster mesh has none, and a descriptor needs a real buffer either way.
+        {
+            std::vector<VGeomGpuCluster> gpu(mesh.clusters.size());
+            for (size_t i = 0; i < mesh.clusters.size(); ++i) {
+                const VGeomCluster& c = mesh.clusters[i];
+                VGeomGpuCluster& g = gpu[i];
+                g.centreRadius = glm::vec4(c.centre, c.radius);
+                g.error = c.error;
+                g.childFirst = c.childFirst;
+                g.childCount = c.childCount;
+                g.firstIndex = c.firstIndex;
+                g.indexCount = c.indexCount;
+                g.level = c.level;
+                g.parent = c.parent;
+            }
+            p.vgeomClusters = device.createBuffer(rhi::BufferUsage::Storage, gpu.size() * sizeof(VGeomGpuCluster));
+            p.vgeomClusters->upload(gpu.data(), gpu.size() * sizeof(VGeomGpuCluster));
+            const size_t childBytes = std::max<size_t>(1, mesh.children.size()) * sizeof(uint32_t);
+            p.vgeomChildren = device.createBuffer(rhi::BufferUsage::Storage, childBytes);
+            if (!mesh.children.empty())
+                p.vgeomChildren->upload(mesh.children.data(), mesh.children.size() * sizeof(uint32_t));
+            else {
+                const uint32_t zero = 0;
+                p.vgeomChildren->upload(&zero, sizeof(zero));
+            }
+        }
+        p.vgeom = std::move(mesh);
+    }
+    int built = 0;
+    for (const VGeomMesh& m : finalMeshes)
+        if (m.valid()) ++built;
+    if (builtAny && !cachePath.empty()) saveVGeomSet(finalMeshes, cachePath, settings);
     return built;
 }
 

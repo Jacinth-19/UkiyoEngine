@@ -1,0 +1,140 @@
+// ukiyo: the virtual-geometry cut on the compute queue (docs/VGEOM.md §7). One workgroup of one thread per draw
+// item: walk the cluster tree with the same cull and error test selectVGeom runs on the CPU, append the selected
+// cluster ids, sort them — the builder writes clusters in index order, so id order is firstIndex order — merge
+// contiguous runs and write indirect commands. All phases run in this one invocation, so there is no
+// cross-workgroup synchronization inside it; Device::dispatch brackets the call with barriers for the next
+// item's atomics and for the draws that read the commands.
+//
+// set 0: 0 = clusters, 1 = children, 2 = the frame work buffer, 3 = the selection view (storage, std430).
+// PUSH:  the instance's world matrix and its work region: idCount at idBase-2, cmdCount at idBase-1, ids at
+//        idBase padded to pow2, commands at cmdBase (cap = one slot per cluster).
+
+#ifdef BACKEND_VK
+#define PUSH layout(push_constant) uniform
+#define SSBO(b) layout(std430, set = 0, binding = b)
+#else
+#define PUSH layout(std140, binding = 1) uniform
+#define SSBO(b) layout(std430, binding = b)
+#endif
+
+struct Cluster {
+    vec4 centreRadius;   // model-space centre, radius in w
+    float error;
+    uint childFirst, childCount, firstIndex;
+    uint indexCount, level, parent;
+};
+
+// Block names are required (glslang rejects a nameless buffer block); with the name present and no instance,
+// the members stay global, so the body reads clusters[id] and work[...] directly.
+SSBO(0) readonly buffer ClusterBuf {
+    Cluster clusters[];
+};
+SSBO(1) readonly buffer ChildBuf {
+    uint childIds[];
+};
+SSBO(2) buffer WorkBuf {
+    uint work[];
+};
+SSBO(3) readonly buffer ViewBuf {
+    vec4 planes[5];      // normalized Gribb-Hartmann planes: left, right, bottom, top, far
+    vec4 eyePixel;       // eye.xyz, pixelScale in w
+    float errorPixels;   // <= 0 forces the leaves
+    float cullOn;
+    float vgPad0, vgPad1;
+} view;
+
+PUSH PushCut {
+    mat4 model;
+    uint idBase, cmdBase, pow2, root;
+} push;
+
+// One thread per dispatch: every phase (walk, sort, merge) is sequential inside it, so there is deliberately no
+// workgroup parallelism to synchronize.
+layout(local_size_x = 1, local_size_y = 1, local_size_z = 1) in;
+
+const int kStack = 128;
+const uint kNone = 0xFFFFFFFFu;
+
+void emitRun(uint first, uint len) {
+    uint k = atomicAdd(work[push.idBase - 1], 1u);   // cmdCount sits one uint before the ids
+    uint o = push.cmdBase + k * 5u;
+    work[o + 0u] = len;
+    work[o + 1u] = 1u;
+    work[o + 2u] = first;
+    work[o + 3u] = 0u;
+    work[o + 4u] = 0u;
+}
+
+void main() {
+    float mScale = max(length(push.model[0].xyz),
+                       max(length(push.model[1].xyz), length(push.model[2].xyz)));
+
+    uint stack[kStack];
+    int sp = 1;
+    stack[0] = push.root;
+    while (sp > 0) {
+        sp -= 1;
+        uint id = stack[sp];
+        Cluster c = clusters[id];
+        vec3 wc = (push.model * vec4(c.centreRadius.xyz, 1.0)).xyz;
+        float radius = c.centreRadius.w * mScale;
+        if (view.cullOn > 0.5) {
+            bool outside = false;
+            for (int i = 0; i < 5; ++i) {
+                if (dot(view.planes[i].xyz, wc) + view.planes[i].w < -radius) {
+                    outside = true;
+                    break;
+                }
+            }
+            if (outside) continue;
+        }
+        float dist = max(length(view.eyePixel.xyz - wc) - radius, 0.05);
+        float pixels = c.error * mScale * view.eyePixel.w / dist;
+        bool refine = c.childCount > 0u && (view.errorPixels <= 0.0 || pixels > view.errorPixels);
+        if (refine) {
+            for (uint i = 0u; i < c.childCount; ++i) {
+                if (sp >= kStack) break;   // the builder's depth and branching fit well inside 128
+                stack[sp] = childIds[c.childFirst + i];
+                sp += 1;
+            }
+        } else {
+            uint slot = atomicAdd(work[push.idBase - 2], 1u);   // idCount two uints before the ids
+            work[push.idBase + slot] = id;
+        }
+    }
+
+    // Pad the id region for the sort; kNone sorts last and ends the run walk.
+    uint count = work[push.idBase - 2];
+    for (uint i = count; i < push.pow2; ++i) work[push.idBase + i] = kNone;
+    for (uint k = 2u; k <= push.pow2; k <<= 1u) {
+        for (uint j = k >> 1u; j > 0u; j >>= 1u) {
+            for (uint i = 0u; i < push.pow2; ++i) {
+                uint l = i ^ j;
+                if (l <= i) continue;
+                uint a = work[push.idBase + i];
+                uint b = work[push.idBase + l];
+                if ((a > b) == ((i & k) == 0u)) {
+                    work[push.idBase + i] = b;
+                    work[push.idBase + l] = a;
+                }
+            }
+        }
+    }
+
+    uint runFirst = 0u, runLen = 0u;
+    bool have = false;
+    for (uint i = 0u; i < push.pow2; ++i) {
+        uint id = work[push.idBase + i];
+        if (id == kNone) break;
+        Cluster c = clusters[id];
+        if (have && runFirst + runLen == c.firstIndex) {
+            runLen += c.indexCount;
+        } else {
+            if (have) emitRun(runFirst, runLen);
+            runFirst = c.firstIndex;
+            runLen = c.indexCount;
+            have = true;
+        }
+    }
+    if (have) emitRun(runFirst, runLen);
+}

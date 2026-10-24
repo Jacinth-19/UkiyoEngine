@@ -1,0 +1,133 @@
+# Photographs Afterglow running on a real Android emulator, on demand.
+#
+# The android job in build.yml boots this same emulator when its runner has /dev/kvm; the hosted ubuntu runners this
+# repository gets do not, and a software boot of API 33 takes about an hour — too long to sit inside every push. This
+# workflow is where that hour lives: run it from the Actions tab ("Run workflow") after a build you want to see, and
+# it installs the newest APK, launches it the way a launcher would, screencaps what the screen shows, checks the
+# picture is not blank, and commits it into docs/ beside the desktop frames.
+
+name: android-photo
+on:
+  workflow_dispatch: {}
+  schedule:
+    - cron: "0 3 * * 1"   # Mondays 03:00 UTC: one proof a week without anyone pressing anything
+
+jobs:
+  photo:
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Find the NDK and build the player for the emulator
+        run: |
+          set -euo pipefail
+          ndk="${ANDROID_NDK_LATEST_HOME:-}"
+          if [ -z "$ndk" ] || [ ! -d "$ndk" ]; then
+            ndk="$(ls -d "${ANDROID_SDK_ROOT:-/usr/local/lib/android/sdk}"/ndk/*/ 2>/dev/null | sort -V | tail -1)"
+            ndk="${ndk%/}"
+          fi
+          [ -d "$ndk" ] || { echo "::error::no NDK on this image"; exit 1; }
+          cmake -B build-android-x86_64 -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_TOOLCHAIN_FILE="$ndk/build/cmake/android.toolchain.cmake" \
+            -DANDROID_ABI=x86_64 -DANDROID_PLATFORM=android-33
+          cmake --build build-android-x86_64 --parallel
+
+      - name: Compile the shaders
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq glslang-tools
+          python3 tools/shaderc.py shaders /tmp/apk-shaders "$(command -v glslangValidator)"
+
+      - name: Assemble and sign the APK
+        run: |
+          set -euo pipefail
+          sdk="${ANDROID_SDK_ROOT:-/usr/local/lib/android/sdk}"
+          build_tools="$(ls -d "$sdk"/build-tools/*/ | sort -V | tail -1)"; build_tools="${build_tools%/}"
+          platform="$(ls -d "$sdk"/platforms/android-*/ | sort -V | tail -1)"; platform="${platform%/}"
+          mkdir -p apk/assets/games/afterglow apk/assets/games/lantern-run apk/assets/assets apk/assets/editor/res/fonts
+          cp -r games/afterglow/. apk/assets/games/afterglow/
+          cp -r games/lantern-run/. apk/assets/games/lantern-run/
+          cp assets/AliciaSolid_vrm-0.51.vrm apk/assets/assets/
+          cp editor/res/fonts/IBMPlexSansJP-Regular.ttf apk/assets/editor/res/fonts/
+          cp -r /tmp/apk-shaders apk/assets/shaders
+          ( cd apk/assets && find . -type f | sed 's|^\./||' | LC_ALL=C sort > files.txt )
+          mkdir -p apk/lib/x86_64
+          cp build-android-x86_64/libukiyo_player.so apk/lib/x86_64/
+          cp android/AndroidManifest.xml apk/
+          "$build_tools/aapt2" compile --dir android/res -o apk/res.zip
+          "$build_tools/aapt2" link -o apk/unaligned.apk -I "$platform/android.jar" \
+            --manifest apk/AndroidManifest.xml -A apk/assets \
+            --version-code "$GITHUB_RUN_NUMBER" --min-sdk-version 33 --target-sdk-version 34 apk/res.zip
+          ( cd apk && zip -q -r unaligned.apk lib )
+          "$build_tools/zipalign" -f 4 apk/unaligned.apk apk/aligned.apk
+          "$build_tools/apksigner" sign --ks android/lantern-run-ci.p12 --ks-type pkcs12 \
+            --ks-pass pass:lantern-run-ci --key-pass pass:lantern-run-ci --out Afterglow.apk apk/aligned.apk
+          "$build_tools/apksigner" verify Afterglow.apk
+
+      - name: Boot the emulator, install, launch, photograph
+        run: |
+          set -euo pipefail
+          sdk="${ANDROID_SDK_ROOT:-/usr/local/lib/android/sdk}"
+          "$sdk/cmdline-tools/latest/bin/sdkmanager" --install "system-images;android-33;google_apis;x86_64" \
+            "emulator" "platform-tools" > /tmp/sdkmanager.log 2>&1 || { tail -20 /tmp/sdkmanager.log; exit 1; }
+          echo no | "$sdk/cmdline-tools/latest/bin/avdmanager" create avd -n afterglow \
+            -k "system-images;android-33;google_apis;x86_64" -d pixel_5 --force
+          accel="off"; accel_note="unaccelerated (no /dev/kvm): the boot takes the better part of an hour"
+          if [ -w /dev/kvm ]; then accel="on"; accel_note="accelerated"; fi
+          echo "emulator: $accel_note"
+          "$sdk/emulator/emulator" -avd afterglow -no-window -no-audio -no-boot-anim -no-snapshot \
+            -gpu swiftshader_indirect -accel $accel -memory 3072 > /tmp/emulator.log 2>&1 &
+          adb="$sdk/platform-tools/adb"
+          "$adb" wait-for-device
+          for i in $(seq 1 200); do
+            boot="$("$adb" shell getprop sys.boot_completed 2>/dev/null | tr -d '\r')"
+            [ "$boot" = "1" ] && break
+            sleep 5
+          done
+          boot="$("$adb" shell getprop sys.boot_completed 2>/dev/null | tr -d '\r')"
+          if [ "$boot" != "1" ]; then echo "::error::the emulator never finished booting"; tail -30 /tmp/emulator.log; exit 1; fi
+          echo "the emulator is up"
+          "$adb" install -r Afterglow.apk
+          "$adb" shell monkey -p dev.ukiyo.lanternrun -c android.intent.category.LAUNCHER 1
+          sleep 45   # first launch stages the APK's assets into the app's storage and opens the village
+          mkdir -p renders
+          "$adb" exec-out screencap -p > renders/afterglow-android.png
+          pid="$("$adb" shell pidof dev.ukiyo.lanternrun 2>/dev/null | tr -d '\r' || true)"
+          "$adb" logcat -d > /tmp/logcat.txt || true
+          grep -iE "ukiyo|afterglow|lanternrun|vulkan" /tmp/logcat.txt > renders/afterglow-android-logcat.txt || true
+          if [ -z "$pid" ]; then
+            echo "::error::the app is not running after launch; logcat tail:"
+            tail -40 /tmp/logcat.txt | while IFS= read -r line; do echo "::error::$line"; done
+            exit 1
+          fi
+          echo "app is running as pid $pid"
+          python3 tools/frame_check.py renders/afterglow-android.png
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: afterglow-android-frame
+          path: |
+            renders/afterglow-android.png
+            renders/afterglow-android-logcat.txt
+          if-no-files-found: warn
+
+      - name: Publish the frame into the repository
+        run: |
+          test -f renders/afterglow-android.png
+          cp renders/afterglow-android.png docs/afterglow-android.png
+          git config user.name "ukiyo-ci"
+          git config user.email "ci@ukiyo.invalid"
+          git add docs/afterglow-android.png
+          if git diff --cached --quiet; then echo "no change"; exit 0; fi
+          branch="${GITHUB_REF_NAME}"
+          git commit -m "Afterglow's Android frame from CI [skip ci]"
+          for attempt in 1 2 3; do
+            git fetch origin "+refs/heads/$branch:refs/remotes/origin/$branch"
+            git rebase "origin/$branch" || { git rebase --abort; exit 1; }
+            if git push origin "HEAD:$branch"; then exit 0; fi
+            sleep 5
+          done
+          echo "could not publish the frame; the artifact has it" >&2
+          exit 1

@@ -12,8 +12,9 @@
 #include <glm/gtc/quaternion.hpp>
 
 #include "engine/gpu_types.h"
-#include "rhi/rhi.h"
 #include "engine/rig.h"
+#include "engine/vgeom.h"
+#include "rhi/rhi.h"
 
 namespace ukiyo {
 
@@ -52,6 +53,15 @@ struct Primitive {
     // CPU copy of the geometry, for navmesh baking and other queries. Not uploaded again.
     std::vector<rhi::Vertex> cpuVertices;
     std::vector<uint32_t> cpuIndices;
+
+    // Virtual geometry (vgeom.h), built by buildModelVGeom for static primitives only. `vgeom.indices` is uploaded
+    // once into `vgeomIndices`; every cluster is a range of it, so the renderer draws a cut with no extra vertex data.
+    VGeomMesh vgeom;
+    std::unique_ptr<rhi::Buffer> vgeomIndices;
+    // GPU copy of the tree for the compute cut (docs/VGEOM.md §7): clusters as VGeomGpuCluster, children as
+    // uints. Uploaded once next to vgeomIndices; hasVGeom() requires both, because the dispatch reads them.
+    std::unique_ptr<rhi::Buffer> vgeomClusters, vgeomChildren;
+    bool hasVGeom() const { return vgeomIndices != nullptr && vgeomClusters != nullptr && vgeom.valid(); }
 };
 
 // A morph target driven by an expression: target `target` of mesh `mesh` at `weight`.
@@ -249,6 +259,11 @@ struct ModelLoadOptions {
     bool smoothNormals = false;
     std::string faceSdfPath;               // PNG face shadow atlas (tools/make_face_sdf.py); empty = none
     std::string faceMaterial = "face";      // materials whose name contains this (any case) use the SDF
+    // Alpha-coverage-preserving mips (GH-104289): the base-colour texture of an alpha-masked material gets a chain whose
+    // alpha is scaled per level to hold the level-0 coverage, so a cutout stops dissolving at distance. The threshold is
+    // the material's own cutoff when it has one; this is the fallback for materials without an explicit cutoff.
+    bool preserveAlphaTestCoverage = true;
+    float alphaTestThreshold = 0.5f;
 };
 
 // Loads a .vrm (GLB) or .gltf. Throws std::runtime_error on failure.
@@ -279,5 +294,21 @@ void worldTriangles(const Model& model, std::vector<glm::vec3>* verts, std::vect
 // distance (from the model centre) at which each level starts; empty switches turn LOD off and free nothing.
 // Returns the number of LOD levels built across the model.
 int buildModelLods(rhi::Device& device, Model& model, const std::vector<float>& switches);
+
+// Builds cluster LODs for the static primitives of `model` and uploads each tree's index stream. Primitives under
+// 256 triangles, primitives with morph targets and every primitive of a model with a skinned draw are skipped: the
+// tree's error is measured on the rest pose, which is wrong once a skin deforms it. Must run on the render thread
+// (it creates buffers). `cachePath`, when not empty, is read first and rewritten after a build; a cache that does not
+// match the geometry is ignored. Returns the number of primitives that ended up with a tree.
+int buildModelVGeom(rhi::Device& device, Model& model, const VGeomSettings& settings = {},
+                    const std::string& cachePath = {});
+
+// Block-compressed model textures (batch 7, engine/texture_compress.h). When on (the default), the loader compresses
+// every model texture it decodes — BC1 for opaque colour, BC3 when the texture has alpha, each mip level compressed
+// after the CPU chain (the alpha-coverage search included) has been built — which costs a quarter to an eighth of the
+// memory and bandwidth. A texture smaller than 8x8 stays raw: there is nothing to save. Editor tools that need the
+// exact pixels can turn the option off for their session.
+void setCompressedModelTextures(bool on);
+bool compressedModelTextures();
 
 } // namespace ukiyo

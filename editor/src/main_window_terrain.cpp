@@ -9,6 +9,7 @@
 #include "scene_file.h"
 
 #include <QCoreApplication>
+#include <QCheckBox>
 #include <QComboBox>
 #include <QCryptographicHash>
 #include <QDir>
@@ -50,7 +51,7 @@ bool MainWindow::terrainPress(QPointF s) {
     terrainFlushTimer_.restart();
     if (!terrainStrokeDab(s)) {         // the dab failed: leave no empty undo step
         terrainStroke_ = false;
-        undoStack_.pop_back();
+        cancelEdit();
         updateEditActions();
         return false;
     }
@@ -93,7 +94,7 @@ bool MainWindow::terrainStrokeDab(QPointF s) {
         terrainStrokeIds_.push_back(id);
         QJsonArray tags;
         for (int t : terrainStrokeIds_) tags.append(t);
-        if (!undoStack_.empty()) undoStack_.back()[kTerrainUndoKey] = tags;
+        pendingTerrain_ = tags;
     }
     TerrainEdit& rec = terrainRecords_[id];
     rec.createdMask = rec.createdMask || e.createdMask;
@@ -132,9 +133,10 @@ bool MainWindow::applyTerrainRecord(int id, bool useAfter) {
 // Drops records that no undo or redo step, and no stroke in progress, refers to.
 void MainWindow::pruneTerrainRecords() {
     std::set<int> keep(terrainStrokeIds_.begin(), terrainStrokeIds_.end());
-    auto collect = [&keep](const std::vector<QJsonObject>& stack) {
-        for (const QJsonObject& doc : stack) {
-            for (const QJsonValue& v : doc.value(kTerrainUndoKey).toArray()) keep.insert(v.toInt());
+    for (const QJsonValue& v : pendingTerrain_) keep.insert(v.toInt());
+    auto collect = [&keep](const std::vector<SceneEdit>& stack) {
+        for (const SceneEdit& step : stack) {
+            for (const QJsonValue& v : step.terrain) keep.insert(v.toInt());
         }
     };
     collect(undoStack_);
@@ -158,7 +160,7 @@ void MainWindow::runErosion(int index) {
     bool ok = false;
     runOnWorker([&] { ok = worker_->terrainErode(index, terrainErosion_, &e, &err); });
     if (!ok) {
-        undoStack_.pop_back();
+        cancelEdit();
         updateEditActions();
         log("error: " + err);
         return;
@@ -167,7 +169,7 @@ void MainWindow::runErosion(int index) {
     terrainRecords_[id] = e;
     QJsonArray tags;
     tags.append(id);
-    undoStack_.back()[kTerrainUndoKey] = tags;
+    pendingTerrain_ = tags;
     markDirty();
     pruneTerrainRecords();
     updateEditActions();
@@ -181,7 +183,7 @@ void MainWindow::applyTerrainSettings(int index, const ukiyo::TerrainSettings& t
     bool ok = false;
     runOnWorker([&] { ok = worker_->setInstanceTerrain(index, ts, &err); });
     if (!ok) {
-        if (pushed) undoStack_.pop_back();
+        if (pushed) cancelEdit();
         updateEditActions();
         log("error: " + err);
         return;
@@ -343,6 +345,99 @@ void MainWindow::addTerrainInspector(QVBoxLayout* layout, int index, const ukiyo
         text->setWordWrap(true);
         lay->addRow(QString::fromStdString(l.name), text);
     }
+
+    // Grass (item 19). The scatter, the distance bands and the wind. The layer masks and the two colours are set in
+    // the scene file for now; every control here is one undo step, merged while it is being dragged.
+    QFormLayout* gr = addSection(layout, QStringLiteral("Grass"));
+    auto editGrass = [this, index](const QString& field, const std::function<void(ukiyo::GrassSettings&)>& change) {
+        std::vector<InstanceInfo> now;
+        runOnWorker([&] { now = worker_->instances(); });
+        if (index < 0 || index >= static_cast<int>(now.size()) || !now[index].terrain) return;
+        ukiyo::TerrainSettings next = *now[index].terrain;
+        change(next.grass);
+        applyTerrainSettings(index, next, QStringLiteral("terrain-grass:%1:%2").arg(index).arg(field));
+    };
+    QCheckBox* grassOn = new QCheckBox(QStringLiteral("Scatter grass on this tile"));
+    grassOn->setChecked(ts.grass.enabled);
+    gr->addRow(grassOn);
+    connect(grassOn, &QCheckBox::toggled, this, [editGrass](bool on) {
+        editGrass(QStringLiteral("enabled"), [on](ukiyo::GrassSettings& g) { g.enabled = on; });
+    });
+    auto grassNumber = [&](const QString& label, const QString& field, double lo, double hi, double step, int decimals,
+                           double value, const QString& suffix,
+                           std::function<void(ukiyo::GrassSettings&, double)> set) {
+        QDoubleSpinBox* b = makeSpin(lo, hi, step, value, suffix, decimals);
+        gr->addRow(label, b);
+        connect(b, QOverload<double>::of(&QDoubleSpinBox::valueChanged), this, [editGrass, field, set](double v) {
+            editGrass(field, [set, v](ukiyo::GrassSettings& g) { set(g, v); });
+        });
+    };
+    grassNumber(QStringLiteral("Density"), QStringLiteral("density"), 0.0, 8.0, 0.05, 2, ts.grass.density,
+                QStringLiteral(" /m2"), [](ukiyo::GrassSettings& g, double v) { g.density = static_cast<float>(v); });
+    grassNumber(QStringLiteral("Blade height"), QStringLiteral("height"), 0.05, 3.0, 0.01, 2, ts.grass.height,
+                QStringLiteral(" m"), [](ukiyo::GrassSettings& g, double v) { g.height = static_cast<float>(v); });
+    grassNumber(QStringLiteral("Scale from"), QStringLiteral("scaleMin"), 0.1, 4.0, 0.05, 2, ts.grass.scaleMin, QString(),
+                [](ukiyo::GrassSettings& g, double v) {
+                    g.scaleMin = static_cast<float>(v);
+                    g.scaleMax = std::max(g.scaleMax, g.scaleMin);
+                });
+    grassNumber(QStringLiteral("Scale to"), QStringLiteral("scaleMax"), 0.1, 4.0, 0.05, 2, ts.grass.scaleMax, QString(),
+                [](ukiyo::GrassSettings& g, double v) {
+                    g.scaleMax = static_cast<float>(v);
+                    g.scaleMin = std::min(g.scaleMin, g.scaleMax);
+                });
+    grassNumber(QStringLiteral("Slope limit"), QStringLiteral("slopeMax"), 0.0, 90.0, 1.0, 0, ts.grass.slopeMax,
+                QStringLiteral(" deg"), [](ukiyo::GrassSettings& g, double v) { g.slopeMax = static_cast<float>(v); });
+    grassNumber(QStringLiteral("Near band"), QStringLiteral("bandNear"), 0.0, 1000.0, 1.0, 0, ts.grass.bandNear,
+                QStringLiteral(" m"), [](ukiyo::GrassSettings& g, double v) {
+                    g.bandNear = static_cast<float>(v);
+                    g.bandMid = std::max(g.bandMid, g.bandNear);
+                    g.cullDistance = std::max(g.cullDistance, g.bandMid);
+                });
+    grassNumber(QStringLiteral("Half density at"), QStringLiteral("bandMid"), 0.0, 1000.0, 1.0, 0, ts.grass.bandMid,
+                QStringLiteral(" m"), [](ukiyo::GrassSettings& g, double v) {
+                    g.bandMid = static_cast<float>(v);
+                    g.bandNear = std::min(g.bandNear, g.bandMid);
+                    g.cullDistance = std::max(g.cullDistance, g.bandMid);
+                });
+    grassNumber(QStringLiteral("Cull distance"), QStringLiteral("cullDistance"), 1.0, 2000.0, 5.0, 0,
+                ts.grass.cullDistance, QStringLiteral(" m"), [](ukiyo::GrassSettings& g, double v) {
+                    g.cullDistance = static_cast<float>(v);
+                    g.cullDistance = std::max(g.cullDistance, std::max(g.bandNear, g.bandMid));
+                });
+    grassNumber(QStringLiteral("Wind strength"), QStringLiteral("windStrength"), 0.0, 2.0, 0.01, 2, ts.grass.windStrength,
+                QStringLiteral(" m"), [](ukiyo::GrassSettings& g, double v) { g.windStrength = static_cast<float>(v); });
+    grassNumber(QStringLiteral("Wind frequency"), QStringLiteral("windFrequency"), 0.0, 4.0, 0.05, 2,
+                ts.grass.windFrequency, QStringLiteral(" Hz"),
+                [](ukiyo::GrassSettings& g, double v) { g.windFrequency = static_cast<float>(v); });
+    QLineEdit* detail = new QLineEdit(QString::fromStdString(ts.grass.densityMap));
+    detail->setPlaceholderText(QStringLiteral("uniform density"));
+    QPushButton* detailBrowse = new QPushButton(QStringLiteral("Browse..."));
+    QWidget* detailRow = new QWidget;
+    QHBoxLayout* dh = new QHBoxLayout(detailRow);
+    dh->setContentsMargins(0, 0, 0, 0);
+    dh->addWidget(detail, 1);
+    dh->addWidget(detailBrowse);
+    gr->addRow(QStringLiteral("Density map"), detailRow);
+    auto applyGrassDetail = [this, editGrass, detail] {
+        const QString file = detail->text();
+        editGrass(QStringLiteral("densityMap"), [file](ukiyo::GrassSettings& g) { g.densityMap = file.toStdString(); });
+    };
+    connect(detail, &QLineEdit::editingFinished, this, applyGrassDetail);
+    connect(detailBrowse, &QPushButton::clicked, this, [this, detail, applyGrassDetail] {
+        const QString file = QFileDialog::getOpenFileName(this, QStringLiteral("Grass density map"), projectRoot_,
+                                                          QStringLiteral("Images (*.png *.jpg *.bmp)"));
+        if (file.isEmpty()) return;
+        detail->setText(file);
+        applyGrassDetail();
+    });
+    QLabel* grassHint = new QLabel(QStringLiteral("Blades thin out from %1 m and are gone by %2 m. A tile keeps at "
+                                                  "most %3 of them, however dense the scatter.")
+                                       .arg(ts.grass.bandMid, 0, 'f', 0)
+                                       .arg(ts.grass.cullDistance, 0, 'f', 0)
+                                       .arg(ukiyo::kGrassMaxInstances));
+    grassHint->setWordWrap(true);
+    gr->addRow(grassHint);
 
     // Foliage types
     QFormLayout* fol = addSection(layout, QStringLiteral("Foliage"));
@@ -597,7 +692,7 @@ void MainWindow::selfTestTerrainEdits(const std::function<void(bool, const QStri
         const std::vector<float> h1 = heightsOf(tileIndex());
         const long changed1 = countDiff(h0, h1);
         check(pressed && changed1 > 50, "terrain edit: a noise stroke changes the heights", QString("%1 samples").arg(changed1));
-        const QJsonArray strokeTags = undoStack_.empty() ? QJsonArray() : undoStack_.back().value(kTerrainUndoKey).toArray();
+        const QJsonArray strokeTags = undoStack_.empty() ? pendingTerrain_ : undoStack_.back().terrain;
         check(strokeTags.size() == 1 && !terrainStroke_, "terrain edit: a stroke is one undo step with one record",
               QString("%1 records").arg(strokeTags.size()));
 

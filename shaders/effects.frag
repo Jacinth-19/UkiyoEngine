@@ -1,6 +1,7 @@
 // Screen-space effects on the HDR frame, run before TAA, bloom and tonemap.
 // Inputs: uHdr scene HDR; uNormal view-space normals (alpha 1 = surface; written only when a normal
-// effect is on); uVel motion vectors in UV units (written only when motion blur is on); uDepth scene depth.
+// effect is on); uVel motion vectors in UV units (written only when motion blur is on); uDepth scene depth;
+// uAlbedo base colour for multi-bounce AO (alpha 0 = no albedo, e.g. terrain).
 // Push constants packed into the model matrix, p0 and p1:
 //   model[0] = (P00, P11, P22, P32)   eye distance = P32 / (d + P22)
 //   model[1] = (fog colour rgb, fog density per metre)
@@ -9,13 +10,21 @@
 //   p0 = (SSR strength, depth-normal outline strength, motion blur amount, aspect ratio)
 //   p1 = (SSAO radius in metres, screen-space rim strength, outline noise amount, depth-edge rim strength)
 //   p2 = (split direction, unit, split offset px, split line width px); zero direction = no split line
-//   p3 = (NPR side tint, PBR side tint, line colour), each RGBA8 packed into the float's bits
+//   p3 = (NPR side tint, PBR side tint, line colour) packed, and p3.w = traced GI strength (0 = none this frame)
+//   p3.w = traced GI strength
 // With everything at its default the pass copies the frame.
 #include "common.glsl"
+// Screen-space contact shadows (GH-118045) need five numbers that do not fit in the 128-byte push block, which is full.
+// They ride in a 16-byte uniform block in this pass's own set at binding 7. Textures stop at 6 so this slot is free.
+UBO(0, 7) ContactBlock {
+    vec4 contact;   // x ray length (m), y occluder thickness (m), z strength (0 = off), w steps
+} contactBlock;
 TEX(0, 1) uniform sampler2D uHdr;
 TEX(0, 2) uniform sampler2D uNormal;
 TEX(0, 3) uniform sampler2D uVel;
 TEX(0, 4) uniform sampler2D uDepth;
+TEX(0, 5) uniform sampler2D uGi;       // half-resolution traced GI, read only when p2.x > 0
+TEX(0, 6) uniform sampler2D uAlbedo;   // linear base colour (alpha 1 = present) for the multi-bounce AO approximation
 layout(location = 0) in vec2 vUV;
 layout(location = 0) out vec4 outColor;
 
@@ -32,6 +41,41 @@ vec3 viewPos(vec2 uv, float d) {
 vec2 projectUV(vec3 p) {
     float z = max(-p.z, 1e-4);
     return vec2(pc.model[0].x * p.x, pc.model[0].y * p.y) / z * 0.5 + 0.5;
+}
+
+// Screen-space contact shadows (GH-118045). From P, march towards the sun through the depth buffer and count the
+// samples whose stored surface sits in front of the ray by less than `thickness`. The CPU side of this arithmetic, with
+// the same constants and order, is src/engine/contact_shadow.h and tests/contact_shadow_test.cpp.
+float contactShadow(vec3 P, vec3 N, vec3 L, float steps) {
+    if (dot(N, L) <= 0.0) return 1.0;   // turned away from the sun: unlit already, and not ours to darken
+    const float length = contactBlock.contact.x;
+    const float thickness = contactBlock.contact.y;
+    const float strength = contactBlock.contact.z;
+    const int count = int(clamp(steps, 1.0, 64.0));
+    const float stepLength = length / float(count);
+    // Per-pixel jitter on the first step, so neighbouring pixels do not sample the same distances and band.
+    const vec3 magic = vec3(0.06711056, 0.00583715, 52.9829189);
+    const float jitter = fract(magic.z * fract(dot(gl_FragCoord.xy, magic.xy)));
+    float travelled = stepLength * (0.5 + jitter);
+    float occluded = 0.0;
+    for (int i = 0; i < count; ++i, travelled += stepLength) {
+        vec3 ray = P + L * travelled;
+        if (ray.z > -0.05) break;                 // behind the camera plane: nothing valid to project
+        vec2 uv = projectUV(ray);
+        if (any(lessThan(uv, vec2(0.0))) || any(greaterThan(uv, vec2(1.0)))) break;
+        float sdRaw = texture(uDepth, uv).r;
+        if (sdRaw > 0.99999) continue;            // sky
+        float sceneDepth = eyeDist(sdRaw);
+        float rayDepth = -ray.z;
+        float bias = 0.015 * (1.0 + travelled / max(length, 1e-4));
+        float gap = rayDepth - sceneDepth;
+        if (gap > bias && gap < thickness) occluded += 1.0;
+    }
+    float hit = sqrt(clamp(occluded / float(count) * 4.0, 0.0, 1.0));
+    // Fade at the border, where the depth buffer runs out.
+    float edge = min(min(vUV.x, 1.0 - vUV.x), min(vUV.y, 1.0 - vUV.y));
+    float fade = clamp(edge * 12.0, 0.0, 1.0);
+    return 1.0 - clamp(strength * hit * fade, 0.0, 1.0);
 }
 
 // Occlusion 0..1: the share of hemisphere samples that land inside nearby geometry.
@@ -118,7 +162,23 @@ void main() {
 
     if (surface && hasN && pc.model[3].w > 0.0) {
         float occ = ssao(vUV, P, N, pc.p1.x);
-        col *= 1.0 - clamp(occ * pc.model[3].w * 1.5, 0.0, 1.0);
+        float ao = 1.0 - clamp(occ * pc.model[3].w * 1.5, 0.0, 1.0);
+        // Multi-bounce AO (GH-115426): a corner is filled by light bouncing off the surfaces that occlude it, so the
+        // visibility to apply is a cubic in AO whose coefficients come from the surface albedo. Godot applies the fit
+        // to ambient light in the forward pass; this pass composes the whole frame, so the result is clamped to [ao, 1]
+        // — restore light, never add more than unoccluded. Where this pass did not get an albedo (terrain, foliage,
+        // grass, graph materials) the single-bounce factor is used unchanged.
+        vec4 alb = texture(uAlbedo, vUV);
+        vec3 vis = vec3(ao);
+        if (alb.a > 0.5) {
+            vec3 base = clamp(alb.rgb, 0.0, 1.0);
+            vec3 ca = 2.0404 * base - 0.3324;
+            vec3 cb = -4.7951 * base + 0.6417;
+            vec3 cc = 2.7552 * base + 0.6903;
+            vis = max(vec3(ao), ((vec3(ao) * ca + cb) * vec3(ao) + cc) * vec3(ao));
+            vis = clamp(vis, vec3(ao), vec3(1.0));
+        }
+        col *= vis;
     }
     if (surface && hasN && pc.p0.y > 0.0) {
         float edge = clamp(depthNormalEdge(vUV, d, N, px), 0.0, 1.0);
@@ -126,6 +186,11 @@ void main() {
         float dash = hash21(floor(gl_FragCoord.xy * 0.5));
         edge *= mix(1.0, step(0.35, dash), clamp(pc.p1.z, 0.0, 1.0));
         col *= 1.0 - edge * clamp(pc.p0.y, 0.0, 1.0);
+    }
+    // Contact shadows, after the ambient terms so they darken the surface that touches, and before reflections.
+    if (surface && hasN && contactBlock.contact.z > 0.0) {
+        const vec3 sunView = normalize(pc.model[2].xyz);
+        col *= contactShadow(P, N, sunView, contactBlock.contact.w);
     }
     if (surface && hasN && pc.p0.x > 0.0) {
         col += ssrColor(P, N) * pc.p0.x * 0.3;
@@ -147,6 +212,26 @@ void main() {
         vec3 V = normalize(-P);
         float fres = pow(clamp(1.0 - dot(N, V), 0.0, 1.0), 5.0);
         col += vec3(0.55, 0.8, 1.0) * rim * fres * clamp(pc.p1.w, 0.0, 1.0);
+    }
+    // Traced diffuse GI, composited at full resolution from the half-resolution accumulation. A 3x3 tent weighted by
+    // depth, so the valley does not receive the bounce of the hill in front of it. This is the pass that makes the
+    // renderer's ambient *traced* rather than a hemisphere guess: the same one bounce the CPU reference takes.
+    // The GI branch is gated on `surface`, not `hasN`: terrain is not in the normal pre-pass, so its alpha is 0,
+    // and it is exactly the surface the heightfield estimator exists for.
+    if (surface && pc.p3.w > 0.0) {
+        vec3 acc = vec3(0.0);
+        float wsum = 0.0;
+        float myEye = eyeDist(d);
+        for (int y = -1; y <= 1; ++y) {
+            for (int x = -1; x <= 1; ++x) {
+                vec2 uv = vUV + vec2(float(x), float(y)) * px * 2.0;
+                float sd = eyeDist(texture(uDepth, uv).r);
+                float w = (x == 0 && y == 0 ? 2.0 : 1.0) / (1e-3 + abs(sd - myEye) * 2.0);
+                acc += texture(uGi, uv).rgb * w;
+                wsum += w;
+            }
+        }
+        col += (acc / max(wsum, 1e-4)) * pc.p3.w;
     }
     if (surface && pc.model[1].w > 0.0) {
         float fogAmt = 1.0 - exp(-eyeDist(d) * pc.model[1].w);
