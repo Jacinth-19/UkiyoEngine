@@ -644,6 +644,12 @@ target_include_directories(environment_test PRIVATE ${CMAKE_SOURCE_DIR}/src)
 target_link_libraries(environment_test PRIVATE glm::glm)
 target_compile_options(environment_test PRIVATE ${UKIYO_WARNINGS_PEDANTIC})
 
+# Block-compressed textures: the codecs against their error bounds and exact sizes (docs/TEXTURE_COMPRESSION.md).
+add_executable(texture_compress_test tests/texture_compress_test.cpp src/engine/texture_compress.cpp)
+target_include_directories(texture_compress_test PRIVATE ${CMAKE_SOURCE_DIR}/src)
+target_link_libraries(texture_compress_test PRIVATE glm::glm)
+target_compile_options(texture_compress_test PRIVATE ${UKIYO_WARNINGS_PEDANTIC})
+
 # The save format (docs/PLAYER.md).
 add_executable(save_test tests/save_test.cpp src/systems/save_game.cpp)
 target_include_directories(save_test PRIVATE ${CMAKE_SOURCE_DIR}/src)

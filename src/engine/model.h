@@ -303,4 +303,12 @@ int buildModelLods(rhi::Device& device, Model& model, const std::vector<float>& 
 int buildModelVGeom(rhi::Device& device, Model& model, const VGeomSettings& settings = {},
                     const std::string& cachePath = {});
 
+// Block-compressed model textures (batch 7, engine/texture_compress.h). When on (the default), the loader compresses
+// every model texture it decodes — BC1 for opaque colour, BC3 when the texture has alpha, each mip level compressed
+// after the CPU chain (the alpha-coverage search included) has been built — which costs a quarter to an eighth of the
+// memory and bandwidth. A texture smaller than 8x8 stays raw: there is nothing to save. Editor tools that need the
+// exact pixels can turn the option off for their session.
+void setCompressedModelTextures(bool on);
+bool compressedModelTextures();
+
 } // namespace ukiyo

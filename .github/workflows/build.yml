@@ -186,7 +186,7 @@ jobs:
       - name: Run Player Tests
         run: |
           set -o pipefail
-          for t in transform_test lights_test environment_test save_test manifest_test scene_runtime_test hud_test character_test player_test android_stage_test; do
+          for t in transform_test lights_test environment_test texture_compress_test save_test manifest_test scene_runtime_test hud_test character_test player_test android_stage_test; do
             echo "::group::$t"
             ./build/$t 2>&1 | tee /tmp/ukiyo-test-$t.log
             echo "::endgroup::"
@@ -921,7 +921,8 @@ jobs:
                     "contact_shadow_test", "pcss_test", "msdf_test", "alpha_mips_test", "transform_test", "lights_test", "save_test",
                     "property_search_test", "async_load_test", "game_data_test", "game_test", "afterglow_test", "pack_test",
                     "manifest_test", "scene_runtime_test", "hud_test", "character_test", "player_test", "android_stage_test",
-                    "environment_test", "json_patch_test", "asset_db_test", "editor_tools_test", "camera_test",
+                    "environment_test", "texture_compress_test", "json_patch_test", "asset_db_test", "editor_tools_test",
+                    "camera_test",
                     "gizmo_math_test", "plugin_test")) {
             Write-Host "::group::$t"
             # script_test keeps a trace in a file as well as on stdout: a process that dies on Windows has been seen to

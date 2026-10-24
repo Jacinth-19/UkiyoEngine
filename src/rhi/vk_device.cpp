@@ -47,6 +47,7 @@ constexpr uint32_t kVertexStride = 96;
 
 // State shared by every object that needs the device.
 struct VKCore {
+    bool bcSupported = true;   // textureCompressionBC from the physical device (batch 7)
     VkInstance instance = VK_NULL_HANDLE;
     VkSurfaceKHR surface = VK_NULL_HANDLE;
     VkPhysicalDevice phys = VK_NULL_HANDLE;
@@ -95,12 +96,30 @@ void barrierLayout(VkCommandBuffer cb, VkImage image, VkImageAspectFlags aspect,
                          0, nullptr, 0, nullptr, 1, &b);
 }
 
+// Bytes in one 4x4 block of a compressed format (0 = not compressed); the upload maths keeps this beside the format
+// mapping so the sizes cannot drift.
+int vkBlockBytes(Format f) {
+    switch (f) {
+    case Format::BC1:
+    case Format::BC1_SRGB: return 8;
+    case Format::BC3:
+    case Format::BC3_SRGB:
+    case Format::BC5: return 16;
+    default: return 0;
+    }
+}
+
 VkFormat toVkFormat(Format f, VkFormat backbuffer) {
     switch (f) {
     case Format::RGBA8: return VK_FORMAT_R8G8B8A8_UNORM;
     case Format::RGBA8_SRGB: return VK_FORMAT_R8G8B8A8_SRGB;
     case Format::RGBA16F: return VK_FORMAT_R16G16B16A16_SFLOAT;
     case Format::D32F: return VK_FORMAT_D32_SFLOAT;
+    case Format::BC1: return VK_FORMAT_BC1_RGB_UNORM_BLOCK;
+    case Format::BC1_SRGB: return VK_FORMAT_BC1_RGB_SRGB_BLOCK;
+    case Format::BC3: return VK_FORMAT_BC3_UNORM_BLOCK;
+    case Format::BC3_SRGB: return VK_FORMAT_BC3_SRGB_BLOCK;
+    case Format::BC5: return VK_FORMAT_BC5_UNORM_BLOCK;
     case Format::Backbuffer: return backbuffer;
     }
     return VK_FORMAT_R8G8B8A8_UNORM;
@@ -154,6 +173,12 @@ public:
         : core_(core), desc_(d), vkFormat_(vkFmt), depth_(depth) {
         aspect_ = depth ? VK_IMAGE_ASPECT_DEPTH_BIT : VK_IMAGE_ASPECT_COLOR_BIT;
         levels_ = d.mipmaps ? static_cast<uint32_t>(std::floor(std::log2(std::max(d.width, d.height)))) + 1 : 1;
+        // Block-compressed formats (batch 7): 4x4 blocks; the upload is a chain of block bytes, the mip count is the
+        // same formula as always, and the image is sample-only (no attachment usage). A device without the BC
+        // feature refuses here rather than sampling garbage.
+        const int blockB = vkBlockBytes(d.format);
+        if (blockB > 0 && !core_->bcSupported)
+            throw std::runtime_error("device lacks textureCompressionBC; compressed textures are not available");
 
         const uint32_t layerCount = d.faces == 6 ? 6u : 1u;
         VkImageCreateInfo ii{VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO};
@@ -166,7 +191,9 @@ public:
         ii.samples = VK_SAMPLE_COUNT_1_BIT;
         ii.tiling = VK_IMAGE_TILING_OPTIMAL;
         ii.usage = VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT;
-        ii.usage |= depth ? VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT : VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT;
+        // Compressed images cannot be attachment targets; only uncompressed colour gets the attachment usage.
+        ii.usage |= depth ? VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT
+                          : (blockB > 0 ? VkImageUsageFlags(0) : VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT);
         ii.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
         VmaAllocationCreateInfo ai{};
         ai.usage = VMA_MEMORY_USAGE_AUTO;
@@ -227,6 +254,7 @@ public:
     // wait, so the caller sees a finished texture on return.
     void update(uint32_t x, uint32_t y, uint32_t w, uint32_t h, const void* rgba8) override {
         if (depth_ || external_) throw std::runtime_error("texture update needs an owned colour texture");
+        if (vkBlockBytes(desc_.format) > 0) throw std::runtime_error("compressed textures do not take partial updates");
         if (rgba8 == nullptr || w == 0 || h == 0) return;
         if (x + w > desc_.width || y + h > desc_.height) throw std::runtime_error("texture update out of range");
         const VkDeviceSize bytes = static_cast<VkDeviceSize>(w) * h * 4;
@@ -294,6 +322,7 @@ private:
             VkDeviceSize offset = 0;
             const uint32_t layerCount = desc_.faces == 6 ? 6u : 1u;
             const uint32_t n = std::min(levels_, static_cast<uint32_t>(chain.size()) / layerCount);
+            const int blockB = vkBlockBytes(desc_.format);
             for (uint32_t layer = 0; layer < layerCount; ++layer) {
                 for (uint32_t i = 0; i < n; ++i) {
                     const uint32_t lw = std::max(1u, desc_.width >> i);
@@ -301,9 +330,12 @@ private:
                     VkBufferImageCopy region{};
                     region.bufferOffset = offset;
                     region.imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, i, layer, 1};
+                    // The extent is the level's virtual size; a whole-mip copy from the origin is valid at any size,
+                    // edge blocks included. Tightly packed (bufferRowLength 0) works for compressed formats too.
                     region.imageExtent = {lw, lh, 1};
                     vkCmdCopyBufferToImage(cb, staging, image_, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &region);
-                    offset += static_cast<VkDeviceSize>(lw) * lh * 4u;
+                    offset += blockB > 0 ? static_cast<VkDeviceSize>(((lw + 3) / 4) * ((lh + 3) / 4)) * blockB
+                                         : static_cast<VkDeviceSize>(lw) * lh * 4u;
                 }
             }
             barrierLayout(cb, image_, aspect_, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, sampledLayout(), 0, levels_);
@@ -313,6 +345,8 @@ private:
     }
 
     void upload(const void* rgba) {
+        if (vkBlockBytes(desc_.format) > 0)
+            throw std::runtime_error("a compressed texture is created from a chain of block bytes, not from pixels");
         const uint32_t w = desc_.width, h = desc_.height;
         const uint32_t layerCount = desc_.faces == 6 ? 6u : 1u;
         const VkDeviceSize bytes = static_cast<VkDeviceSize>(w) * h * 4 * layerCount;
@@ -553,6 +587,8 @@ public:
     uint32_t backbufferHeight() const override { return height_; }
     Format backbufferFormat() const override { return Format::Backbuffer; }
     bool presentFlipsY() const override { return !headless_; }
+
+    bool supportsBlockCompression() const override { return core_.bcSupported; }
 
     std::unique_ptr<Buffer> createBuffer(BufferUsage usage, size_t size) override {
         return std::make_unique<VKBuffer>(&core_, usage, std::max<size_t>(size, 16));
@@ -1108,6 +1144,9 @@ private:
         // have it; a device without it can still run everything else, so a wireframe pipeline is refused rather than
         // the device.
         fillModeNonSolid_ = f2.features.fillModeNonSolid == VK_TRUE;
+        // Block-compressed textures (batch 7): optional in Vulkan, universal on desktop GPUs and lavapipe. A device
+        // without it refuses the compressed formats at creation rather than sampling garbage.
+        core_.bcSupported = f2.features.textureCompressionBC == VK_TRUE;
 
         std::vector<const char*> devExts;
         if (core_.surface) devExts.push_back(VK_KHR_SWAPCHAIN_EXTENSION_NAME);

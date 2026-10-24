@@ -410,6 +410,7 @@ own glslang package is generated with a broken SPIRV-Tools path; everything else
 | [docs/PCSS.md](docs/PCSS.md) | percentage-closer soft shadows: the two passes, the receiver slope, the foreshortening, the numbers |
 | [docs/LIGHTS.md](docs/LIGHTS.md) | authored scene lights: point and spot lights, the ranking that picks a frame's eight, the std140 packing |
 | [docs/IBL.md](docs/IBL.md) | environment lighting: the cubemap, the SH probe convention, the GGX prefilter, the probe volumes, the MToon equalisation |
+| [docs/TEXTURE_COMPRESSION.md](docs/TEXTURE_COMPRESSION.md) | block-compressed textures: the encoders, the error bounds, the RHI formats, what the loader compresses |
 | [docs/MSDF.md](docs/MSDF.md) | multi-channel distance fields for text: the colouring rule, the shader's one line, the measurements |
 | [docs/INSPECTOR_SEARCH.md](docs/INSPECTOR_SEARCH.md) | the Inspector's search: words, globs, values, negation, and what happens to a section |
 | [docs/WIREFRAME.md](docs/WIREFRAME.md) | the wireframe view: one flag, two backends, and why the fullscreen passes stay filled |
@@ -460,12 +461,13 @@ proves it:
 | — | Real assets | Afterglow rebuilt on Kenney's kits and CC0 recordings, every file sha256-pinned and checked in CI |
 | — | Platform proof | CI boots every platform's package and photographs it; Android's first-launch staging is replayed by a test on every push; 16 KB-page alignment |
 | 6 | Environment lighting | cubemaps, image-based lighting, light probes (`docs/IBL.md`) |
-| 7 | **Compressed textures** | **next** |
+| 7 | **Compressed textures** | **in flight** — the BC family shipped (`docs/TEXTURE_COMPRESSION.md`); ASTC for the phone is the second half |
 
-Batch 7 is the last RHI gap the audit named: every texture in the engine is uncompressed RGBA8 today, which spends
-memory and bandwidth an integrated GPU or a phone does not have to spare. It brings compressed texture formats to both
-backends — the BC family for desktop, ASTC for the phone — with the mip-chain contract the CPU already owns extended so
-the existing upload paths keep working, and a test that measures what it saves.
+Batch 7 is the last RHI gap the audit named: every texture in the engine was uncompressed RGBA8, which spends memory
+and bandwidth an integrated GPU or a phone does not have to spare. The first half ships our own BC1/BC3/BC5 codecs
+(the bytes are ours to measure — the test decodes every block and bounds the error), the compressed formats in both
+backends, and models' textures compressed a quarter to an eighth, gated on the device so the phone stays correct
+until ASTC lands.
 
 ## Status
 
@@ -474,6 +476,6 @@ CI on every push — Windows under lavapipe, Linux under xvfb, Android's first-l
 Known gaps are listed at the end of each doc. The largest were GPU virtual geometry and the mixer; the cut now runs on
 the compute queue with indirect draws ([docs/VGEOM.md](docs/VGEOM.md) §7) and the mixer ships three buses, reverb and
 streaming ([docs/AUDIO.md](docs/AUDIO.md)) — what remains there is page streaming and Hi-Z occlusion, and for the
-textures, batch 7 above. The traced bounce light does not see creases narrower than 5 cm, and that has been measured
+textures the ASTC half of batch 7 above. The traced bounce light does not see creases narrower than 5 cm, and that has been measured
 rather than estimated: closing it changes 0.35 % of pixels in the reference and costs 17 % more march, which is why it
 is a documented trade ([docs/PATHTRACE.md](docs/PATHTRACE.md)).

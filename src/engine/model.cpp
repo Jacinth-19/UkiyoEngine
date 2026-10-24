@@ -1,6 +1,7 @@
 // VRM / glTF loader. Geometry, skins and textures come from cgltf; the VRM
 // extensions (VRMC_vrm, VRMC_materials_mtoon, and the VRM 0.x "VRM" block) are
 // read from the GLB JSON chunk with nlohmann::json.
+#include "engine/texture_compress.h"
 #include "engine/texture_mips.h"
 #include "engine/vfs.h"
 #include "engine/vfs_cgltf.h"
@@ -36,6 +37,15 @@
 #include "stb_image.h"
 
 namespace ukiyo {
+
+namespace {
+// The default is on: a shipped game wants its textures compressed, and the games are why the loader exists.
+bool g_compressedModelTextures = true;
+} // namespace
+
+void setCompressedModelTextures(bool on) { g_compressedModelTextures = on; }
+bool compressedModelTextures() { return g_compressedModelTextures; }
+
 namespace {
 
 using json = nlohmann::json;
@@ -623,7 +633,19 @@ private:
             chain.reserve(levels.size());
             for (const MipLevel& level : levels) chain.push_back(level.rgba);
         }
-        auto tex = dev_.createTexture(d, px, chain.empty() ? nullptr : &chain);
+        // Block compression (batch 7): every level of the chain — the coverage-preserving one included, which ran
+        // first — is compressed to BC1 (opaque colour) or BC3 (any alpha), a quarter or an eighth of the memory.
+        // Small textures stay raw: a 4x4 block of metadata saves nothing.
+        if (g_compressedModelTextures && dev_.supportsBlockCompression() && w >= 8 && h >= 8) {
+            if (chain.empty()) chain = texc::rgbaMipChain(px, w, h);
+            const bool alpha = texc::hasAlpha(chain[0].data(), w, h);
+            const texc::Chain compressedChain =
+                texc::compressChain(chain, w, h, alpha ? (srgb ? rhi::Format::BC3_SRGB : rhi::Format::BC3)
+                                                       : (srgb ? rhi::Format::BC1_SRGB : rhi::Format::BC1));
+            d.format = compressedChain.format;
+            chain = compressedChain.levels;
+        }
+        auto tex = dev_.createTexture(d, chain.empty() ? px : nullptr, chain.empty() ? nullptr : &chain);
         stbi_image_free(px);
         rhi::Texture* raw = tex.get();
         m_.textures.push_back(std::move(tex));

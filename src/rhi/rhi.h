@@ -35,6 +35,14 @@ enum class Format : uint8_t {
     RGBA16F,      // HDR colour target
     D32F,         // 32-bit float depth
     Backbuffer,   // whatever the presentation target uses
+    // Block-compressed sample-only formats (batch 7, engine/texture_compress.h encodes the bytes). 4x4 blocks,
+    // 4 or 8 bits per pixel, sample-only: no attachments, no CPU readback, no generate-mipmap (compress each level
+    // of the CPU-built chain instead). ASTC for the phone joins this table later in the batch.
+    BC1,          // opaque colour, 4 bpp
+    BC1_SRGB,     // opaque colour, sRGB on sample
+    BC3,          // colour + 8-bit alpha, 8 bpp
+    BC3_SRGB,     // colour + 8-bit alpha, sRGB on sample
+    BC5,          // two channels (normal maps), 8 bpp
 };
 
 // Storage: a shader-storage buffer (compute's read/write data). Indirect: a draw-command buffer — written by a
@@ -180,6 +188,11 @@ public:
     // True when the presentation target is a Vulkan swapchain, whose row 0 is
     // the top of the screen (so the present pass must flip the image vertically).
     virtual bool presentFlipsY() const = 0;
+
+    // True when createTexture accepts the block-compressed formats (BCn). Vulkan asks the device's features; GL
+    // desktop contexts on real hardware and Mesa always have S3TC. A device without it keeps uncompressed textures
+    // — the loaders check this before encoding, which is why the phone (ASTC, later in the batch) still runs.
+    virtual bool supportsBlockCompression() const = 0;
 
     virtual std::unique_ptr<Buffer> createBuffer(BufferUsage usage, size_t size) = 0;
     virtual std::unique_ptr<Texture> createTexture(const TextureDesc& desc, const void* rgba8 = nullptr,

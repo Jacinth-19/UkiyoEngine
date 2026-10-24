@@ -25,6 +25,25 @@ namespace {
 constexpr GLuint kPushUboBinding = 1;   // see common.glsl PUSH macro
 constexpr GLsizei kVertexStride = 96;   // sizeof(rhi::Vertex)
 
+// Block-compressed internal formats. The S3TC enums come from GL_EXT_texture_compression_s3tc (not core), which
+// Mesa and the proprietary drivers expose on every desktop GL 4.x context this engine targets; the values are
+// defined here so the build does not depend on the header having them.
+#ifndef GL_COMPRESSED_RGB_S3TC_DXT1_EXT
+#define GL_COMPRESSED_RGB_S3TC_DXT1_EXT 0x83F0
+#endif
+#ifndef GL_COMPRESSED_RGBA_S3TC_DXT5_EXT
+#define GL_COMPRESSED_RGBA_S3TC_DXT5_EXT 0x83F3
+#endif
+#ifndef GL_COMPRESSED_SRGB_S3TC_DXT1_EXT
+#define GL_COMPRESSED_SRGB_S3TC_DXT1_EXT 0x8C4C
+#endif
+#ifndef GL_COMPRESSED_SRGB_ALPHA_S3TC_DXT5_EXT
+#define GL_COMPRESSED_SRGB_ALPHA_S3TC_DXT5_EXT 0x8C4F
+#endif
+#ifndef GL_COMPRESSED_RG_RGTC2
+#define GL_COMPRESSED_RG_RGTC2 0x8DBD
+#endif
+
 GLenum toGLInternal(Format f) {
     switch (f) {
     case Format::RGBA8: return GL_RGBA8;
@@ -32,8 +51,26 @@ GLenum toGLInternal(Format f) {
     case Format::RGBA16F: return GL_RGBA16F;
     case Format::D32F: return GL_DEPTH_COMPONENT32F;
     case Format::Backbuffer: return GL_RGBA8;
+    case Format::BC1: return GL_COMPRESSED_RGB_S3TC_DXT1_EXT;
+    case Format::BC1_SRGB: return GL_COMPRESSED_SRGB_S3TC_DXT1_EXT;
+    case Format::BC3: return GL_COMPRESSED_RGBA_S3TC_DXT5_EXT;
+    case Format::BC3_SRGB: return GL_COMPRESSED_SRGB_ALPHA_S3TC_DXT5_EXT;
+    case Format::BC5: return GL_COMPRESSED_RG_RGTC2;
     }
     return GL_RGBA8;
+}
+
+// Bytes in one 4x4 block of a compressed format (0 = not compressed). Kept beside toGLInternal so the level sizes
+// and the upload sizes cannot drift apart.
+int glBlockBytes(Format f) {
+    switch (f) {
+    case Format::BC1:
+    case Format::BC1_SRGB: return 8;
+    case Format::BC3:
+    case Format::BC3_SRGB:
+    case Format::BC5: return 16;
+    default: return 0;
+    }
 }
 
 GLuint compileStage(GLenum type, const std::string& source, const std::string& name) {
@@ -78,7 +115,20 @@ public:
         glCreateTextures(cube ? GL_TEXTURE_CUBE_MAP : GL_TEXTURE_2D, 1, &id_);
         glTextureStorage2D(id_, levels_, toGLInternal(d.format), static_cast<GLsizei>(d.width),
                            static_cast<GLsizei>(d.height));
-        if (chain && !chain->empty()) {
+        const int blockB = glBlockBytes(d.format);
+        if (chain && !chain->empty() && blockB > 0) {
+            // A compressed chain (engine/texture_compress.cpp): one glCompressedTextureSubImage2D per level, the
+            // extent being the level's virtual size — the driver rounds to blocks itself.
+            const GLsizei n = std::min(levels_, static_cast<GLsizei>(chain->size()));
+            const GLenum fmt = toGLInternal(d.format);
+            for (GLsizei i = 0; i < n; ++i) {
+                const GLsizei lw = std::max<GLsizei>(1, static_cast<GLsizei>(d.width) >> i);
+                const GLsizei lh = std::max<GLsizei>(1, static_cast<GLsizei>(d.height) >> i);
+                const GLsizei bytes =
+                    GLsizei((std::max<GLsizei>(1, (lw + 3) / 4) * std::max<GLsizei>(1, (lh + 3) / 4)) * blockB);
+                glCompressedTextureSubImage2D(id_, i, 0, 0, lw, lh, fmt, bytes, (*chain)[size_t(i)].data());
+            }
+        } else if (chain && !chain->empty()) {
             // A chain built on the CPU (alpha-coverage-preserving mips, or the environment's prefiltered cube):
             // upload every level, generate nothing. A cubemap's chain is face-major (face 0's whole chain first);
             // DSA's sub-image-3D treats the six faces as z layers 0..5.
@@ -96,10 +146,12 @@ public:
                         glTextureSubImage2D(id_, i, 0, 0, lw, lh, GL_RGBA, GL_UNSIGNED_BYTE, pixels);
                 }
             }
-        } else if (rgba) {
+        } else if (rgba && blockB == 0) {
             glTextureSubImage2D(id_, 0, 0, 0, static_cast<GLsizei>(d.width), static_cast<GLsizei>(d.height),
                                 GL_RGBA, GL_UNSIGNED_BYTE, rgba);
             if (levels_ > 1) glGenerateTextureMipmap(id_);
+        } else if (blockB > 0) {
+            throw std::runtime_error("a compressed texture is created from a chain of block bytes, not from pixels");
         }
         GLenum filter = d.filter == Filter::Nearest ? GL_NEAREST : GL_LINEAR;
         GLenum minF = (levels_ > 1) ? (d.filter == Filter::Nearest ? GL_NEAREST_MIPMAP_LINEAR : GL_LINEAR_MIPMAP_LINEAR) : filter;
@@ -115,6 +167,7 @@ public:
     uint32_t height() const override { return desc_.height; }
     Format format() const override { return desc_.format; }
     void update(uint32_t x, uint32_t y, uint32_t w, uint32_t h, const void* rgba8) override {
+        if (glBlockBytes(desc_.format) > 0) throw std::runtime_error("compressed textures do not take partial updates");
         if (rgba8 == nullptr || w == 0 || h == 0) return;
         if (x + w > desc_.width || y + h > desc_.height) throw std::runtime_error("texture update out of range");
         // Row 0 is the top row of the image, matching the Vulkan copy (GL's origin is the vertex's, not the texture's).
@@ -248,6 +301,8 @@ public:
     uint32_t backbufferHeight() const override { return height_; }
     Format backbufferFormat() const override { return Format::RGBA8; }
     bool presentFlipsY() const override { return false; }
+
+    bool supportsBlockCompression() const override { return true; }   // S3TC is universal on desktop GL 4.x
 
     std::unique_ptr<Buffer> createBuffer(BufferUsage, size_t size) override {
         return std::make_unique<GLBuffer>(std::max<size_t>(size, 16));
