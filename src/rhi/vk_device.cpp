@@ -88,7 +88,7 @@ void barrierLayout(VkCommandBuffer cb, VkImage image, VkImageAspectFlags aspect,
     b.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
     b.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
     b.image = image;
-    b.subresourceRange = {aspect, baseMip, mipCount, 0, 1};
+    b.subresourceRange = {aspect, baseMip, mipCount, 0, VK_REMAINING_ARRAY_LAYERS};
     b.srcAccessMask = VK_ACCESS_MEMORY_READ_BIT | VK_ACCESS_MEMORY_WRITE_BIT;
     b.dstAccessMask = VK_ACCESS_MEMORY_READ_BIT | VK_ACCESS_MEMORY_WRITE_BIT;
     vkCmdPipelineBarrier(cb, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, 0,
@@ -155,12 +155,14 @@ public:
         aspect_ = depth ? VK_IMAGE_ASPECT_DEPTH_BIT : VK_IMAGE_ASPECT_COLOR_BIT;
         levels_ = d.mipmaps ? static_cast<uint32_t>(std::floor(std::log2(std::max(d.width, d.height)))) + 1 : 1;
 
+        const uint32_t layerCount = d.faces == 6 ? 6u : 1u;
         VkImageCreateInfo ii{VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO};
+        ii.flags = d.faces == 6 ? VK_IMAGE_CREATE_CUBE_COMPATIBLE_BIT : 0;
         ii.imageType = VK_IMAGE_TYPE_2D;
         ii.format = vkFmt;
         ii.extent = {d.width, d.height, 1};
         ii.mipLevels = levels_;
-        ii.arrayLayers = 1;
+        ii.arrayLayers = layerCount;
         ii.samples = VK_SAMPLE_COUNT_1_BIT;
         ii.tiling = VK_IMAGE_TILING_OPTIMAL;
         ii.usage = VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT;
@@ -173,9 +175,9 @@ public:
 
         VkImageViewCreateInfo vi{VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO};
         vi.image = image_;
-        vi.viewType = VK_IMAGE_VIEW_TYPE_2D;
+        vi.viewType = d.faces == 6 ? VK_IMAGE_VIEW_TYPE_CUBE : VK_IMAGE_VIEW_TYPE_2D;
         vi.format = vkFmt;
-        vi.subresourceRange = {aspect_, 0, levels_, 0, 1};
+        vi.subresourceRange = {aspect_, 0, levels_, 0, layerCount};
         VK_CHECK(vkCreateImageView(core_->device, &vi, nullptr, &view_), "vkCreateImageView");
 
         VkSamplerCreateInfo si{VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO};
@@ -290,16 +292,19 @@ private:
         immediate(core_, [&](VkCommandBuffer cb) {
             barrierLayout(cb, image_, aspect_, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
             VkDeviceSize offset = 0;
-            const uint32_t n = std::min(levels_, static_cast<uint32_t>(chain.size()));
-            for (uint32_t i = 0; i < n; ++i) {
-                const uint32_t lw = std::max(1u, desc_.width >> i);
-                const uint32_t lh = std::max(1u, desc_.height >> i);
-                VkBufferImageCopy region{};
-                region.bufferOffset = offset;
-                region.imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, i, 0, 1};
-                region.imageExtent = {lw, lh, 1};
-                vkCmdCopyBufferToImage(cb, staging, image_, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &region);
-                offset += static_cast<VkDeviceSize>(lw) * lh * 4u;
+            const uint32_t layerCount = desc_.faces == 6 ? 6u : 1u;
+            const uint32_t n = std::min(levels_, static_cast<uint32_t>(chain.size()) / layerCount);
+            for (uint32_t layer = 0; layer < layerCount; ++layer) {
+                for (uint32_t i = 0; i < n; ++i) {
+                    const uint32_t lw = std::max(1u, desc_.width >> i);
+                    const uint32_t lh = std::max(1u, desc_.height >> i);
+                    VkBufferImageCopy region{};
+                    region.bufferOffset = offset;
+                    region.imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, i, layer, 1};
+                    region.imageExtent = {lw, lh, 1};
+                    vkCmdCopyBufferToImage(cb, staging, image_, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &region);
+                    offset += static_cast<VkDeviceSize>(lw) * lh * 4u;
+                }
             }
             barrierLayout(cb, image_, aspect_, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, sampledLayout(), 0, levels_);
         });
@@ -309,7 +314,8 @@ private:
 
     void upload(const void* rgba) {
         const uint32_t w = desc_.width, h = desc_.height;
-        const VkDeviceSize bytes = static_cast<VkDeviceSize>(w) * h * 4;
+        const uint32_t layerCount = desc_.faces == 6 ? 6u : 1u;
+        const VkDeviceSize bytes = static_cast<VkDeviceSize>(w) * h * 4 * layerCount;
         // Staging buffer.
         VkBufferCreateInfo bi{VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO};
         bi.size = bytes;
@@ -321,34 +327,41 @@ private:
         VmaAllocation salloc = nullptr;
         VmaAllocationInfo sinfo{};
         VK_CHECK(vmaCreateBuffer(core_->vma, &bi, &ai, &staging, &salloc, &sinfo), "staging buffer");
-        std::memcpy(sinfo.pMappedData, rgba, bytes);
+        std::memcpy(sinfo.pMappedData, rgba, static_cast<size_t>(w) * h * 4);
+        // A cubemap without a CPU chain (a 1x1 placeholder) gets the same face six times.
+        for (uint32_t f = 1; f < layerCount; ++f)
+            std::memcpy(static_cast<uint8_t*>(sinfo.pMappedData) + static_cast<size_t>(f) * w * h * 4, rgba,
+                        static_cast<size_t>(w) * h * 4);
 
         immediate(core_, [&](VkCommandBuffer cb) {
             barrierLayout(cb, image_, aspect_, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
+            // The staging buffer is face-major, so one region covers every layer.
             VkBufferImageCopy region{};
-            region.imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
+            region.imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, layerCount};
             region.imageExtent = {w, h, 1};
             vkCmdCopyBufferToImage(cb, staging, image_, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &region);
 
-            // Mip chain by repeated linear blits.
-            int32_t mw = static_cast<int32_t>(w), mh = static_cast<int32_t>(h);
-            for (uint32_t i = 1; i < levels_; ++i) {
-                barrierLayout(cb, image_, aspect_, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
-                              VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, i - 1, 1);
-                VkImageBlit blit{};
-                blit.srcSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, i - 1, 0, 1};
-                blit.srcOffsets[0] = {0, 0, 0};
-                blit.srcOffsets[1] = {mw, mh, 1};
-                int32_t nw = std::max(1, mw / 2), nh = std::max(1, mh / 2);
-                blit.dstSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, i, 0, 1};
-                blit.dstOffsets[0] = {0, 0, 0};
-                blit.dstOffsets[1] = {nw, nh, 1};
-                vkCmdBlitImage(cb, image_, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, image_,
-                               VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &blit, VK_FILTER_LINEAR);
-                barrierLayout(cb, image_, aspect_, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
-                              sampledLayout(), i - 1, 1);
-                mw = nw;
-                mh = nh;
+            // Mip chain by repeated linear blits, per face.
+            for (uint32_t layer = 0; layer < layerCount; ++layer) {
+                int32_t mw = static_cast<int32_t>(w), mh = static_cast<int32_t>(h);
+                for (uint32_t i = 1; i < levels_; ++i) {
+                    barrierLayout(cb, image_, aspect_, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                                  VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, i - 1, 1);
+                    VkImageBlit blit{};
+                    blit.srcSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, i - 1, layer, 1};
+                    blit.srcOffsets[0] = {0, 0, 0};
+                    blit.srcOffsets[1] = {mw, mh, 1};
+                    int32_t nw = std::max(1, mw / 2), nh = std::max(1, mh / 2);
+                    blit.dstSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, i, layer, 1};
+                    blit.dstOffsets[0] = {0, 0, 0};
+                    blit.dstOffsets[1] = {nw, nh, 1};
+                    vkCmdBlitImage(cb, image_, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, image_,
+                                   VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &blit, VK_FILTER_LINEAR);
+                    barrierLayout(cb, image_, aspect_, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+                                  sampledLayout(), i - 1, 1);
+                    mw = nw;
+                    mh = nh;
+                }
             }
             barrierLayout(cb, image_, aspect_, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, sampledLayout(), levels_ - 1, 1);
         });
@@ -1146,7 +1159,8 @@ private:
         };
         const VkShaderStageFlags C = VK_SHADER_STAGE_COMPUTE_BIT;
         // Index order must match SetType: Frame, Material, Skin, Post, ShaderMaterial, Motion, Particles, Hud, Compute.
-        setLayouts_[0] = make({B(0, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, VF), B(1, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, VF)});
+        setLayouts_[0] = make({B(0, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, VF), B(1, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, VF),
+                               B(8, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, F)});
         setLayouts_[1] = make({B(4, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, F), B(5, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, F),
                                B(6, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, F), B(8, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, VF),
                                B(3, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, F), B(7, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, F),

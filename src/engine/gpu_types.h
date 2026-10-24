@@ -60,6 +60,11 @@ struct FrameUBO {                 // set 0, binding 0 (frame.glsl)
     glm::vec4 skyZenith;     // rgb zenith colour, w cloud cover (0 = clear .. 1 = the full layer)
     glm::vec4 skyHorizon;    // rgb horizon colour, w star amount (0 = off .. 1 = a full field)
     glm::vec4 skyParams;     // x sun disc strength, yzw unused
+    // The environment probe (docs/IBL.md, engine/environment.h). One SH probe interpolated at the camera's focus;
+    // envParams = x ambient weight (0 = the shader keeps the hemisphere path), y cubemap present, z intensity,
+    // w mip count. Appended at the end for the same reason.
+    glm::vec4 envSH[9];
+    glm::vec4 envParams;
 };
 static_assert(sizeof(FrameUBO) % 16 == 0, "FrameUBO is std140: every member is a vec4 or a mat4");
 

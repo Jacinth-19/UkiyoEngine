@@ -75,12 +75,14 @@ struct TextureDesc {
     bool mipmaps = false;
     Filter filter = Filter::Linear;
     Wrap wrap = Wrap::Clamp;
+    uint16_t faces = 1;      // 6 makes the texture a cubemap: width == height, sampled with samplerCube
 };
 
 // Optional CPU-built RGBA8 mip chain for createTexture: levels[i] is level i, sized max(1, width >> i) by
 // max(1, height >> i). When it is non-empty the backend uploads it as-is instead of filtering the chain itself — that is
 // how alpha-coverage-preserving mips (engine/texture_mips.h) reach the GPU, since the coverage search cannot run on a
-// blit. `desc.mipmaps` must be true and the chain must have the full number of levels.
+// blit. `desc.mipmaps` must be true and the chain must have the full number of levels. For a cubemap (faces == 6) the
+// chain is face-major: face 0's whole chain, then face 1's (see engine/environment.h packMipChain).
 using MipChain = std::vector<std::vector<uint8_t>>;
 
 struct DeviceConfig {

@@ -162,6 +162,34 @@ void readSettings(const json& s, RenderSettings* r) {
     r->cloudCover = std::clamp(r->cloudCover, 0.0f, 1.0f);
     r->stars = std::clamp(r->stars, 0.0f, 1.0f);
     r->sunDisc = std::clamp(r->sunDisc, 0.0f, 1.0f);
+    // The environment (docs/IBL.md). Absent means off: the hemisphere ambient and the gradient reflection stay.
+    if (s.contains("environment")) {
+        const json& e = s["environment"];
+        if (e.is_object()) {
+            env::Settings& env = r->environment;
+            env.enabled = e.value("enabled", false);
+            const std::string mode = e.value("mode", std::string("sky"));
+            env.fromSky = mode != "panorama";
+            env.panorama = e.value("panorama", std::string());
+            env.intensity = std::clamp(e.value("intensity", 1.0f), 0.0f, 8.0f);
+            env.reflectionStrength = std::clamp(e.value("reflectionStrength", -1.0f), -1.0f, 8.0f);
+            env.cubeSize = std::clamp(e.value("cubeSize", 64), 8, 256);
+            if (e.contains("volumes") && e["volumes"].is_array()) {
+                for (const json& v : e["volumes"]) {
+                    if (!v.is_object()) continue;
+                    env::Settings::VolumeDef d;
+                    d.center = vec3Of(v.value("center", json::array()), d.center);
+                    d.size = vec3Of(v.value("size", json::array()), d.size);
+                    if (v.contains("divisions") && v["divisions"].is_array() && v["divisions"].size() >= 3) {
+                        d.divX = std::clamp(v["divisions"][0].get<int>(), 1, 16);
+                        d.divY = std::clamp(v["divisions"][1].get<int>(), 1, 16);
+                        d.divZ = std::clamp(v["divisions"][2].get<int>(), 1, 16);
+                    }
+                    env.volumes.push_back(d);
+                }
+            }
+        }
+    }
 }
 
 // The scene's lights (item 6). Values are clamped to what the renderer accepts, exactly as the editor's reader does
@@ -315,6 +343,12 @@ bool loadRuntimeScene(const std::string& path, const std::string& projectRoot, R
     }
     *out = std::move(scene);
     return true;
+}
+
+void resolveEnvironmentPaths(RenderSettings& settings, const std::string& projectRoot) {
+    env::Settings& e = settings.environment;
+    if (e.panorama.empty() || e.panorama.front() == '/') return;
+    e.panorama = projectRoot + "/" + e.panorama;
 }
 
 } // namespace ukiyo

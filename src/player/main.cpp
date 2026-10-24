@@ -29,6 +29,7 @@
 #include "engine/hud.h"
 #include "engine/model.h"
 #include "engine/renderer.h"
+#include "engine/scene_runtime.h"
 #include "engine/text_atlas.h"
 #include "player/hud_layout.h"
 #include "player/player_app.h"
@@ -223,6 +224,17 @@ int main(int argc, char** argv) {
         std::printf("player: %zu scene light%s\n", app.scene().lights.size(),
                     app.scene().lights.size() == 1 ? "" : "s");
 
+        // The scene's environment (docs/IBL.md), when it asked for one. A failed panorama is a load problem worth
+        // stopping for: the game would render with the hemisphere ambient and the log would be the only trace.
+        ukiyo::resolveEnvironmentPaths(frameSettings, app.projectRoot());
+        {
+            std::string envErr;
+            if (!renderer.setEnvironment(frameSettings, &envErr)) {
+                std::fprintf(stderr, "player: environment failed: %s\n", envErr.c_str());
+                return 1;
+            }
+        }
+
         // Models follow the scene generation: a script's loadScene replaces every model.
         std::vector<std::unique_ptr<ukiyo::Model>> models;
         std::vector<size_t> modelForInstance;
@@ -343,11 +355,25 @@ int main(int argc, char** argv) {
                 frameSettings = app.scene().settings;
                 frameSettings.wireframe = opt.wireframe;
             }
+                ukiyo::resolveEnvironmentPaths(frameSettings, app.projectRoot());
+                {
+                    std::string envErr;
+                    if (!renderer.setEnvironment(frameSettings, &envErr))
+                        std::fprintf(stderr, "player: environment failed: %s\n", envErr.c_str());
+                }
 
             app.tick(dt);
             if (app.sceneGeneration() != loadedGeneration && sceneLoader.empty()) {
                 reloadModels();
                 renderer.setSceneLights(app.scene().lights);
+            }
+            if (app.sceneGeneration() != loadedGeneration && sceneLoader.empty()) {
+                ukiyo::resolveEnvironmentPaths(frameSettings, app.projectRoot());
+                {
+                    std::string envErr;
+                    if (!renderer.setEnvironment(frameSettings, &envErr))
+                        std::fprintf(stderr, "player: environment failed: %s\n", envErr.c_str());
+                }
             }
             // The frame's slice of the load. A step runs whole, so the frame pays the budget plus at most one model;
             // `overruns` counts the models that cost more than the whole budget on their own, which is the number worth

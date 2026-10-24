@@ -52,4 +52,30 @@ UBO(0, 0) FrameBlock {
     vec4 skyZenith;      // rgb zenith colour, w cloud cover (0 = clear .. 1 = the full layer)
     vec4 skyHorizon;     // rgb horizon colour, w star amount (0 = off .. 1 = a full field)
     vec4 skyParams;      // x sun disc strength, yzw unused
+    // The environment probe (docs/IBL.md): second-order spherical harmonics, one coefficient per slot as (r, g, b),
+    // interpolated on the CPU at the camera's focus, in colour units (a white environment evaluates to white).
+    vec4 envSH[9];
+    // x ambient weight (0 = the hemisphere path above), y 1 = uEnvCube holds the prefiltered environment, z
+    // intensity, w mip count. A vec4 at the end of the block, as std140 requires of every addition.
+    vec4 envParams;
 } frame;
+
+// The environment probe evaluated at a normalised direction: the nine basis terms against the packed coefficients.
+// Coefficients and basis agree with engine/environment.cpp (shBasis / evalSh); the terms are written out because a
+// uniform block cannot hold a helper.
+vec3 shIrradiance(vec3 n) {
+    vec3 v = frame.envSH[0].rgb * 0.282095;
+    v += frame.envSH[1].rgb * (0.488603 * n.y);
+    v += frame.envSH[2].rgb * (0.488603 * n.z);
+    v += frame.envSH[3].rgb * (0.488603 * n.x);
+    v += frame.envSH[4].rgb * (1.092548 * n.x * n.y);
+    v += frame.envSH[5].rgb * (1.092548 * n.y * n.z);
+    v += frame.envSH[6].rgb * (0.315392 * (3.0 * n.z * n.z - 1.0));
+    v += frame.envSH[7].rgb * (1.092548 * n.x * n.z);
+    v += frame.envSH[8].rgb * (0.546274 * (n.x * n.x - n.y * n.y));
+    return v;
+}
+
+// The prefiltered environment cubemap (level 0 = the environment, higher mips = wider GGX lobes). Only referenced by
+// shaders that sample it; declaring it here keeps the descriptor layout identical for every Frame-set pipeline.
+TEX(0, 8) uniform samplerCube uEnvCube;

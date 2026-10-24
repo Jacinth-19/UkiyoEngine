@@ -54,4 +54,8 @@ struct RuntimeScene {
 bool loadRuntimeScene(const std::string& path, const std::string& projectRoot, RuntimeScene* out,
                       std::string* error);
 
+// Turns the environment's project-relative panorama path into one the renderer can open (the renderer has no project
+// root). A path already absolute, or an empty one, passes through. Call before Renderer::setEnvironment.
+void resolveEnvironmentPaths(RenderSettings& settings, const std::string& projectRoot);
+
 } // namespace ukiyo

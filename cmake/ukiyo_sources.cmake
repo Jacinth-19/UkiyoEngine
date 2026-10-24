@@ -14,6 +14,7 @@ set(UKIYO_CORE_SOURCES
   src/engine/transform.cpp
   src/engine/gizmo_math.cpp
   src/engine/lights.cpp
+  src/engine/environment.cpp
   src/engine/text_atlas.cpp
   src/engine/msdf.cpp
   src/engine/hud.cpp

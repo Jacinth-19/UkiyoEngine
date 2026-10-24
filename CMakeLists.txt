@@ -638,6 +638,12 @@ target_include_directories(lights_test PRIVATE ${CMAKE_SOURCE_DIR}/src)
 target_link_libraries(lights_test PRIVATE glm::glm)
 target_compile_options(lights_test PRIVATE ${UKIYO_WARNINGS_PEDANTIC})
 
+# Environment lighting: cubemaps, SH probes, the GGX prefilter (docs/IBL.md).
+add_executable(environment_test tests/environment_test.cpp src/engine/environment.cpp)
+target_include_directories(environment_test PRIVATE ${CMAKE_SOURCE_DIR}/src)
+target_link_libraries(environment_test PRIVATE glm::glm)
+target_compile_options(environment_test PRIVATE ${UKIYO_WARNINGS_PEDANTIC})
+
 # The save format (docs/PLAYER.md).
 add_executable(save_test tests/save_test.cpp src/systems/save_game.cpp)
 target_include_directories(save_test PRIVATE ${CMAKE_SOURCE_DIR}/src)

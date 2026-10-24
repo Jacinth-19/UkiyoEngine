@@ -68,10 +68,19 @@ void main() {
     vec3 toonColor = mix(albedo * shadeTint, albedo, lit);
     vec3 color = toonColor * frame.sunColor.rgb;
 
-    // Hemisphere ambient with GI equalisation.
+    // Ambient. A scene with an environment (docs/IBL.md) shades with the probe at the camera's focus, equalised the
+    // way MToon defines it: gi(n) = lerp(rawGi(n), (rawGi(up) + rawGi(down)) / 2, giEqualization). Without one, the
+    // two-colour hemisphere stays, so every scene drawn before this existed renders identically.
     float hemi = N.y * 0.5 + 0.5;
-    vec3 amb = mix(frame.groundColor.rgb, frame.skyColor.rgb, hemi);
-    amb = mix(amb, (frame.skyColor.rgb + frame.groundColor.rgb) * 0.5, mtl.toon.z);
+    vec3 amb;
+    if (frame.envParams.x > 0.0) {
+        vec3 rawGi = shIrradiance(N);
+        vec3 uniformedGi = (shIrradiance(vec3(0.0, 1.0, 0.0)) + shIrradiance(vec3(0.0, -1.0, 0.0))) * 0.5;
+        amb = mix(rawGi, uniformedGi, mtl.toon.z) * frame.envParams.z;
+    } else {
+        amb = mix(frame.groundColor.rgb, frame.skyColor.rgb, hemi);
+        amb = mix(amb, (frame.skyColor.rgb + frame.groundColor.rgb) * 0.5, mtl.toon.z);
+    }
     color += albedo * amb * 0.55;
 
     // Point lights (toon-banded as well). A scene that authors lights gets its own (up to eight, ranked by

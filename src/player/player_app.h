@@ -64,6 +64,7 @@ public:
 
     const BuildManifest& manifest() const { return manifest_; }
     const RuntimeScene& scene() const { return scene_; }
+    const std::string& projectRoot() const { return projectRoot_; }
     const std::vector<PlayerInstance>& instances() const { return instances_; }
     World* world() { return world_.get(); }
     const World* world() const { return world_.get(); }

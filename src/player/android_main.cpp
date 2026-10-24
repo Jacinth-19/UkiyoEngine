@@ -33,6 +33,7 @@
 #include "engine/hud.h"
 #include "engine/model.h"
 #include "engine/renderer.h"
+#include "engine/scene_runtime.h"
 #include "engine/text_atlas.h"
 #include "player/asset_staging.h"
 #include "player/hud_layout.h"
@@ -277,6 +278,14 @@ void android_main(android_app* state) {
 
         built->renderer = std::make_unique<ukiyo::Renderer>(*built->device);
         built->renderer->setSceneLights(app.scene().lights);
+        // The scene's environment (docs/IBL.md); the phone bakes the same CPU chain the desktop does.
+        {
+            ukiyo::RenderSettings envSettings = app.scene().settings;
+            ukiyo::resolveEnvironmentPaths(envSettings, app.projectRoot());
+            std::string envErr;
+            if (!built->renderer->setEnvironment(envSettings, &envErr))
+                LOGE("environment failed: %s", envErr.c_str());
+        }
         if (font.loaded()) built->renderer->setHudAtlas(&font);
 
         // One model per instance that has one. A resumed app reloads them, which is the price of the phone having

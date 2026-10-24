@@ -2,6 +2,11 @@
 #include "engine/vfs.h"
 #include "engine/renderer.h"
 
+#include <fstream>
+#include <iterator>
+
+#include "stb_image.h"
+
 #include "engine/hud_renderer.h"
 
 #include <glm/gtc/matrix_transform.hpp>
@@ -107,14 +112,25 @@ Renderer::Renderer(rhi::Device& device) : dev_(device) {
     const uint8_t white[4] = {255, 255, 255, 255};
     dummyTex_ = dev_.createTexture(dd, white);
 
+    // The Frame set's binding 8 carries the environment cubemap (docs/IBL.md); a 1x1 white cube stands in until a
+    // scene asks for one, so every pipeline's descriptor is always satisfied and sampling it is harmless.
+    rhi::TextureDesc cd;
+    cd.width = 1;
+    cd.height = 1;
+    cd.format = rhi::Format::RGBA8;
+    cd.faces = 6;
+    dummyCube_ = dev_.createTexture(cd, white);
+
     frameSet_ = dev_.createDescriptorSet(rhi::SetType::Frame);
     frameSet_->setBuffer(0, frameUbo_.get());
     frameSet_->setTexture(1, shadowAtlas_.get());
+    frameSet_->setTexture(8, dummyCube_.get());
 
     // The shadow pass renders into the atlas, so it must not also sample it.
     shadowFrameSet_ = dev_.createDescriptorSet(rhi::SetType::Frame);
     shadowFrameSet_->setBuffer(0, frameUbo_.get());
     shadowFrameSet_->setTexture(1, dummyTex_.get());
+    shadowFrameSet_->setTexture(8, dummyCube_.get());
 
     buildPipelines();
 }
@@ -263,6 +279,104 @@ void Renderer::buildPipelines() {
 
 void Renderer::setSceneLights(std::vector<SceneLight> lights) {
     sceneLights_ = std::move(lights);
+}
+
+// The environment bake (docs/IBL.md). Everything happens here, once per scene load: the cubemap from the procedural
+// sky or a panorama PNG, the prefiltered mip chain for the reflection, the probe volumes with the scene's lights
+// baked in, and the whole-scene fallback probe. Per frame, render() only interpolates the volumes and packs.
+bool Renderer::setEnvironment(const RenderSettings& settings, std::string* error) {
+    envIntensity_ = 0.0f;
+    envVolumes_.clear();
+    envWholeScene_ = env::Sh::zero();
+    const bool hadCube = envCube_ != nullptr;
+    envCube_.reset();
+    frameSet_->setTexture(8, dummyCube_.get());
+    shadowFrameSet_->setTexture(8, dummyCube_.get());
+
+    const env::Settings& e = settings.environment;
+    (void)hadCube;   // the binding above already reverted any previous environment
+    if (!e.enabled) return true;
+
+    // The key light the sky is baked with: the same pick render() makes, so the environment and the direct sun agree.
+    glm::vec3 sunDir{0.5f, 0.6f, 0.4f};
+    for (const SceneLight& sl : sceneLights_) {
+        if (!sl.enabled || sl.type != LightType::Directional) continue;
+        const float len = glm::length(sl.direction);
+        if (len < 1e-5f) continue;
+        sunDir = -sl.direction / len;
+        break;
+    }
+
+    env::Cubemap cube;
+    if (e.fromSky || e.panorama.empty()) {
+        cube = env::bakeSkyCubemap(settings.skyZenith, settings.skyHorizon, sunDir,
+                                   std::clamp(settings.sunDisc, 0.0f, 1.0f),
+                                   std::clamp(settings.cloudCover, 0.0f, 1.0f), e.cubeSize);
+    } else {
+        std::ifstream in(e.panorama, std::ios::binary);
+        if (!in) {
+            if (error) *error = "environment panorama could not be opened: " + e.panorama;
+            return false;
+        }
+        std::vector<uint8_t> bytes((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+        int w = 0, h = 0, comp = 0;
+        stbi_uc* px = stbi_load_from_memory(bytes.data(), static_cast<int>(bytes.size()), &w, &h, &comp, 4);
+        if (!px) {
+            if (error) *error = "environment panorama is not a readable image: " + e.panorama;
+            return false;
+        }
+        cube = env::fromEquirect(px, w, h, e.cubeSize);
+        stbi_image_free(px);
+    }
+
+    // The reflection chain: level 0 plus one prefiltered GGX level per mip, packed face-major RGBA8.
+    const std::vector<env::Cubemap> chain = env::prefilteredChain(cube);
+    const std::vector<std::vector<uint8_t>> mipBytes = env::packMipChain(cube, chain);
+    rhi::TextureDesc td;
+    td.width = static_cast<uint32_t>(cube.size);
+    td.height = static_cast<uint32_t>(cube.size);
+    td.format = rhi::Format::RGBA8;
+    td.mipmaps = true;
+    td.filter = rhi::Filter::Linear;
+    td.wrap = rhi::Wrap::Clamp;
+    td.faces = 6;
+    envCube_ = dev_.createTexture(td, nullptr, &mipBytes);
+    envMips_ = static_cast<int>(mipBytes.size());
+    frameSet_->setTexture(8, envCube_.get());
+    shadowFrameSet_->setTexture(8, envCube_.get());
+
+    // The lights, in bake terms. The sun is one of them: a probe in the open must shade brighter towards it, the
+    // same way the direct light does.
+    std::vector<env::EnvLight> lights;
+    for (const SceneLight& sl : sceneLights_) {
+        if (!sl.enabled) continue;
+        env::EnvLight el;
+        el.type = static_cast<int>(sl.type);
+        el.position = sl.position;
+        el.direction = sl.direction;
+        el.color = sl.color;
+        el.intensity = sl.intensity;
+        el.radius = sl.radius;
+        el.spotAngleDeg = sl.spotAngleDeg;
+        el.spotSoftness = sl.spotSoftness;
+        lights.push_back(el);
+    }
+
+    envWholeScene_ = env::irradianceFromCubemap(cube);
+    for (const env::EnvLight& el : lights) addLightToSh(&envWholeScene_, glm::vec3(0.0f), el);
+    for (const auto& vd : e.volumes) {
+        env::ProbeVolume pv;
+        pv.center = vd.center;
+        pv.halfExtent = glm::max(vd.size * 0.5f, glm::vec3(0.05f));
+        pv.divX = std::max(1, vd.divX);
+        pv.divY = std::max(1, vd.divY);
+        pv.divZ = std::max(1, vd.divZ);
+        env::bakeVolume(&pv, env::irradianceFromCubemap(cube), lights);
+        envVolumes_.push_back(std::move(pv));
+    }
+
+    envIntensity_ = std::max(e.intensity, 0.0f);
+    return true;
 }
 
 void Renderer::setWater(const WaterVolume* volume) {
@@ -740,6 +854,16 @@ void Renderer::render(const OrbitCamera& cam, const std::vector<Model*>& models,
     f.skyZenith = glm::vec4(s.skyZenith, std::clamp(s.cloudCover, 0.0f, 1.0f));
     f.skyHorizon = glm::vec4(s.skyHorizon, std::clamp(s.stars, 0.0f, 1.0f));
     f.skyParams = glm::vec4(std::clamp(s.sunDisc, 0.0f, 1.0f), 0.0f, 0.0f, 0.0f);
+    // The environment probe (docs/IBL.md), interpolated at the camera's focus — the same pick the light ranking
+    // makes. envParams.x = 0 leaves the hemisphere ambient path in the shader untouched.
+    if (envIntensity_ > 0.0f) {
+        const env::FrameEnv fe = env::packFrameEnv(envVolumes_, envWholeScene_, cam.target, envIntensity_,
+                                                   envCube_ != nullptr, envMips_);
+        for (int i = 0; i < 9; ++i) f.envSH[i] = fe.sh[i];
+        f.envParams = fe.params;
+    } else {
+        f.envParams = glm::vec4(0.0f);
+    }
 
     // Cascade ranges: [near, 8], [8, 25], [25, 80].
     const float ranges[4] = {cam.nearZ, kSplits[0], kSplits[1], kSplits[2]};
@@ -772,7 +896,11 @@ void Renderer::render(const OrbitCamera& cam, const std::vector<Model*>& models,
     f.pointPos[0] = glm::vec4(1.4f, 1.6f, 1.2f, 3.0f);
     f.toonA = glm::vec4(s.hairHighlight, s.hairShift, s.hairExponent, s.selfShadow ? 1.0f : 0.0f);
     f.toonB = glm::vec4(s.selfThreshold, s.selfHardness, s.gloss, s.glossPower);
-    f.toonC = glm::vec4(s.celBand ? 1.0f : 0.0f, s.normalMap, s.outlineMatNoise, s.reflection);
+    // A scene with an environment may override the reflection strength without touching the project default
+    // (environment.reflectionStrength < 0 keeps `reflection`).
+    const float reflectionStrength = s.environment.reflectionStrength >= 0.0f ? s.environment.reflectionStrength
+                                                                              : s.reflection;
+    f.toonC = glm::vec4(s.celBand ? 1.0f : 0.0f, s.normalMap, s.outlineMatNoise, reflectionStrength);
     if (s.faceShadow && !models.empty() && models[0]) {
         // Head forward: the model's facing turned by its root transform, flattened to the ground plane.
         glm::vec3 fw = glm::vec3(models[0]->root * glm::vec4(models[0]->facing, 0.0f));

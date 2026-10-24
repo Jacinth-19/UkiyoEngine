@@ -1574,7 +1574,33 @@
       0.03,
       0.026,
       0.04
-    ]
+    ],
+    "environment": {
+      "enabled": true,
+      "mode": "sky",
+      "intensity": 0.45,
+      "reflectionStrength": 0.5,
+      "cubeSize": 64,
+      "volumes": [
+        {
+          "center": [
+            0.0,
+            1.4,
+            0.0
+          ],
+          "size": [
+            24.0,
+            3.2,
+            24.0
+          ],
+          "divisions": [
+            5,
+            2,
+            5
+          ]
+        }
+      ]
+    }
   },
   "cameraTarget": [
     0,

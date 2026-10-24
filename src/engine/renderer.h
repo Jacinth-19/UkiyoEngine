@@ -15,6 +15,7 @@
 
 #include "engine/camera.h"
 #include "engine/gpu_types.h"
+#include "engine/environment.h"
 #include "engine/hud.h"
 #include "engine/graph_material.h"
 #include "engine/lights.h"
@@ -119,6 +120,9 @@ struct RenderSettings {
     // takes effect when the model is loaded again.
     bool preserveAlphaCoverage = true;
     float alphaTestThreshold = 0.5f;
+    // Environment lighting (docs/IBL.md, engine/environment.h). Disabled by default: the renderer keeps the
+    // two-colour hemisphere ambient and the gradient reflection, so existing scenes render unchanged.
+    env::Settings environment;
     float ssr = 0.0f;                // screen-space reflections, 0..1 (normal pre-pass)
     // Real-time diffuse GI (the iGPU path tracer): half-resolution traced bounce light, temporally accumulated and
     // composited at full resolution. 0 = off, 1 = one bounce at full strength. Needs a heightfield (setHeightfield) and
@@ -313,6 +317,14 @@ public:
     // "no authored lights", and the frame keeps the two stylistic fills it has always had, so old scenes do not change.
     void setSceneLights(std::vector<SceneLight> lights);
     const std::vector<SceneLight>& sceneLights() const { return sceneLights_; }
+    // The environment (docs/IBL.md): bakes the cubemap from the procedural sky or an equirectangular panorama, the
+    // probe volumes, and the whole-scene probe, all on the CPU, and binds the prefiltered cube at Frame binding 8.
+    // The panorama path in settings.environment.panorama must already be resolved (the player resolves it against the
+    // project root, like the grading LUT). Returns false with `error` set when a panorama cannot be read; the ambient
+    // then stays off. Passing settings whose environment is disabled clears the environment again.
+    bool setEnvironment(const RenderSettings& settings, std::string* error);
+    // True when a scene turned the environment on and the bake succeeded.
+    bool hasEnvironment() const { return envIntensity_ > 0.0f; }
     // How many scene lights the last frame actually shaded with, and whether a directional scene light took over the
     // key. Both zero/false on a scene with no authored lights.
     int lastSceneLightCount() const { return lastSceneLightCount_; }
@@ -385,6 +397,12 @@ private:
     FontAtlas* hudAtlas_ = nullptr;
     std::unique_ptr<rhi::Texture> shadowAtlas_;     // 4096, 2x2 cascades of 2048
     std::unique_ptr<rhi::Texture> dummyTex_;        // used by the shadow pass's Frame set
+    std::unique_ptr<rhi::Texture> dummyCube_;       // 1x1 white cube: the Frame set's binding 8 when no environment
+    std::unique_ptr<rhi::Texture> envCube_;         // the scene's prefiltered environment (docs/IBL.md)
+    std::vector<env::ProbeVolume> envVolumes_;      // baked probe lattices, interpolated at the camera focus
+    env::Sh envWholeScene_;                         // the fallback probe: environment plus lights at the origin
+    float envIntensity_ = 0.0f;                     // 0 = environment off, the hemisphere ambient stays
+    int envMips_ = 1;                               // the reflection chain's mip count
     std::unique_ptr<rhi::DescriptorSet> frameSet_;
     std::unique_ptr<rhi::DescriptorSet> shadowFrameSet_;
 

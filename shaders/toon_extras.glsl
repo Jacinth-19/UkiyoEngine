@@ -33,14 +33,22 @@ vec3 applyNormalMap(vec3 N, vec3 p, vec2 uv, vec3 tn, float strength) {
     return normalize(TBN * normalize(ts));
 }
 
-// RealToon reflection (procedural sky, no cubemap): the sky/ground gradient in the reflection direction, weighted
-// by a Fresnel term and the gloss mask. Strength is the project default in toonC.w (0 = off).
+// RealToon reflection. With an environment (docs/IBL.md) the reflection ray samples the prefiltered cubemap, the mip
+// picked by the gloss mask (G = 1 - roughness) squared across the chain, which is the split-sum idea cut down to what
+// a toon material needs: no BRDF lut, the Fresnel and strength stay stylistic. Without one, the sky/ground gradient
+// stands in, as it always has. Strength is the project default in toonC.w (0 = off).
 vec3 toonReflection(vec3 N, vec3 V, float glossMask) {
     float k = frame.toonC.w;
     if (k <= 0.0) return vec3(0.0);
     vec3 R = reflect(-V, N);
-    vec3 env = mix(frame.groundColor.rgb, frame.skyColor.rgb, smoothstep(-0.2, 0.6, R.y));
     float fres = pow(1.0 - clamp(dot(N, V), 0.0, 1.0), 4.0);
+    if (frame.envParams.y > 0.5) {
+        float rough = 1.0 - clamp(glossMask, 0.0, 1.0);
+        float lod = rough * rough * max(frame.envParams.w - 1.0, 0.0);
+        vec3 env = textureLod(uEnvCube, R, lod).rgb;
+        return env * k * glossMask * (0.04 + 0.96 * fres);
+    }
+    vec3 env = mix(frame.groundColor.rgb, frame.skyColor.rgb, smoothstep(-0.2, 0.6, R.y));
     return env * k * glossMask * (0.04 + 0.96 * fres);
 }
 

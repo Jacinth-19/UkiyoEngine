@@ -74,15 +74,27 @@ class GLTexture final : public Texture {
 public:
     GLTexture(const TextureDesc& d, const void* rgba, const MipChain* chain) : desc_(d) {
         levels_ = d.mipmaps ? static_cast<GLsizei>(std::floor(std::log2(std::max(d.width, d.height)))) + 1 : 1;
-        glCreateTextures(GL_TEXTURE_2D, 1, &id_);
-        glTextureStorage2D(id_, levels_, toGLInternal(d.format), static_cast<GLsizei>(d.width), static_cast<GLsizei>(d.height));
+        const bool cube = d.faces == 6;
+        glCreateTextures(cube ? GL_TEXTURE_CUBE_MAP : GL_TEXTURE_2D, 1, &id_);
+        glTextureStorage2D(id_, levels_, toGLInternal(d.format), static_cast<GLsizei>(d.width),
+                           static_cast<GLsizei>(d.height));
         if (chain && !chain->empty()) {
-            // A chain built on the CPU (alpha-coverage-preserving mips): upload every level, generate nothing.
-            const GLsizei n = std::min(levels_, static_cast<GLsizei>(chain->size()));
-            for (GLsizei i = 0; i < n; ++i) {
-                const GLsizei lw = std::max<GLsizei>(1, static_cast<GLsizei>(d.width) >> i);
-                const GLsizei lh = std::max<GLsizei>(1, static_cast<GLsizei>(d.height) >> i);
-                glTextureSubImage2D(id_, i, 0, 0, lw, lh, GL_RGBA, GL_UNSIGNED_BYTE, (*chain)[size_t(i)].data());
+            // A chain built on the CPU (alpha-coverage-preserving mips, or the environment's prefiltered cube):
+            // upload every level, generate nothing. A cubemap's chain is face-major (face 0's whole chain first);
+            // DSA's sub-image-3D treats the six faces as z layers 0..5.
+            const GLsizei n = std::min(levels_, static_cast<GLsizei>(chain->size()) /
+                                                        static_cast<GLsizei>(cube ? 6 : 1));
+            const GLsizei faceCount = cube ? 6 : 1;
+            for (GLsizei f = 0; f < faceCount; ++f) {
+                for (GLsizei i = 0; i < n; ++i) {
+                    const GLsizei lw = std::max<GLsizei>(1, static_cast<GLsizei>(d.width) >> i);
+                    const GLsizei lh = std::max<GLsizei>(1, static_cast<GLsizei>(d.height) >> i);
+                    const uint8_t* pixels = (*chain)[size_t(f * n + i)].data();
+                    if (cube)
+                        glTextureSubImage3D(id_, i, 0, 0, f, lw, lh, 1, GL_RGBA, GL_UNSIGNED_BYTE, pixels);
+                    else
+                        glTextureSubImage2D(id_, i, 0, 0, lw, lh, GL_RGBA, GL_UNSIGNED_BYTE, pixels);
+                }
             }
         } else if (rgba) {
             glTextureSubImage2D(id_, 0, 0, 0, static_cast<GLsizei>(d.width), static_cast<GLsizei>(d.height),
@@ -96,6 +108,7 @@ public:
         glTextureParameteri(id_, GL_TEXTURE_MAG_FILTER, static_cast<GLint>(filter));
         glTextureParameteri(id_, GL_TEXTURE_WRAP_S, static_cast<GLint>(wrap));
         glTextureParameteri(id_, GL_TEXTURE_WRAP_T, static_cast<GLint>(wrap));
+        if (cube) glTextureParameteri(id_, GL_TEXTURE_WRAP_R, static_cast<GLint>(wrap));
     }
     ~GLTexture() override { glDeleteTextures(1, &id_); }
     uint32_t width() const override { return desc_.width; }
