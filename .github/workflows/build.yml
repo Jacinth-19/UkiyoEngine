@@ -1331,15 +1331,15 @@ jobs:
       # and opens the village, and screencap captures it. A process that dies leaves a pid-less shell, a logcat tail
       # in the annotations, and a red run -- the same promise the desktop frames make.
       - name: Boot Afterglow in an emulator and photograph it
-        timeout-minutes: 25
+        timeout-minutes: 140
         run: |
           set -euo pipefail
-          # A software emulator boot without KVM cannot fit a push: the machine decides, honestly. The dedicated
-          # android-photo workflow gives the same proof an unaccelerated hour at a time, on demand.
-          if [ ! -w /dev/kvm ]; then
-            echo "::notice::no usable /dev/kvm on this runner -- the emulator check runs in the android-photo workflow"
-            exit 0
-          fi
+          # The proof the user asked for: the APK installs, the launcher starts it, and screencap captures what the
+          # screen shows. KVM boots in minutes; without it this is a software boot of API 33 -- about an hour -- and
+          # the budget below says that is acceptable for the run that has to answer.
+          accel="on"; note="KVM: on"
+          if [ ! -w /dev/kvm ]; then accel="off"; note="KVM: absent -- software boot, ~an hour"; fi
+          echo "$note"
           sdk="${ANDROID_SDK_ROOT:-/usr/local/lib/android/sdk}"
           # emulator, platform-tools and cmdline-tools are on the image already; only the system image arrives.
           "$sdk/cmdline-tools/latest/bin/sdkmanager" --install "system-images;android-33;google_apis;x86_64" \
@@ -1348,11 +1348,11 @@ jobs:
             -k "system-images;android-33;google_apis;x86_64" -d pixel_5 --force
           adb="adb"   # preinstalled platform-tools
           "$sdk/emulator/emulator" -avd afterglow -no-window -no-audio -no-boot-anim -no-snapshot -no-metrics \
-            -gpu swiftshader_indirect -accel on -memory 3072 > /tmp/emulator.log 2>&1 &
+            -gpu swiftshader_indirect -accel $accel -memory 3072 > /tmp/emulator.log 2>&1 &
           emu=$!
           # A hang is a verdict too: watch the emulator's pulse while waiting for boot, and when either fails,
           # the log tail becomes the annotation instead of forty silent minutes.
-          for i in $(seq 1 60); do
+          for i in $(seq 1 240); do
             boot="$("$adb" shell getprop sys.boot_completed 2>/dev/null | tr -d '\r' || true)"
             [ "$boot" = "1" ] && break
             if ! kill -0 "$emu" 2>/dev/null; then
@@ -1360,7 +1360,7 @@ jobs:
               tail -30 /tmp/emulator.log | while IFS= read -r line; do echo "::error::$line"; done
               exit 1
             fi
-            sleep 10
+            sleep 20
           done
           boot="$("$adb" shell getprop sys.boot_completed 2>/dev/null | tr -d '\r' || true)"
           if [ "$boot" != "1" ]; then
@@ -1368,6 +1368,7 @@ jobs:
             tail -30 /tmp/emulator.log | while IFS= read -r line; do echo "::error::$line"; done
             exit 1
           fi
+          echo "the emulator is up" 
           "$adb" install -r Afterglow.apk
           "$adb" shell monkey -p dev.ukiyo.lanternrun -c android.intent.category.LAUNCHER 1
           sleep 30   # first launch stages the APK's assets into the app's storage and opens the village
