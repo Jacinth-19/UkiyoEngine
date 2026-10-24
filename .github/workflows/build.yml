@@ -955,6 +955,34 @@ jobs:
             Get-Content windows-diagnosis.txt | Select-Object -First 9 | ForEach-Object { Write-Host "::error::$_" }
           }
 
+      # The same evidence, committed onto the branch: annotations carry ten lines, an artifact needs a download
+      # path this workspace cannot reach, and the diagnosis -- the whole trace, the map, the exception record --
+      # is exactly what the next fix needs. The frames publish the same way.
+      - name: Commit the crash evidence
+        if: failure()
+        run: |
+          if (-not (Test-Path windows-diagnosis.txt)) { echo "no diagnosis to commit"; exit 0 }
+          New-Item -ItemType Directory -Force -Path "ci/windows-crash" | Out-Null
+          Copy-Item windows-diagnosis.txt ci/windows-crash/
+          Copy-Item "*.trace.log" ci/windows-crash/ -ErrorAction SilentlyContinue
+          Copy-Item "script_test.stdout.log" ci/windows-crash/ -ErrorAction SilentlyContinue
+          Copy-Item "build/script_test.map" ci/windows-crash/ -ErrorAction SilentlyContinue
+          git config user.name "ukiyo-ci"
+          git config user.email "ci@ukiyo.invalid"
+          git add ci/windows-crash
+          if (git diff --cached --quiet) { echo "nothing new"; exit 0 }
+          $branch = $env:GITHUB_REF_NAME
+          git commit -m "Windows crash evidence [skip ci]"
+          foreach ($attempt in 1..3) {
+            git fetch origin "+refs/heads/$branch`:refs/remotes/origin/$branch"
+            git rebase "origin/$branch"
+            if ($LASTEXITCODE -ne 0) { git rebase --abort; continue }
+            if (git push origin "HEAD:$branch") { exit 0 }
+            Start-Sleep -Seconds 5
+          }
+          echo "could not publish the evidence" >&2
+          exit 1
+
       # The player, booting the fixture project with no window and no device (docs/PLAYER.md).
       - name: Run Player Self-Test
         run: ./build/ukiyo_player.exe --selftest --build Build/build.json --project tests/fixtures/player
