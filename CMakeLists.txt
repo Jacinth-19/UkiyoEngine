@@ -76,6 +76,7 @@ if(ANDROID)
   add_library(nlohmann_json::nlohmann_json ALIAS ukiyo_json)
 
   file(GLOB LUA_SRC CONFIGURE_DEPENDS ${CMAKE_SOURCE_DIR}/third_party/lua/*.c)
+  set_source_files_properties(${LUA_SRC} PROPERTIES LANGUAGE CXX)
   add_library(ukiyo_lua STATIC ${LUA_SRC})
   target_include_directories(ukiyo_lua PUBLIC ${CMAKE_SOURCE_DIR}/third_party/lua)
   target_compile_definitions(ukiyo_lua PRIVATE LUA_USE_LINUX)
@@ -277,7 +278,11 @@ target_include_directories(ukiyo_recast PUBLIC
 target_compile_options(ukiyo_recast PRIVATE ${UKIYO_NO_WARNINGS})
 
 # Lua 5.4 (scripting). Core and standard libraries only; the standalone interpreter is not built.
+# Lua compiles as C++ on purpose: its error transport becomes real exceptions (ldo.c's LUAI_THROW), which every
+# frame on the way out understands natively. The C build's longjmp out of a C++ host frame is undefined behaviour,
+# and MSVC's unwinder crashed inside destructors three checks after a refused require, on exactly that.
 file(GLOB LUA_SRC CONFIGURE_DEPENDS ${CMAKE_SOURCE_DIR}/third_party/lua/*.c)
+set_source_files_properties(${LUA_SRC} PROPERTIES LANGUAGE CXX)
 add_library(ukiyo_lua STATIC ${LUA_SRC})
 target_include_directories(ukiyo_lua PUBLIC ${CMAKE_SOURCE_DIR}/third_party/lua)
 if(WIN32)

@@ -47,9 +47,8 @@
 
 #include <glm/gtc/matrix_transform.hpp>
 
-extern "C" {
 #include "lua.h"
-}
+
 
 using namespace ukiyo;
 

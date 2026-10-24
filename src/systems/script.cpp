@@ -8,11 +8,10 @@
 #include <fstream>
 #include <sstream>
 
-extern "C" {
 #include "lauxlib.h"
 #include "lua.h"
 #include "lualib.h"
-}
+
 
 namespace ukiyo {
 

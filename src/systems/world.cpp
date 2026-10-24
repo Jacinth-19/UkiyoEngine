@@ -10,10 +10,9 @@
 
 #include <glm/gtc/quaternion.hpp>
 
-extern "C" {
 #include "lauxlib.h"
 #include "lua.h"
-}
+
 
 namespace ukiyo {
 

@@ -26,10 +26,9 @@
 #include <windows.h>
 #endif
 
-extern "C" {
 #include "lauxlib.h"
 #include "lua.h"
-}
+
 
 using namespace ukiyo;
 
