@@ -1344,8 +1344,13 @@ jobs:
           # emulator, platform-tools and cmdline-tools are on the image already; only the system image arrives.
           "$sdk/cmdline-tools/latest/bin/sdkmanager" --install "system-images;android-33;google_apis;x86_64" \
             > /tmp/sdkmanager.log 2>&1 || { tail -20 /tmp/sdkmanager.log; exit 1; }
+          # avdmanager (newer cmdline-tools) writes to the XDG config dir; the emulator looks in $ANDROID_AVD_HOME
+          # and $HOME/.android/avd -- pin both sides or the emulator reports "Unknown AVD name" and dies.
+          export ANDROID_AVD_HOME="$HOME/.android/avd"
+          mkdir -p "$ANDROID_AVD_HOME"
           echo no | "$sdk/cmdline-tools/latest/bin/avdmanager" create avd -n afterglow \
             -k "system-images;android-33;google_apis;x86_64" -d pixel_5 --force
+          ls "$ANDROID_AVD_HOME"
           adb="adb"   # preinstalled platform-tools
           "$sdk/emulator/emulator" -avd afterglow -no-window -no-audio -no-boot-anim -no-snapshot -no-metrics \
             -gpu swiftshader_indirect -accel $accel -memory 3072 > /tmp/emulator.log 2>&1 &
