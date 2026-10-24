@@ -16,16 +16,28 @@
 #include <cstdint>
 #include <cstdio>
 #include <string>
-#include <sys/stat.h>
 #include <vector>
+#if defined(_WIN32)
+#include <direct.h>          // MSVC spells mkdir "_mkdir" and keeps it out of sys/stat.h
+#else
+#include <sys/stat.h>
+#endif
 
 namespace ukiyo::staging {
+
+namespace detail {
+#if defined(_WIN32)
+inline void makeOneDir(const char* path) { _mkdir(path); }
+#else
+inline void makeOneDir(const char* path) { ::mkdir(path, 0755); }
+#endif
+}  // namespace detail
 
 inline void makeParents(const std::string& path) {
     // Every directory above `path`, not `path` itself.
     for (size_t i = 1; i < path.size(); ++i) {
         if (path[i] != '/') continue;
-        ::mkdir(path.substr(0, i).c_str(), 0755);   // EEXIST is the normal case after the first file in a folder
+        detail::makeOneDir(path.substr(0, i).c_str());   // EEXIST is the normal case after the first file in a folder
     }
 }
 
