@@ -837,8 +837,12 @@ jobs:
             Write-Host "::error::no ICD json in the mesa package"; exit 1
           }
           Write-Host "::error::icd: $($icd.FullName)"
+          Get-Content $icd.FullName | ForEach-Object { Write-Host "::error::icd-json: $_" }
+          Get-ChildItem (Split-Path $icd.FullName) -Filter "*.dll" |
+            ForEach-Object { Write-Host "::error::icd-dir: $($_.Name) $($_.Length)" }
           $env:VK_DRIVER_FILES = $icd.FullName
           $env:VK_ICD_FILENAMES = $icd.FullName
+          $env:VK_LOADER_DEBUG = "error"
           $env:PATH = "$(Split-Path $icd.FullName);$env:PATH"
           $loader = Get-ChildItem "$mesa\dist" -Recurse -Filter "vulkan-1.dll" -ErrorAction SilentlyContinue | Select-Object -First 1
           if (-not $loader) {
