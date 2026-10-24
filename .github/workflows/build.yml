@@ -841,9 +841,15 @@ jobs:
           $icdDir = Split-Path $icd.FullName
           Get-ChildItem $icdDir | ForEach-Object { Write-Host "::error::icd-dir: $($_.Name) $($_.Length)" }
           Write-Host "::error::lvp present: $(Test-Path "$icdDir\vulkan_lvp.dll")"
+          # The runner is elevated, and the loader ignores VK_DRIVER_FILES / VK_ICD_FILENAMES in an elevated session
+          # (its security policy: the last trace proved it -- "Environment variable VK_DRIVER_FILES will be ignored",
+          # then "Found no drivers!"). The registry is how a real driver registers, and elevated means we may write it.
+          New-Item -Path "HKLM:\SOFTWARE\Khronos\Vulkan\Drivers" -Force | Out-Null
+          New-ItemProperty -Path "HKLM:\SOFTWARE\Khronos\Vulkan\Drivers" -Name "$($icd.FullName)" -Value 0 `
+            -PropertyType DWord -Force | Out-Null
           $env:VK_DRIVER_FILES = $icd.FullName
           $env:VK_ICD_FILENAMES = $icd.FullName
-          $env:VK_LOADER_DEBUG = "all"
+          $env:VK_LOADER_DEBUG = "error"
           $env:PATH = "$icdDir;$env:PATH"
           $loader = Get-ChildItem "$mesa\dist" -Recurse -Filter "vulkan-1.dll" -ErrorAction SilentlyContinue | Select-Object -First 1
           if (-not $loader) {
