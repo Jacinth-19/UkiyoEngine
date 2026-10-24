@@ -579,13 +579,24 @@ static void testRequire() {
     check(cycle.loadString("local a = require('cycle_a')\nassert(a.name == 'a')\n", "@cycle.lua", &e2),
           "require: a cycle is answered with the half-built module, not a hang", e2);
 
+    // Two halves, not one: Windows has died around this host's construction and its first load in different runs,
+    // and one check cannot say which. Each half is its own chunk on the same host, so the check that dies names the
+    // statement -- and the sections around them name the steps between.
+    section("require: escapes, host");
     ScriptHost escapes;
     escapes.setSearchPaths({(testRoot() / "mods").string()});
     std::string e3;
-    check(escapes.loadString("local ok = pcall(require, '../outside')\nassert(not ok, 'a traversal was allowed')\n"
-                             "local ok2 = pcall(require, '/etc/passwd')\nassert(not ok2, 'an absolute path was allowed')\n",
-                             "@escape.lua", &e3),
-          "require: .. and an absolute path are refused", e3);
+    section("require: escapes, traversal load");
+    const bool traversalRefused = escapes.loadString(
+        "local ok = pcall(require, '../outside')\nassert(not ok, 'a traversal was allowed')\n", "@escape1.lua", &e3);
+    section("require: escapes, traversal judged");
+    check(traversalRefused, "require: .. is refused", e3);
+    section("require: escapes, absolute load");
+    const bool absoluteRefused = escapes.loadString(
+        "local ok2 = pcall(require, '/etc/passwd')\nassert(not ok2, 'an absolute path was allowed')\n",
+        "@escape2.lua", &e3);
+    section("require: escapes, absolute judged");
+    check(absoluteRefused, "require: an absolute path is refused", e3);
 
     ScriptHost missing;
     missing.setSearchPaths({(testRoot() / "mods").string()});
