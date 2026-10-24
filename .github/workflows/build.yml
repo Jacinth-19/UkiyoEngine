@@ -779,6 +779,17 @@ jobs:
         run: |-
           ./build/ukiyo_pack.exe --project games/lantern-run --player build/ukiyo_player.exe --platform windows `
             --shaders build/shaders --out dist/lantern-run-windows --zip dist/lantern-run-windows.zip
+          # The player is built /MD, so a machine without the VC++ runtime cannot start it -- and CI machines are
+          # exactly the machines that have it, which is why a green run never caught that. The redist DLLs ship
+          # beside the player, and the zip is rebuilt from the folder that now holds them.
+          if (-not $env:VCToolsRedistDir) { throw "VCToolsRedistDir is not set; the package would not run elsewhere" }
+          Copy-Item "$env:VCToolsRedistDir\x64\Microsoft.VC143.CRT\*.dll" dist/lantern-run-windows/
+          Compress-Archive -Path dist/lantern-run-windows/* -DestinationPath dist/lantern-run-windows.zip -Force
+          # The packaged game boots here, deviceless: the self-test loads the project, the scene and the script from
+          # inside the package, the way a player's machine would.
+          Push-Location dist/lantern-run-windows
+          ./ukiyo_player.exe --selftest --project games/lantern-run --build Build/build.json --shaders shaders
+          Pop-Location
       - name: Upload the Windows package
         uses: actions/upload-artifact@v4
         with:
@@ -789,6 +800,12 @@ jobs:
         run: |-
           ./build/ukiyo_pack.exe --project games/afterglow --player build/ukiyo_player.exe --platform windows `
             --shaders build/shaders --out dist/afterglow-windows --zip dist/afterglow-windows.zip
+          if (-not $env:VCToolsRedistDir) { throw "VCToolsRedistDir is not set; the package would not run elsewhere" }
+          Copy-Item "$env:VCToolsRedistDir\x64\Microsoft.VC143.CRT\*.dll" dist/afterglow-windows/
+          Compress-Archive -Path dist/afterglow-windows/* -DestinationPath dist/afterglow-windows.zip -Force
+          Push-Location dist/afterglow-windows
+          ./ukiyo_player.exe --selftest --project games/afterglow --build Build/build.json --shaders shaders
+          Pop-Location
       - name: Upload Afterglow for Windows
         uses: actions/upload-artifact@v4
         with:

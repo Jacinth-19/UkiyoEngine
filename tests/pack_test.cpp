@@ -191,6 +191,13 @@ int main() {
           result.gameName + " " + result.gameVersion);
     check(result.projectPath == "games/tiny", "it remembers the project's path inside the package", result.projectPath);
     check(fs::exists(out / "ukiyo_player"), "the player binary is in the package");
+    check(fs::exists(out / "How to run.txt"), "the package explains how it is run");
+    {
+        std::string howTo = readFile(out / "How to run.txt");
+        check(howTo.find("run.sh") != std::string::npos && howTo.find("run.bat") != std::string::npos &&
+                  howTo.find("Extract") != std::string::npos,
+              "the how-to names both launchers and the extract-first rule");
+    }
     check(fs::exists(out / "run.sh") && fs::exists(out / "run.bat"), "both launchers are written");
     const std::string launcher = readFile(out / "run.sh");
     check(launcher.find("--project games/tiny") != std::string::npos,
