@@ -16,6 +16,26 @@ set(UKIYO_CORE_SOURCES
   src/engine/lights.cpp
   src/engine/environment.cpp
   src/engine/texture_compress.cpp
+  third_party/astcenc/astcenc_averages_and_directions.cpp
+  third_party/astcenc/astcenc_block_sizes.cpp
+  third_party/astcenc/astcenc_color_quantize.cpp
+  third_party/astcenc/astcenc_color_unquantize.cpp
+  third_party/astcenc/astcenc_compress_symbolic.cpp
+  third_party/astcenc/astcenc_compute_variance.cpp
+  third_party/astcenc/astcenc_decompress_symbolic.cpp
+  third_party/astcenc/astcenc_diagnostic_trace.cpp
+  third_party/astcenc/astcenc_entry.cpp
+  third_party/astcenc/astcenc_find_best_partitioning.cpp
+  third_party/astcenc/astcenc_ideal_endpoints_and_weights.cpp
+  third_party/astcenc/astcenc_image.cpp
+  third_party/astcenc/astcenc_integer_sequence.cpp
+  third_party/astcenc/astcenc_mathlib.cpp
+  third_party/astcenc/astcenc_mathlib_softfloat.cpp
+  third_party/astcenc/astcenc_partition_tables.cpp
+  third_party/astcenc/astcenc_percentile_tables.cpp
+  third_party/astcenc/astcenc_pick_best_endpoint_format.cpp
+  third_party/astcenc/astcenc_quantization.cpp
+  third_party/astcenc/astcenc_symbolic_physical.cpp
   src/engine/text_atlas.cpp
   src/engine/msdf.cpp
   src/engine/hud.cpp

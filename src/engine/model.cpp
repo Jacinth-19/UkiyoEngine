@@ -634,14 +634,23 @@ private:
             for (const MipLevel& level : levels) chain.push_back(level.rgba);
         }
         // Block compression (batch 7): every level of the chain — the coverage-preserving one included, which ran
-        // first — is compressed to BC1 (opaque colour) or BC3 (any alpha), a quarter or an eighth of the memory.
-        // Small textures stay raw: a 4x4 block of metadata saves nothing.
-        if (g_compressedModelTextures && dev_.supportsBlockCompression() && w >= 8 && h >= 8) {
+        // first — compresses to the best format the device samples: ASTC 4x4 where the GPU has it (phones), BC1
+        // (opaque colour) or BC3 (any alpha) where it does not (desktop), and raw RGBA8 where it has neither.
+        // Small textures stay raw: a block of metadata saves nothing.
+        if (g_compressedModelTextures && w >= 8 && h >= 8 &&
+            (dev_.supportsAstc() || dev_.supportsBlockCompression())) {
             if (chain.empty()) chain = texc::rgbaMipChain(px, w, h);
             const bool alpha = texc::hasAlpha(chain[0].data(), w, h);
-            const texc::Chain compressedChain =
-                texc::compressChain(chain, w, h, alpha ? (srgb ? rhi::Format::BC3_SRGB : rhi::Format::BC3)
-                                                       : (srgb ? rhi::Format::BC1_SRGB : rhi::Format::BC1));
+            const bool astc = dev_.supportsAstc();
+            rhi::Format f;
+            if (astc) {
+                f = srgb ? rhi::Format::ASTC_4x4_SRGB : rhi::Format::ASTC_4x4;
+            } else if (alpha) {
+                f = srgb ? rhi::Format::BC3_SRGB : rhi::Format::BC3;
+            } else {
+                f = srgb ? rhi::Format::BC1_SRGB : rhi::Format::BC1;
+            }
+            const texc::Chain compressedChain = texc::compressChain(chain, w, h, f);
             d.format = compressedChain.format;
             chain = compressedChain.levels;
         }

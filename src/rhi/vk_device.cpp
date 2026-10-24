@@ -48,6 +48,7 @@ constexpr uint32_t kVertexStride = 96;
 // State shared by every object that needs the device.
 struct VKCore {
     bool bcSupported = true;   // textureCompressionBC from the physical device (batch 7)
+    bool astcSupported = false;   // textureCompressionASTC_LDR from the physical device (batch 7)
     VkInstance instance = VK_NULL_HANDLE;
     VkSurfaceKHR surface = VK_NULL_HANDLE;
     VkPhysicalDevice phys = VK_NULL_HANDLE;
@@ -104,7 +105,9 @@ int vkBlockBytes(Format f) {
     case Format::BC1_SRGB: return 8;
     case Format::BC3:
     case Format::BC3_SRGB:
-    case Format::BC5: return 16;
+    case Format::BC5:
+    case Format::ASTC_4x4:
+    case Format::ASTC_4x4_SRGB: return 16;
     default: return 0;
     }
 }
@@ -120,6 +123,8 @@ VkFormat toVkFormat(Format f, VkFormat backbuffer) {
     case Format::BC3: return VK_FORMAT_BC3_UNORM_BLOCK;
     case Format::BC3_SRGB: return VK_FORMAT_BC3_SRGB_BLOCK;
     case Format::BC5: return VK_FORMAT_BC5_UNORM_BLOCK;
+    case Format::ASTC_4x4: return VK_FORMAT_ASTC_4x4_UNORM_BLOCK;
+    case Format::ASTC_4x4_SRGB: return VK_FORMAT_ASTC_4x4_SRGB_BLOCK;
     case Format::Backbuffer: return backbuffer;
     }
     return VK_FORMAT_R8G8B8A8_UNORM;
@@ -177,8 +182,13 @@ public:
         // same formula as always, and the image is sample-only (no attachment usage). A device without the BC
         // feature refuses here rather than sampling garbage.
         const int blockB = vkBlockBytes(d.format);
-        if (blockB > 0 && !core_->bcSupported)
-            throw std::runtime_error("device lacks textureCompressionBC; compressed textures are not available");
+        if (blockB > 0) {
+            const bool astc = d.format == Format::ASTC_4x4 || d.format == Format::ASTC_4x4_SRGB;
+            const bool ok = astc ? core_->astcSupported : core_->bcSupported;
+            if (!ok)
+                throw std::runtime_error("device lacks the compression feature for this format; "
+                                         "the loader should have asked supportsBlockCompression/supportsAstc");
+        }
 
         const uint32_t layerCount = d.faces == 6 ? 6u : 1u;
         VkImageCreateInfo ii{VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO};
@@ -589,6 +599,7 @@ public:
     bool presentFlipsY() const override { return !headless_; }
 
     bool supportsBlockCompression() const override { return core_.bcSupported; }
+    bool supportsAstc() const override { return core_.astcSupported; }
 
     std::unique_ptr<Buffer> createBuffer(BufferUsage usage, size_t size) override {
         return std::make_unique<VKBuffer>(&core_, usage, std::max<size_t>(size, 16));
@@ -1145,8 +1156,10 @@ private:
         // the device.
         fillModeNonSolid_ = f2.features.fillModeNonSolid == VK_TRUE;
         // Block-compressed textures (batch 7): optional in Vulkan, universal on desktop GPUs and lavapipe. A device
-        // without it refuses the compressed formats at creation rather than sampling garbage.
+        // without it refuses the compressed formats at creation rather than sampling garbage. ASTC is the phone
+        // counterpart: nearly universal there, rare on desktop — both are queried and the loaders pick.
         core_.bcSupported = f2.features.textureCompressionBC == VK_TRUE;
+        core_.astcSupported = f2.features.textureCompressionASTC_LDR == VK_TRUE;
 
         std::vector<const char*> devExts;
         if (core_.surface) devExts.push_back(VK_KHR_SWAPCHAIN_EXTENSION_NAME);

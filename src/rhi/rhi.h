@@ -43,6 +43,8 @@ enum class Format : uint8_t {
     BC3,          // colour + 8-bit alpha, 8 bpp
     BC3_SRGB,     // colour + 8-bit alpha, sRGB on sample
     BC5,          // two channels (normal maps), 8 bpp
+    ASTC_4x4,     // phone formats: 4x4 blocks, 8 bpp, RGBA + alpha in one scheme (Vulkan only here)
+    ASTC_4x4_SRGB,
 };
 
 // Storage: a shader-storage buffer (compute's read/write data). Indirect: a draw-command buffer — written by a
@@ -191,8 +193,11 @@ public:
 
     // True when createTexture accepts the block-compressed formats (BCn). Vulkan asks the device's features; GL
     // desktop contexts on real hardware and Mesa always have S3TC. A device without it keeps uncompressed textures
-    // — the loaders check this before encoding, which is why the phone (ASTC, later in the batch) still runs.
+    // — the loaders check before encoding.
     virtual bool supportsBlockCompression() const = 0;
+    // True when the device samples ASTC (the phone formats). Vulkan's textureCompressionASTC_LDR: nearly universal
+    // on phones, rare on desktop — the loaders prefer ASTC where it exists and fall back to BCn, then to raw.
+    virtual bool supportsAstc() const = 0;
 
     virtual std::unique_ptr<Buffer> createBuffer(BufferUsage usage, size_t size) = 0;
     virtual std::unique_ptr<Texture> createTexture(const TextureDesc& desc, const void* rgba8 = nullptr,

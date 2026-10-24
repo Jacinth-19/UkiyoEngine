@@ -14,8 +14,9 @@
 //           their alpha test; the alpha-coverage-preserving chain runs first and every level is compressed after.
 //   * BC5  — two independent channels, 8 bits per pixel. Normal maps (the blue is reconstructed in the shader).
 //
-// ASTC for the phone lands in the second half of the batch; the plumbing (formats, upload paths, block maths) is
-// written so ASTC is another entry in the same tables, not a second system.
+// ASTC (the phone half of the batch) uses the vendored astc-encoder (third_party/astcenc, Apache-2.0) — an ASTC
+// encoder is a search, not a formula, and this batch ships one search well instead of a bad one twice. 4x4 blocks,
+// always 16 bytes, LDR profiles only: ASTC_4x4 for linear textures, ASTC_4x4_SRGB where the source was sRGB.
 //
 // Everything is pure CPU maths with no device behind it, so the codecs and their error bounds are tested on every
 // machine CI has — see tests/texture_compress_test.cpp.
@@ -31,6 +32,10 @@ namespace ukiyo::texc {
 
 // True when the format is one of the block-compressed ones the encoders below produce.
 bool compressed(rhi::Format f);
+
+// True for the ASTC formats specifically: they come from the vendored encoder, not the hand-written codecs, and
+// desktop GL refuses them.
+bool isASTC(rhi::Format f);
 
 // The compressed texel block is 4x4 for every format here.
 constexpr int kBlockWidth = 4;
@@ -53,6 +58,15 @@ size_t levelBytes(rhi::Format f, int w, int h);
 std::vector<uint8_t> encodeBC1(const uint8_t* rgba, int w, int h);
 std::vector<uint8_t> encodeBC3(const uint8_t* rgba, int w, int h);
 std::vector<uint8_t> encodeBC5(const uint8_t* rgba, int w, int h);
+
+// Encodes one RGBA8 image into ASTC 4x4 blocks (16 bytes each). `srgb` picks the LDR profile; the block bytes of
+// the two profiles are structurally the same, but the GPU decodes them with or without sRGB hardware. The encoder
+// runs at the FAST effort: this compresses at load time on a phone, where MEDIUM's better rate-distortion is not
+// worth seconds of load.
+std::vector<uint8_t> encodeASTC(const uint8_t* rgba, int w, int h, bool srgb);
+
+// Decodes ASTC back to RGBA8, for the tests' error bounds (and any future tooling that wants the pixels back).
+void decodeASTC(const uint8_t* blocks, int w, int h, bool srgb, uint8_t* rgbaOut);
 
 // Decodes one compressed image back to RGBA8 (alpha 255 for BC1 and BC5's unused channels). The tests decode
 // everything they encode; the error bounds in them are measured against this.

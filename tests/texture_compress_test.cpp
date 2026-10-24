@@ -195,6 +195,68 @@ int main() {
         check(hasAlpha(opaque.data(), 4, 4), "a single 254 makes the texture alpha");
     }
 
+    // --- ASTC 4x4 (the phone format, via the vendored encoder): every block is 16 bytes, a flat colour survives
+    // essentially exactly, a gradient stays bounded, and the encoder is deterministic.
+    {
+        const int w = 32, h = 32;
+        std::vector<uint8_t> flat(size_t(w) * h * 4);
+        for (size_t i = 0; i < flat.size(); i += 4) {
+            flat[i] = 64; flat[i + 1] = 96; flat[i + 2] = 160; flat[i + 3] = 255;
+        }
+        const std::vector<uint8_t> fb = encodeASTC(flat.data(), w, h, false);
+        check(fb.size() == levelBytes(rhi::Format::ASTC_4x4, w, h), "an ASTC level is blocksWide*blocksHigh*16");
+        check(levelBytes(rhi::Format::ASTC_4x4, 1, 1) == 16, "a 1x1 tail mip costs one 16-byte block");
+        std::vector<uint8_t> fdec(size_t(w) * h * 4);
+        decodeASTC(fb.data(), w, h, false, fdec.data());
+        check(rmse(flat.data(), fdec.data(), w, h) < 3.0, "a flat colour survives ASTC",
+              std::to_string(rmse(flat.data(), fdec.data(), w, h)).c_str());
+
+        std::vector<uint8_t> grad(size_t(w) * h * 4);
+        for (int y = 0; y < h; ++y)
+            for (int x = 0; x < w; ++x) {
+                uint8_t* p = &grad[(size_t(y) * w + x) * 4];
+                p[0] = uint8_t(x * 8); p[1] = uint8_t(y * 8); p[2] = 128; p[3] = 255;
+            }
+        const std::vector<uint8_t> gb = encodeASTC(grad.data(), w, h, false);
+        std::vector<uint8_t> gdec(size_t(w) * h * 4);
+        decodeASTC(gb.data(), w, h, false, gdec.data());
+        check(rmse(grad.data(), gdec.data(), w, h) < 12.0, "gradient ASTC at FAST effort stays bounded",
+              std::to_string(rmse(grad.data(), gdec.data(), w, h)).c_str());
+
+        // Orientation is a convention, not a hope: the gradient climbs with y, so the decoded bottom row must be
+        // brighter than the top row — a flip would silently mirror every phone texture.
+        const double top = gdec[(size_t(0) * w + 8) * 4] + gdec[(size_t(0) * w + 8) * 4 + 1];
+        const double bottom = gdec[(size_t(h - 1) * w + 8) * 4] + gdec[(size_t(h - 1) * w + 8) * 4 + 1];
+        check(bottom > top * 2.0, "ASTC rows keep the engine's top-first order");
+
+        const std::vector<uint8_t> again = encodeASTC(grad.data(), w, h, false);
+        check(std::memcmp(gb.data(), again.data(), gb.size()) == 0, "ASTC encoding is deterministic");
+
+        // Odd size: 5x3 is two blocks; the encoder takes any dimension, the blocks cover the edge.
+        const std::vector<uint8_t> odd = encodeASTC(flat.data(), 5, 3, false);
+        check(odd.size() == 2 * 16, "a 5x3 image is two ASTC blocks");
+    }
+
+    // --- The chain in ASTC: every level compresses, sizes match the RHI's maths, and 4x4 ASTC is 4:1 over RGBA8.
+    {
+        const int w = 64, h = 64;
+        std::vector<uint8_t> base(size_t(w) * h * 4);
+        for (size_t i = 0; i < base.size(); ++i) base[i] = uint8_t((i * 53) & 0xFF);
+        const std::vector<std::vector<uint8_t>> rgba = rgbaMipChain(base.data(), w, h);
+        const Chain c = compressChain(rgba, w, h, rhi::Format::ASTC_4x4);
+        check(c.levels.size() == rgba.size(), "the ASTC chain keeps every level");
+        check(rgba[0].size() == c.levels[0].size() * 4, "ASTC 4x4 is exactly 4:1 on the full-size level");
+        size_t raw = 0, packed = 0;
+        for (size_t l = 0; l < rgba.size(); ++l) {
+            const int lw = std::max(1, w >> int(l)), lh = std::max(1, h >> int(l));
+            check(c.levels[l].size() == levelBytes(rhi::Format::ASTC_4x4, lw, lh), "level bytes match the RHI's maths");
+            raw += rgba[l].size();
+            packed += c.levels[l].size();
+        }
+        check(raw >= packed * 3, "the whole chain compresses at least 3:1 on ASTC 4x4",
+              std::to_string(double(raw) / double(packed)).c_str());
+    }
+
     std::printf("texture_compress_test: %d checks, %d failures\n", checks, failures);
     return failures ? 1 : 0;
 }

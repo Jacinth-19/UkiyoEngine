@@ -1,14 +1,13 @@
-# Compressed textures: the BC family (batch 7, first half)
+# Compressed textures: BCn and ASTC (batch 7)
 
 Every texture the engine drew was RGBA8 — 32 bits per pixel whether it held a photograph, a flat toon colour or a
 normal map. Batch 7 teaches the engine to store and sample them compressed: **BC1** (4 bits per pixel, opaque
-colour), **BC3** (8 bits, colour plus a real 8-bit alpha path), **BC5** (8 bits, two channels, for normal maps).
-The second half of the batch adds ASTC for the phone; the plumbing below was written so ASTC is another entry in the
-same tables.
+colour), **BC3** (8 bits, colour plus a real 8-bit alpha path), **BC5** (8 bits, two channels, for normal maps) on
+desktop, and **ASTC 4×4** (8 bits, RGBA in one scheme) on the phone, where the BC family does not exist.
 
 The work has three layers, each with its own test:
 
-## 1. The codecs are ours (`src/engine/texture_compress.{h,cpp}`)
+## 1. The codecs: ours for BCn, vendored for ASTC (`src/engine/texture_compress.{h,cpp}`)
 
 The engine ships its own BCn encoders rather than a vendored one, for the same reason it ships its own toon shader:
 the bytes are ours to measure. The algorithms are the standard ones from the Khronos Data Format Specification:
@@ -33,6 +32,16 @@ produces: 3-bit indices cross byte boundaries, so a one-byte read silently drops
 two bytes); and a `memcpy(dst, src, 4)` from an `int*` palette copies 4 **bytes**, not 4 channels — the computed
 alpha never reached the output and the round-trip "passed" on colour alone.
 
+ASTC is the deliberate exception to "ours": an ASTC encoder is a rate-distortion **search** — partition
+candidates, endpoint fit modes, weight quantisations — and writing a second, worse search helps nobody. The engine
+vendors Arm's [astc-encoder](https://github.com/Arm-software/astc-encoder) 5.7.0 (Apache-2.0, `third_party/astcenc/`,
+core sources only, built scalar so one source set is invariant across the arm64 and x86_64 ABIs) behind the same
+`texc` contract: `encodeASTC`/`decodeASTC`, 4×4 blocks at 16 bytes, LDR and LDR-sRGB profiles, FAST effort because
+this runs at load time on a phone where MEDIUM's better distortion is not worth seconds of load. The same tests
+bound it: a flat colour survives essentially exactly, a gradient at FAST effort stays under RMSE 12, the chain is
+exactly 4:1 on full-size levels, rows keep the engine's top-first order (pinned by test — a flip would mirror every
+phone texture), and encoding is deterministic.
+
 ## 2. The RHI grew the formats
 
 `Format::BC1, BC1_SRGB, BC3, BC3_SRGB, BC5` — 4×4 blocks, sample-only (no attachments, no `update()`, no
@@ -50,17 +59,22 @@ alpha-coverage-preserving chains keep their coverage).
 ## 3. The loader uses it
 
 Model textures (`src/engine/model.cpp`) are compressed when the option is on (it is, by default,
-`setCompressedModelTextures`) **and** the device supports BCn. Every mip level — the alpha-coverage-preserving chain
-included, which ran first — compresses to BC3 when the texture uses alpha anywhere and BC1 when it does not,
-matching the sRGB flag of the source. Textures smaller than 8×8 stay raw: a block of metadata saves nothing.
+`setCompressedModelTextures`). Every mip level — the alpha-coverage-preserving chain included, which ran first —
+compresses to the best format the device actually samples, asked through the RHI and not assumed from the platform:
 
-The phone gate is not a stub: Android GPUs have no BCn, so the loader checks `supportsBlockCompression()` and keeps
-RGBA8 there. ASTC (second half of the batch) replaces that with a format phones do support; the frame path, chain
-contract and tests are already written to take it.
+* `supportsAstc()` (Vulkan's `textureCompressionASTC_LDR`) → **ASTC 4×4**, the phone answer;
+* else `supportsBlockCompression()` (Vulkan's `textureCompressionBC`, always on desktop GL) → **BC1** for opaque
+  colour, **BC3** when the texture uses alpha anywhere, matching the sRGB flag of the source;
+* else the texture stays raw RGBA8 — correct is the floor, smaller is the bonus.
+
+Textures smaller than 8×8 stay raw on every device: a block of metadata saves nothing. ASTC has no separate alpha
+format — alpha rides in the same block — so the BC1/BC3 split is BC-only.
 
 ## What it saves
 
-A model with 20 MB of RGBA8 texture data draws from ~5 MB of BC1/BC3 — and the saving is on the sampling path too:
-4 or 8 bits per pixel of texture fetch traffic instead of 32. The decoded image is not bit-identical, by design; the
-bounds in §1 are the contract for how far from it the games may drift, and the CI frame photos are checked on every
-push with the compressor on.
+A model with 20 MB of RGBA8 texture data draws from ~5 MB of BC1/BC3 on desktop and ~5 MB of ASTC 4×4 on the phone —
+and the saving is on the sampling path too: 4 or 8 bits per pixel of texture fetch traffic instead of 32. The
+decoded image is not bit-identical, by design; the bounds in §1 are the contract for how far from it the games may
+drift, and the CI frame photos are checked on every push with the compressor on. Normal maps are still RGBA8: BC5
+and the shader-side blue reconstruction they need are built and tested, and wiring them is the first follow-up
+after this batch.

@@ -46,6 +46,9 @@ constexpr GLsizei kVertexStride = 96;   // sizeof(rhi::Vertex)
 
 GLenum toGLInternal(Format f) {
     switch (f) {
+    case Format::ASTC_4x4:
+    case Format::ASTC_4x4_SRGB:
+        throw std::runtime_error("ASTC is not available on the GL backend; ask supportsAstc() first");
     case Format::RGBA8: return GL_RGBA8;
     case Format::RGBA8_SRGB: return GL_SRGB8_ALPHA8;
     case Format::RGBA16F: return GL_RGBA16F;
@@ -303,6 +306,9 @@ public:
     bool presentFlipsY() const override { return false; }
 
     bool supportsBlockCompression() const override { return true; }   // S3TC is universal on desktop GL 4.x
+    // ASTC stays a phone format here: desktop GL support is optional and the desktop backend has BCn, which its
+    // hardware prefers. An ASTC texture reaching the GL backend is a loader bug and refuses loudly.
+    bool supportsAstc() const override { return false; }
 
     std::unique_ptr<Buffer> createBuffer(BufferUsage, size_t size) override {
         return std::make_unique<GLBuffer>(std::max<size_t>(size, 16));

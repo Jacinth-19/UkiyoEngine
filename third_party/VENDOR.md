@@ -11,6 +11,7 @@ of the operating system lives here.
 | `JoltPhysics/` | (checked in) | MIT | Rigid bodies |
 | `recastnavigation/` | (checked in) | zlib | Navigation |
 | `lua/` | 5.4.9 | MIT | Scripting |
+| `astcenc/` | 5.7.0 | Apache-2.0 (`astcenc/LICENSE.txt`) | The ASTC texture encoder (batch 7's phone format): an ASTC encoder is a search, not a formula. Core library sources only — the CLI, unit tests, fuzzers and GoogleTest are not copied. Built scalar (`none_4` vector path) so one source set serves arm64 and x86_64 ABIs invariantly. Upstream: Arm-software/astc-encoder, pinned at tag 5.7.0 |
 | `meshoptimizer/`, `cgltf.h`, `stb_*.h`, `miniaudio`, `nodeeditor`, `glad`, `vk_mem_alloc.h` | (checked in) | see each header | Single-file or single-directory libraries |
 
 ## What is deliberately *not* vendored

@@ -13,8 +13,12 @@
 #include "engine/texture_compress.h"
 
 #include <algorithm>
+#include <stdexcept>
+#include <string>
 #include <cmath>
 #include <cstring>
+
+#include "astcenc.h"
 
 namespace ukiyo::texc {
 
@@ -24,10 +28,14 @@ bool compressed(rhi::Format f) {
     case rhi::Format::BC1_SRGB:
     case rhi::Format::BC3:
     case rhi::Format::BC3_SRGB:
-    case rhi::Format::BC5: return true;
+    case rhi::Format::BC5:
+    case rhi::Format::ASTC_4x4:
+    case rhi::Format::ASTC_4x4_SRGB: return true;
     default: return false;
     }
 }
+
+bool isASTC(rhi::Format f) { return f == rhi::Format::ASTC_4x4 || f == rhi::Format::ASTC_4x4_SRGB; }
 
 int blockBytes(rhi::Format f) {
     switch (f) {
@@ -35,7 +43,9 @@ int blockBytes(rhi::Format f) {
     case rhi::Format::BC1_SRGB: return 8;
     case rhi::Format::BC3:
     case rhi::Format::BC3_SRGB:
-    case rhi::Format::BC5: return 16;
+    case rhi::Format::BC5:
+    case rhi::Format::ASTC_4x4:
+    case rhi::Format::ASTC_4x4_SRGB: return 16;   // ASTC 4x4: every block is exactly 128 bits
     default: return 0;
     }
 }
@@ -246,6 +256,47 @@ std::vector<uint8_t> encodeBC5(const uint8_t* rgba, int w, int h) {
     return out;
 }
 
+// ------------------------------------------------------------------ ASTC (vendored astc-encoder)
+
+namespace {
+
+// One compression context per call. astc-encoder's context carries the partition tables and the working queues —
+// about 180 KB — and this loader compresses one texture at a time on a phone, so the alloc/free cost per level is
+// noise next to the encode itself.
+struct AstcContext {
+    astcenc_context* ctx = nullptr;
+    ~AstcContext() { if (ctx) astcenc_context_free(ctx); }
+};
+
+astcenc_swizzle identitySwizzle() { return {ASTCENC_SWZ_R, ASTCENC_SWZ_G, ASTCENC_SWZ_B, ASTCENC_SWZ_A}; }
+
+std::vector<uint8_t> astcEncode(const uint8_t* rgba, int w, int h, bool srgb, unsigned flags) {
+    astcenc_config config{};
+    astcenc_error err = astcenc_config_init(srgb ? ASTCENC_PRF_LDR_SRGB : ASTCENC_PRF_LDR, 4, 4, 1,
+                                            ASTCENC_PRE_FAST, flags, &config);
+    if (err != ASTCENC_SUCCESS) throw std::runtime_error(std::string("astcenc config: ") +
+                                                         astcenc_get_error_string(err));
+    AstcContext holder;
+    err = astcenc_context_alloc(&config, 1, &holder.ctx, nullptr);
+    if (err != ASTCENC_SUCCESS) throw std::runtime_error(std::string("astcenc context: ") +
+                                                         astcenc_get_error_string(err));
+    std::vector<uint8_t> out(levelBytes(rhi::Format::ASTC_4x4, w, h));
+    // The slice-pointer array must outlive the call: astcenc_image.data is read inside compress.
+    void* slice = const_cast<uint8_t*>(rgba);
+    astcenc_image image{static_cast<unsigned int>(w), static_cast<unsigned int>(h), 1u, ASTCENC_TYPE_U8, &slice};
+    const astcenc_swizzle swz = identitySwizzle();
+    err = astcenc_compress_image(holder.ctx, &image, &swz, out.data(), out.size(), 0);
+    if (err != ASTCENC_SUCCESS) throw std::runtime_error(std::string("astcenc compress: ") +
+                                                         astcenc_get_error_string(err));
+    return out;
+}
+
+} // namespace
+
+std::vector<uint8_t> encodeASTC(const uint8_t* rgba, int w, int h, bool srgb) {
+    return astcEncode(rgba, w, h, srgb, 0);
+}
+
 // ------------------------------------------------------------------ decoding
 
 namespace {
@@ -362,6 +413,22 @@ void decodeBC5(const uint8_t* blocks, int w, int h, uint8_t* rgbaOut) {
         }
 }
 
+void decodeASTC(const uint8_t* blocks, int w, int h, bool srgb, uint8_t* rgbaOut) {
+    astcenc_config config{};
+    astcenc_error err = astcenc_config_init(srgb ? ASTCENC_PRF_LDR_SRGB : ASTCENC_PRF_LDR, 4, 4, 1,
+                                            ASTCENC_PRE_FAST, ASTCENC_FLG_DECOMPRESS_ONLY, &config);
+    if (err != ASTCENC_SUCCESS) throw std::runtime_error("astcenc config (decode)");
+    AstcContext holder;
+    err = astcenc_context_alloc(&config, 1, &holder.ctx, nullptr);
+    if (err != ASTCENC_SUCCESS) throw std::runtime_error("astcenc context (decode)");
+    void* slice = rgbaOut;
+    astcenc_image image{static_cast<unsigned int>(w), static_cast<unsigned int>(h), 1u, ASTCENC_TYPE_U8, &slice};
+    const astcenc_swizzle swz = identitySwizzle();
+    err = astcenc_decompress_image(holder.ctx, blocks, blocksWide(w) * blocksHigh(h) * 16, &image, &swz, 0);
+    if (err != ASTCENC_SUCCESS) throw std::runtime_error(std::string("astcenc decompress: ") +
+                                                         astcenc_get_error_string(err));
+}
+
 // ------------------------------------------------------------------ chains
 
 Chain compressChain(const std::vector<std::vector<uint8_t>>& rgbaLevels, int w, int h, rhi::Format f) {
@@ -380,6 +447,10 @@ Chain compressChain(const std::vector<std::vector<uint8_t>>& rgbaLevels, int w, 
         case rhi::Format::BC1_SRGB: encoded = encodeBC1(rgbaLevels[l].data(), lw, lh); break;
         case rhi::Format::BC3:
         case rhi::Format::BC3_SRGB: encoded = encodeBC3(rgbaLevels[l].data(), lw, lh); break;
+        case rhi::Format::ASTC_4x4:
+        case rhi::Format::ASTC_4x4_SRGB:
+            encoded = encodeASTC(rgbaLevels[l].data(), lw, lh, f == rhi::Format::ASTC_4x4_SRGB);
+            break;
         default: encoded = encodeBC5(rgbaLevels[l].data(), lw, lh); break;
         }
         out.levels.push_back(std::move(encoded));

@@ -124,7 +124,8 @@ if(ANDROID)
   endif()
   add_library(ukiyo_core_android STATIC ${UKIYO_CORE_ANDROID})
   target_include_directories(ukiyo_core_android PUBLIC
-    ${CMAKE_SOURCE_DIR}/src ${CMAKE_SOURCE_DIR}/third_party ${CMAKE_SOURCE_DIR}/third_party/meshoptimizer)
+    ${CMAKE_SOURCE_DIR}/src ${CMAKE_SOURCE_DIR}/third_party ${CMAKE_SOURCE_DIR}/third_party/meshoptimizer
+    ${CMAKE_SOURCE_DIR}/third_party/astcenc)
   # VK_USE_PLATFORM_ANDROID_KHR is what makes <vulkan/vulkan.h> declare vkCreateAndroidSurfaceKHR.
   target_compile_definitions(ukiyo_core_android PUBLIC
     UKIYO_SHADER_DIR="shaders/spv" VK_USE_PLATFORM_ANDROID_KHR=1)
@@ -312,6 +313,7 @@ target_include_directories(ukiyo_core PUBLIC
   ${CMAKE_SOURCE_DIR}/src
   ${CMAKE_SOURCE_DIR}/third_party
   ${CMAKE_SOURCE_DIR}/third_party/meshoptimizer
+  ${CMAKE_SOURCE_DIR}/third_party/astcenc
   ${CMAKE_SOURCE_DIR}/third_party/glad/include)
 target_compile_definitions(ukiyo_core PUBLIC UKIYO_SHADER_DIR="${SHADER_OUT_DIR}")
 target_link_libraries(ukiyo_core PUBLIC
@@ -646,7 +648,7 @@ target_compile_options(environment_test PRIVATE ${UKIYO_WARNINGS_PEDANTIC})
 
 # Block-compressed textures: the codecs against their error bounds and exact sizes (docs/TEXTURE_COMPRESSION.md).
 add_executable(texture_compress_test tests/texture_compress_test.cpp src/engine/texture_compress.cpp)
-target_include_directories(texture_compress_test PRIVATE ${CMAKE_SOURCE_DIR}/src)
+target_include_directories(texture_compress_test PRIVATE ${CMAKE_SOURCE_DIR}/src ${CMAKE_SOURCE_DIR}/third_party/astcenc)
 target_link_libraries(texture_compress_test PRIVATE glm::glm)
 target_compile_options(texture_compress_test PRIVATE ${UKIYO_WARNINGS_PEDANTIC})
 

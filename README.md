@@ -461,13 +461,14 @@ proves it:
 | — | Real assets | Afterglow rebuilt on Kenney's kits and CC0 recordings, every file sha256-pinned and checked in CI |
 | — | Platform proof | CI boots every platform's package and photographs it; Android's first-launch staging is replayed by a test on every push; 16 KB-page alignment |
 | 6 | Environment lighting | cubemaps, image-based lighting, light probes (`docs/IBL.md`) |
-| 7 | **Compressed textures** | **in flight** — the BC family shipped (`docs/TEXTURE_COMPRESSION.md`); ASTC for the phone is the second half |
+| 7 | Compressed textures | our own BC1/BC3/BC5 codecs on desktop, Arm's astc-encoder 4×4 on the phone, the device queried and the format picked per texture (`docs/TEXTURE_COMPRESSION.md`) |
 
-Batch 7 is the last RHI gap the audit named: every texture in the engine was uncompressed RGBA8, which spends memory
-and bandwidth an integrated GPU or a phone does not have to spare. The first half ships our own BC1/BC3/BC5 codecs
-(the bytes are ours to measure — the test decodes every block and bounds the error), the compressed formats in both
-backends, and models' textures compressed a quarter to an eighth, gated on the device so the phone stays correct
-until ASTC lands.
+Batch 7 was the last RHI gap the audit named: every texture in the engine was uncompressed RGBA8, which spends
+memory and bandwidth an integrated GPU or a phone does not have to spare. The BCn bytes are the engine's own (the
+test decodes every block and bounds the error); ASTC is a rate-distortion search rather than a formula, so it
+vendors Arm's astc-encoder behind the same contract. Both backends grew the formats, the loader asks the device
+what it samples — ASTC on phones, BCn on desktop, raw where neither exists — and compresses every mip level of
+every model texture.
 
 ## Status
 
@@ -475,7 +476,7 @@ The engine builds and tests on Linux, Windows and Android CI, and both games' pa
 CI on every push — Windows under lavapipe, Linux under xvfb, Android's first-launch staging verified without a phone.
 Known gaps are listed at the end of each doc. The largest were GPU virtual geometry and the mixer; the cut now runs on
 the compute queue with indirect draws ([docs/VGEOM.md](docs/VGEOM.md) §7) and the mixer ships three buses, reverb and
-streaming ([docs/AUDIO.md](docs/AUDIO.md)) — what remains there is page streaming and Hi-Z occlusion, and for the
-textures the ASTC half of batch 7 above. The traced bounce light does not see creases narrower than 5 cm, and that has been measured
+streaming ([docs/AUDIO.md](docs/AUDIO.md)) — what remains there is page streaming and Hi-Z occlusion. Normal maps
+ride uncompressed until the BC5/ASTC shader wiring lands; the codecs are ready ([docs/TEXTURE_COMPRESSION.md](docs/TEXTURE_COMPRESSION.md)). The traced bounce light does not see creases narrower than 5 cm, and that has been measured
 rather than estimated: closing it changes 0.35 % of pixels in the reference and costs 17 % more march, which is why it
 is a documented trade ([docs/PATHTRACE.md](docs/PATHTRACE.md)).
