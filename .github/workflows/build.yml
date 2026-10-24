@@ -811,35 +811,64 @@ jobs:
       # result so a black rectangle fails the run.
       - name: Boot the packaged games on Windows and photograph them
         run: |
-          $ErrorActionPreference = "Stop"
+          # Every stage annotates its own failure: this step spans a download, an archive, a driver and two games,
+          # and "exit 1" alone says nothing about which one broke.
           $mesa = "$env:RUNNER_TEMP\mesa"
           New-Item -ItemType Directory -Force -Path $mesa | Out-Null
-          Invoke-WebRequest -Uri "https://github.com/pal1000/mesa-dist-win/releases/download/26.2.4/mesa3d-26.2.4-release-msvc.7z" `
-            -OutFile "$mesa\mesa.7z"
+          try {
+            Invoke-WebRequest -Uri "https://github.com/pal1000/mesa-dist-win/releases/download/26.2.4/mesa3d-26.2.4-release-msvc.7z" `
+              -OutFile "$mesa\mesa.7z"
+          } catch { Write-Host "::error::mesa download failed: $_"; exit 1 }
           $sevenZip = "C:\Program Files\7-Zip\7z.exe"
-          if (Test-Path $sevenZip) { & $sevenZip x "$mesa\mesa.7z" -o"$mesa\dist" -y | Out-Null }
-          else { tar -xf "$mesa\mesa.7z" -C "$mesa\dist" }
-          $icd = Get-ChildItem "$mesa\dist" -Recurse -Filter "lvp_icd*.json" | Select-Object -First 1
-          if (-not $icd) { throw "no lavapipe ICD in the mesa package" }
+          if (Test-Path $sevenZip) {
+            & $sevenZip x "$mesa\mesa.7z" -o"$mesa\dist" -y | Out-Null
+          } else {
+            tar -xf "$mesa\mesa.7z" -C "$mesa\dist"
+          }
+          $files = @(Get-ChildItem "$mesa\dist" -Recurse -File -ErrorAction SilentlyContinue)
+          Write-Host "::error::mesa extracted: $($files.Count) files"
+          if ($files.Count -lt 5) { Write-Host "::error::the mesa archive did not extract"; exit 1 }
+          $icd = Get-ChildItem "$mesa\dist" -Recurse -Filter "lvp_icd*.json" -ErrorAction SilentlyContinue | Select-Object -First 1
+          if (-not $icd) {
+            $icd = Get-ChildItem "$mesa\dist" -Recurse -Filter "*.json" -ErrorAction SilentlyContinue | Select-Object -First 1
+          }
+          if (-not $icd) {
+            Get-ChildItem "$mesa\dist" -Recurse -File | Select-Object -First 30 | ForEach-Object { Write-Host "::error::  $($_.FullName)" }
+            Write-Host "::error::no ICD json in the mesa package"; exit 1
+          }
+          Write-Host "::error::icd: $($icd.FullName)"
           $env:VK_DRIVER_FILES = $icd.FullName
           $env:VK_ICD_FILENAMES = $icd.FullName
           $env:PATH = "$(Split-Path $icd.FullName);$env:PATH"
-          $loader = Get-ChildItem "$mesa\dist" -Recurse -Filter "vulkan-1.dll" | Select-Object -First 1
-          if (-not $loader -and $env:VULKAN_SDK) {
+          $loader = Get-ChildItem "$mesa\dist" -Recurse -Filter "vulkan-1.dll" -ErrorAction SilentlyContinue | Select-Object -First 1
+          if (-not $loader) {
             $loader = Get-ChildItem "$env:VULKAN_SDK" -Recurse -Filter "vulkan-1.dll" -ErrorAction SilentlyContinue |
               Where-Object { $_.DirectoryName -match "Bin" } | Select-Object -First 1
           }
-          if (-not $loader) { throw "no vulkan-1.dll for the player to load" }
-          mkdir renders -Force | Out-Null
-          foreach ($game in @(@("lantern-run", "lantern-run-windows"), @("afterglow", "afterglow-windows"))) {
-            Push-Location "dist\$($game[1])"
-            Copy-Item $loader.FullName .
-            ./ukiyo_player.exe --project "games/$($game[0])" --build Build/build.json --shaders shaders --backend vk `
-              --headless --seconds 4 --shot "$env:GITHUB_WORKSPACE\renders\$($game[0])-windows.png"
-            Pop-Location
+          if (-not $loader -and (Test-Path "C:\Windows\System32\vulkan-1.dll")) {
+            $loader = Get-Item "C:\Windows\System32\vulkan-1.dll"
           }
-          python tools/frame_check.py renders/lantern-run-windows.png
-          python tools/frame_check.py renders/afterglow-windows.png
+          if (-not $loader) { Write-Host "::error::no vulkan-1.dll anywhere (mesa, SDK, System32)"; exit 1 }
+          Write-Host "::error::loader: $($loader.FullName)"
+          mkdir renders -Force | Out-Null
+          $shots = @()
+          foreach ($game in @(@("lantern-run", "lantern-run-windows"), @("afterglow", "afterglow-windows"))) {
+            $shot = "$env:GITHUB_WORKSPACE\renders\$($game[0])-windows.png"
+            Push-Location "dist\$($game[1])"
+            Copy-Item $loader.FullName . -ErrorAction SilentlyContinue
+            ./ukiyo_player.exe --project "games/$($game[0])" --build Build/build.json --shaders shaders --backend vk `
+              --headless --seconds 4 --shot $shot 2>&1 | Select-Object -First 12 |
+              ForEach-Object { Write-Host "::error::player: $_" }
+            $code = $LASTEXITCODE
+            Pop-Location
+            if ($code -ne 0 -or -not (Test-Path $shot)) {
+              Write-Host "::error::$($game[0]) exited $code, shot exists: $(Test-Path $shot)"
+            } else {
+              $shots += $shot
+            }
+          }
+          foreach ($shot in $shots) { python tools/frame_check.py $shot }
+          if ($shots.Count -lt 2) { Write-Host "::error::only $($shots.Count) of 2 games were photographed"; exit 1 }
       - name: Upload the Windows frames
         if: always()
         uses: actions/upload-artifact@v4
@@ -1284,18 +1313,22 @@ jobs:
       # and opens the village, and screencap captures it. A process that dies leaves a pid-less shell, a logcat tail
       # in the annotations, and a red run -- the same promise the desktop frames make.
       - name: Boot Afterglow in an emulator and photograph it
-        timeout-minutes: 35
+        timeout-minutes: 40
         run: |
           set -euo pipefail
+          # A software emulator boot without KVM cannot fit a push: the machine decides, honestly. The dedicated
+          # android-photo workflow gives the same proof an unaccelerated hour at a time, on demand.
+          if [ ! -e /dev/kvm ]; then
+            echo "::notice::no /dev/kvm on this runner -- the emulator check runs in the android-photo workflow"
+            exit 0
+          fi
           sdk="${ANDROID_SDK_ROOT:-/usr/local/lib/android/sdk}"
           "$sdk/cmdline-tools/latest/bin/sdkmanager" --install "system-images;android-33;google_apis;x86_64" \
             "emulator" "platform-tools" > /tmp/sdkmanager.log 2>&1 || { tail -20 /tmp/sdkmanager.log; exit 1; }
           echo no | "$sdk/cmdline-tools/latest/bin/avdmanager" create avd -n afterglow \
             -k "system-images;android-33;google_apis;x86_64" -d pixel_5 --force
-          accel="off"
-          if [ -w /dev/kvm ]; then accel="on"; echo "KVM: on"; else echo "::warning::no /dev/kvm -- the emulator runs unaccelerated and slow"; fi
           "$sdk/emulator/emulator" -avd afterglow -no-window -no-audio -no-boot-anim -no-snapshot \
-            -gpu swiftshader_indirect -accel $accel -memory 3072 -no-boot-anim > /tmp/emulator.log 2>&1 &
+            -gpu swiftshader_indirect -accel on -memory 3072 > /tmp/emulator.log 2>&1 &
           adb="$sdk/platform-tools/adb"
           "$adb" wait-for-device
           for i in $(seq 1 90); do
