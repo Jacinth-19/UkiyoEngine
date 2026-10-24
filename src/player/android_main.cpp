@@ -34,6 +34,7 @@
 #include "engine/model.h"
 #include "engine/renderer.h"
 #include "engine/text_atlas.h"
+#include "player/asset_staging.h"
 #include "player/hud_layout.h"
 #include "player/player_app.h"
 #include "rhi/rhi.h"
@@ -45,9 +46,9 @@ namespace {
 
 // ---- Asset staging ------------------------------------------------------------------------------
 //
-// An APK is a zip: its assets cannot be opened by path, so the player copies them out once. The list comes from the
-// package itself rather than from a directory walk, because the NDK's asset API cannot tell a directory from a file
-// without trying to open it, and a failed open then looks exactly like an empty directory.
+// The loop is ukiyo::staging::stage (player/asset_staging.h), shared with tests/android_stage_test.cpp so the exact
+// lines a phone runs on first launch are the lines CI runs on every push. This side only knows how to read an APK's
+// assets; the list, the parents and the failure modes live in the header.
 
 bool readAsset(AAssetManager* mgr, const std::string& name, std::vector<uint8_t>* out) {
     AAsset* a = AAssetManager_open(mgr, name.c_str(), AASSET_MODE_STREAMING);
@@ -59,52 +60,12 @@ bool readAsset(AAssetManager* mgr, const std::string& name, std::vector<uint8_t>
     return read == static_cast<int>(out->size());
 }
 
-void makeParents(const std::string& path) {
-    // Every directory above `path`, not `path` itself.
-    for (size_t i = 1; i < path.size(); ++i) {
-        if (path[i] != '/') continue;
-        ::mkdir(path.substr(0, i).c_str(), 0755);   // EEXIST is the normal case after the first file in a folder
-    }
-}
-
-bool writeFile(const std::string& path, const std::vector<uint8_t>& bytes) {
-    makeParents(path);
-    FILE* f = std::fopen(path.c_str(), "wb");
-    if (!f) return false;
-    const size_t written = std::fwrite(bytes.data(), 1, bytes.size(), f);
-    std::fclose(f);
-    return written == bytes.size();
-}
-
 // Copies every file `files.txt` names. Returns the number written, or -1 when the list or one of its files is missing.
 int stageAssets(android_app* state, const std::string& root) {
     AAssetManager* mgr = state->activity->assetManager;
-    std::vector<uint8_t> list;
-    if (!readAsset(mgr, "files.txt", &list)) {
-        LOGE("files.txt is missing from the APK");
-        return -1;
-    }
-    const std::string names(reinterpret_cast<const char*>(list.data()), list.size());
-    size_t start = 0;
-    int copied = 0;
-    while (start < names.size()) {
-        const size_t end = names.find('\n', start);
-        std::string name = names.substr(start, end == std::string::npos ? std::string::npos : end - start);
-        start = end == std::string::npos ? names.size() : end + 1;
-        while (!name.empty() && (name.back() == '\r' || name.back() == ' ')) name.pop_back();
-        if (name.empty()) continue;
-        std::vector<uint8_t> bytes;
-        if (!readAsset(mgr, name, &bytes)) {
-            LOGE("asset %s could not be read", name.c_str());
-            return -1;
-        }
-        if (!writeFile(root + "/" + name, bytes)) {
-            LOGE("could not write %s", (root + "/" + name).c_str());
-            return -1;
-        }
-        ++copied;
-    }
-    return copied;
+    const int staged = ukiyo::staging::stage(mgr, readAsset, root, nullptr);
+    if (staged < 0) LOGE("asset staging failed");
+    return staged;
 }
 
 // ---- Touch --------------------------------------------------------------------------------------

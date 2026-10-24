@@ -787,6 +787,12 @@ add_executable(pack_test tests/pack_test.cpp)
 target_link_libraries(pack_test PRIVATE ukiyo_pack_core)
 target_compile_options(pack_test PRIVATE ${UKIYO_WARNINGS})
 
+# The Android player's first launch, on a machine with no phone: the staging loop is shared with android_main.cpp,
+# so the exact lines a phone runs replay here against a folder standing in for the APK (docs/ANDROID.md).
+add_executable(android_stage_test tests/android_stage_test.cpp)
+target_include_directories(android_stage_test PRIVATE ${CMAKE_SOURCE_DIR}/src)
+target_compile_options(android_stage_test PRIVATE ${UKIYO_WARNINGS})
+
 add_executable(lod_gpu_test tests/lod_gpu_test.cpp)
 target_link_libraries(lod_gpu_test PRIVATE ukiyo_core)
 target_compile_options(lod_gpu_test PRIVATE ${UKIYO_WARNINGS})
