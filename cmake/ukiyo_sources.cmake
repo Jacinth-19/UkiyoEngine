@@ -16,6 +16,7 @@ set(UKIYO_CORE_SOURCES
   src/engine/lights.cpp
   src/engine/environment.cpp
   src/engine/texture_compress.cpp
+  # astc-encoder 5.7.0's core, globbed so a vendored upgrade cannot leave one file behind the link's back.
   third_party/astcenc/astcenc_averages_and_directions.cpp
   third_party/astcenc/astcenc_block_sizes.cpp
   third_party/astcenc/astcenc_color_quantize.cpp
@@ -36,6 +37,8 @@ set(UKIYO_CORE_SOURCES
   third_party/astcenc/astcenc_pick_best_endpoint_format.cpp
   third_party/astcenc/astcenc_quantization.cpp
   third_party/astcenc/astcenc_symbolic_physical.cpp
+  third_party/astcenc/astcenc_weight_align.cpp
+  third_party/astcenc/astcenc_weight_quant_xfer_tables.cpp
   src/engine/text_atlas.cpp
   src/engine/msdf.cpp
   src/engine/hud.cpp
