@@ -174,6 +174,20 @@ long long reported = 0;
 // which are the two ways a block leaves here without a broken canary to explain it.
 void* recentlyFreed[64] = {};
 int recentlyFreedNext = 0;
+// Freed blocks are not handed straight back to the CRT. They sit in this ring, payload painted with poison, guards
+// still watched, until the ring turns over. A write through a stale pointer lands in a freed block sooner or later
+// -- that is what a use-after-free IS -- and on glibc under ASan the quarantine there catches it, while on Windows
+// the same write used to land in untracked free-list memory and surface as malloc failures, a bad_alloc, and a
+// destructor crashing during unwind, sections away from the write. Here the poison breaks and the note names the
+// block, its size, and the check that was running.
+struct Quarantined {
+    unsigned char* raw = nullptr;
+    size_t size = 0;
+};
+constexpr int kQuarantine = 512;
+constexpr unsigned char kPoison = 0xDD;
+Quarantined quarantine[kQuarantine];
+int quarantineNext = 0;
 
 // Defined below; insert() needs it to report a lost block. The suffix is an optional extra fact: the owner of a
 // wild pointer, or anything else the caller already knows and the format does not cover.
@@ -292,13 +306,45 @@ void release(void* ptr) {
         // A write past the end of this block happened. Say which block and how big, once per block.
         note("heap canary broken", e->size, ptr, true);
     }
+    const size_t size = e->size;
     erase(ptr);
     recentlyFreed[recentlyFreedNext] = ptr;
     recentlyFreedNext = (recentlyFreedNext + 1) % 64;
-    std::free(static_cast<unsigned char*>(ptr) - kGuard);
+    // Into quarantine, not to the CRT: paint the payload so a stale write is a visible change, and hold the guards.
+    std::memset(ptr, kPoison, size);
+    Quarantined evicted = quarantine[quarantineNext];
+    quarantine[quarantineNext] = {static_cast<unsigned char*>(ptr) - kGuard, size};
+    quarantineNext = (quarantineNext + 1) % kQuarantine;
+    if (evicted.raw) std::free(evicted.raw);
 }
 
-// Every live block, after every check: the first broken canary is the write that damaged the heap.
+// A quarantined block must still have both canaries and a fully poisoned payload: anything else means something
+// wrote through a pointer after the block was freed.
+void verifyQuarantine() {
+    if (reported >= 8) return;
+    for (int i = 0; i < kQuarantine; ++i) {
+        const Quarantined& q = quarantine[i];
+        if (!q.raw) continue;
+        unsigned char* user = q.raw + kGuard;
+        if (!intact(user, q.size)) {
+            note("freed block's canary broken", q.size, user, true);
+            quarantine[i] = {};
+            std::free(q.raw);
+            continue;
+        }
+        for (size_t b = 0; b < q.size; ++b) {
+            if (user[b] != kPoison) {
+                note("freed block was written", q.size, user, true);
+                quarantine[i] = {};
+                std::free(q.raw);
+                break;
+            }
+        }
+    }
+}
+
+// Every live block and every quarantined one, after every check: the first broken canary is the write that
+// damaged the heap, and a broken poison is the stale write that damaged a block already freed.
 void checkAll() {
     if (reported >= 8) return;
     for (int i = 0; i < kSlots; ++i) {
@@ -307,20 +353,28 @@ void checkAll() {
         note("heap canary broken", e.size, e.ptr, true);
         return;
     }
+    verifyQuarantine();
 }
 
-// Lua's allocator, with the same canaries: a realloc is a copy, so every block stays checked.
+// Lua's allocator, with the same canaries: a realloc is a copy, so every block stays checked. Out of memory is a
+// NULL return, not a throw: an exception unwinding through Lua's C frames is its own undefined behaviour, and Lua
+// turns the NULL into a "not enough memory" error the test reports like any other.
 void* luaAllocator(void*, void* ptr, size_t osize, size_t nsize) {
     if (nsize == 0) {
         release(ptr);
         return nullptr;
     }
-    void* fresh = allocate(nsize);
+    unsigned char* raw = static_cast<unsigned char*>(std::malloc(nsize + 2 * kGuard));
+    if (!raw) return nullptr;
+    std::memcpy(raw, kMark, kMarkSize);
+    std::memcpy(raw + kGuard + nsize, kMark, kMarkSize);
+    insert(raw + kGuard, nsize);
+    ++allocated;
     if (ptr) {
-        std::memcpy(fresh, ptr, osize < nsize ? osize : nsize);
+        std::memcpy(raw + kGuard, ptr, osize < nsize ? osize : nsize);
         release(ptr);
     }
-    return fresh;
+    return raw + kGuard;
 }
 
 } // namespace checked
