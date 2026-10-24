@@ -105,7 +105,9 @@ Vulkan backend and an OpenGL backend; `--backend gl` selects the latter.
 
 `games/afterglow` is the shipped game: a dusk village of extinguished lanterns to relight — proximity-driven so it
 plays the same on a thumb, with save slots, a generated soundtrack, EN/JA localisation and named lights the script
-brings back one at a time. `games/lantern-run` is the smaller first game it was built on: a courtyard, five lanterns
+brings back one at a time. Its night is lit by a baked probe volume over the village
+([docs/IBL.md](docs/IBL.md)): the pools around the stone lanterns are warm in the ambient, not only in the direct
+light. `games/lantern-run` is the smaller first game it was built on: a courtyard, five lanterns
 to gather, one script, four GLBs from `tools/lantern_assets.cpp`.
 
 ```
@@ -141,7 +143,13 @@ missing there.
 * **Virtual geometry** — static meshes are clustered into a 128-triangle hierarchy with per-cluster error and drawn
   through a screen-space cut — selected by a compute shader when it is built, with the CPU walk kept as the fallback
   — cached beside the model. See [docs/VGEOM.md](docs/VGEOM.md).
-* **Shadows** — three cascades into a 3 × 2048² atlas, slope-scaled bias, PCF.
+* **Shadows** — three cascades into a 3 × 2048² atlas, slope-scaled bias, PCSS soft shadows sized by the blocker
+  search ([docs/PCSS.md](docs/PCSS.md)).
+* **Environment lighting** — the scene's sky (or an equirectangular panorama) baked on the CPU into a cubemap,
+  projected onto second-order spherical harmonics in colour units, and a lattice of probe volumes with the scene's own
+  lights baked through the same attenuation the shader draws; trilinearly interpolated per frame at the camera's focus,
+  equalised exactly as MToon defines it, and a GGX-prefiltered mip chain behind the toon reflection. Everything is CPU
+  maths, so the bake runs on the phone too ([docs/IBL.md](docs/IBL.md)).
 * **Traced bounce light** — one diffuse bounce traced against the terrain heightfield at half resolution, accumulated
   over sixteen frames, denoised by two à-trous passes and composited at full resolution. A fragment shader with no
   ray-tracing or compute feature, so it runs on any integrated GPU; measured against the CPU path tracer at 0.035
@@ -347,14 +355,18 @@ tools/             shader compiler, pak tool, offline previews, brand builder, a
 third_party/       Jolt, meshoptimizer, Lua, miniaudio, Recast, cgltf, stb, nodeeditor, …
 ```
 
-About 59 000 lines of C++ and 56 shaders.
+About 70 000 lines of C++ and 63 shaders.
 
 ## Tests and CI
 
-Two jobs run on every push. **Linux** installs the dependencies, builds every target and runs everything below;
-**Windows** builds the same tree with MSVC and Ninja and runs the seven portable tests, so a POSIX assumption or an
-`<unistd.h>` cannot sit in the engine unnoticed. Compilation goes through ccache on Linux and the Qt and vcpkg packages
-are cached on Windows, so a one-file change costs a recompile of that file and its dependents, not of the engine.
+Five jobs run on every push. **Linux** installs the dependencies, builds every target and runs the portable battery —
+39 test programs over physics, Lua, input, lights, environment, PCSS, MSDF, the games' data contracts, packaging and
+the Android staging loop. **Windows** builds the same tree with MSVC and Ninja and runs the same battery, so a POSIX
+assumption or an `<unistd.h>` cannot sit in the engine unnoticed. The **gpu** job drives both games on a software
+Vulkan device, **android** compiles the engine and the player for arm64 and x86_64 with the NDK and runs what runs
+without a window, and a final job that needs all four publishes the games' frames into `docs/`. Compilation goes
+through ccache on Linux and the Qt and vcpkg packages are cached on Windows, so a one-file change costs a recompile of
+that file and its dependents, not of the engine.
 
 Linux builds every target, and then runs:
 
@@ -396,6 +408,8 @@ own glslang package is generated with a broken SPIRV-Tools path; everything else
 | [docs/AO.md](docs/AO.md) | the multi-bounce AO fit, where the albedo comes from, and why the post pass clamps it |
 | [docs/CONTACT_SHADOWS.md](docs/CONTACT_SHADOWS.md) | the contact-shadow march: parameters, why per pixel, and what the test pins |
 | [docs/PCSS.md](docs/PCSS.md) | percentage-closer soft shadows: the two passes, the receiver slope, the foreshortening, the numbers |
+| [docs/LIGHTS.md](docs/LIGHTS.md) | authored scene lights: point and spot lights, the ranking that picks a frame's eight, the std140 packing |
+| [docs/IBL.md](docs/IBL.md) | environment lighting: the cubemap, the SH probe convention, the GGX prefilter, the probe volumes, the MToon equalisation |
 | [docs/MSDF.md](docs/MSDF.md) | multi-channel distance fields for text: the colouring rule, the shader's one line, the measurements |
 | [docs/INSPECTOR_SEARCH.md](docs/INSPECTOR_SEARCH.md) | the Inspector's search: words, globs, values, negation, and what happens to a section |
 | [docs/WIREFRAME.md](docs/WIREFRAME.md) | the wireframe view: one flag, two backends, and why the fullscreen passes stay filled |
@@ -430,12 +444,36 @@ own glslang package is generated with a broken SPIRV-Tools path; everything else
   sibling fetcher). Its soundtrack mixes recordings from facebookincubator/Meta-open-sound: Oculus Audio Pack 1
   (CC BY 4.0, credited in games/afterglow/CREDITS.md, which ships with the game) and Meta Piano (CC0).
 
+## Roadmap
+
+The work since the audit has run on a numbered plan, each batch landing with its tests, its doc and the figure that
+proves it:
+
+| # | Batch | What it added |
+| --- | --- | --- |
+| 1 | Touch | the Input System takes touch in Unity's idiom, and the games play on a phone |
+| 2 | Audio | a real mixer — three buses, voices, reverb sends, streaming music — with the same path on Android |
+| 3 | Profiling | GPU timestamps through the RHI, so the profiler shows the GPU's half of the frame |
+| — | Scripted play | a level's own lights, saves and HUD behind script control (`docs/LUA.md`) |
+| 4 | The RHI grows up | compute pipelines, storage buffers, indirect draws; the virtual-geometry cut moved onto the compute queue |
+| 5 | The games | Lantern Run, then Afterglow: scripted, localised, saved, packaged for Linux, Windows and Android |
+| — | Real assets | Afterglow rebuilt on Kenney's kits and CC0 recordings, every file sha256-pinned and checked in CI |
+| — | Platform proof | CI boots every platform's package and photographs it; Android's first-launch staging is replayed by a test on every push; 16 KB-page alignment |
+| 6 | Environment lighting | cubemaps, image-based lighting, light probes (`docs/IBL.md`) |
+| 7 | **Compressed textures** | **next** |
+
+Batch 7 is the last RHI gap the audit named: every texture in the engine is uncompressed RGBA8 today, which spends
+memory and bandwidth an integrated GPU or a phone does not have to spare. It brings compressed texture formats to both
+backends — the BC family for desktop, ASTC for the phone — with the mip-chain contract the CPU already owns extended so
+the existing upload paths keep working, and a test that measures what it saves.
+
 ## Status
 
-The engine builds and tests on Linux and Windows CI, and the editor and hub run on Windows, Linux and macOS. Known gaps are listed
-at the end of each doc — the largest were GPU virtual geometry and the mixer; the cut now runs on the compute queue
-with indirect draws ([docs/VGEOM.md](docs/VGEOM.md) §7) and the mixer ships three buses, reverb and streaming
-([docs/AUDIO.md](docs/AUDIO.md)). What remains there is page streaming and Hi-Z occlusion. The
-traced bounce light does not see creases narrower than 5 cm, and that has been measured rather than estimated: closing
-it changes 0.35 % of pixels in the reference and costs 17 % more march, which is why it is a documented trade
-([docs/PATHTRACE.md](docs/PATHTRACE.md)).
+The engine builds and tests on Linux, Windows and Android CI, and both games' packages are booted and photographed by
+CI on every push — Windows under lavapipe, Linux under xvfb, Android's first-launch staging verified without a phone.
+Known gaps are listed at the end of each doc. The largest were GPU virtual geometry and the mixer; the cut now runs on
+the compute queue with indirect draws ([docs/VGEOM.md](docs/VGEOM.md) §7) and the mixer ships three buses, reverb and
+streaming ([docs/AUDIO.md](docs/AUDIO.md)) — what remains there is page streaming and Hi-Z occlusion, and for the
+textures, batch 7 above. The traced bounce light does not see creases narrower than 5 cm, and that has been measured
+rather than estimated: closing it changes 0.35 % of pixels in the reference and costs 17 % more march, which is why it
+is a documented trade ([docs/PATHTRACE.md](docs/PATHTRACE.md)).
