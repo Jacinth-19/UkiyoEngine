@@ -856,18 +856,23 @@ jobs:
           if (-not $loader) { Write-Host "::error::no vulkan-1.dll anywhere (mesa, SDK, System32)"; exit 1 }
           Write-Host "::error::loader: $($loader.FullName)"
           mkdir renders -Force | Out-Null
+          $diag = "$env:GITHUB_WORKSPACE\windows-diagnosis.txt"
           $shots = @()
           foreach ($game in @(@("lantern-run", "lantern-run-windows"), @("afterglow", "afterglow-windows"))) {
             $shot = "$env:GITHUB_WORKSPACE\renders\$($game[0])-windows.png"
             Push-Location "dist\$($game[1])"
             Copy-Item $loader.FullName . -ErrorAction SilentlyContinue
+            # The loader trace is thousands of lines: it goes to the diagnosis file the evidence-commit step
+            # publishes, and only the lines that decide the fix reach the annotations (they cap at fifty).
+            "=== $($game[0]) ===" | Out-File $diag -Append
             ./ukiyo_player.exe --project "games/$($game[0])" --build Build/build.json --shaders shaders --backend vk `
-              --headless --seconds 4 --shot $shot 2>&1 | Select-Object -First 55 |
-              ForEach-Object { Write-Host "::error::player: $_" }
+              --headless --seconds 4 --shot $shot 2>&1 | Tee-Object -FilePath $diag -Append | Out-Null
             $code = $LASTEXITCODE
             Pop-Location
             if ($code -ne 0 -or -not (Test-Path $shot)) {
               Write-Host "::error::$($game[0]) exited $code, shot exists: $(Test-Path $shot)"
+              Get-Content $diag | Select-String -Pattern "vkCreateInstance|lvp|LVP|driver|Driver|DriverFiles|ICD|scan|Failed|failed|error" |
+                Select-Object -Last 10 | ForEach-Object { Write-Host "::error::player: $($_.Line)" }
             } else {
               $shots += $shot
             }
