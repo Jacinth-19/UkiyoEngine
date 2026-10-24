@@ -154,7 +154,10 @@ if(ANDROID)
     ${CMAKE_SOURCE_DIR}/src ${ANDROID_NDK}/sources/android/native_app_glue)
   target_link_libraries(ukiyo_player_android PRIVATE ukiyo_systems_android ukiyo_core_android android log)
   # The glue's entry point is referenced by nothing: keep it alive through the link.
-  target_link_options(ukiyo_player_android PRIVATE "-u ANativeActivity_onCreate")
+  # 16 KB-page devices (2024+ Pixels and every phone after them) refuse a 4 KB-linked .so with
+  # "lib has unsupported page size" at dlopen -- the app icon taps and nothing opens. The flag is a no-op on
+  # 4 KB devices and the one thing a 16 KB one needs.
+  target_link_options(ukiyo_player_android PRIVATE "-u ANativeActivity_onCreate" "-Wl,-z,max-page-size=16384")
   target_compile_options(ukiyo_player_android PRIVATE ${UKIYO_WARNINGS})
   return()
 endif()

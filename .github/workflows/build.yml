@@ -806,6 +806,49 @@ jobs:
           Push-Location dist/afterglow-windows
           ./ukiyo_player.exe --selftest --project games/afterglow --build Build/build.json --shaders shaders
           Pop-Location
+      # A picture, not an exit code: the runner gets a CPU Vulkan driver (Mesa's lavapipe -- the Windows twin of
+      # the Linux job's software device), the packaged game opens its window against it, and frame_check reads the
+      # result so a black rectangle fails the run.
+      - name: Boot the packaged games on Windows and photograph them
+        run: |
+          $ErrorActionPreference = "Stop"
+          $mesa = "$env:RUNNER_TEMP\mesa"
+          New-Item -ItemType Directory -Force -Path $mesa | Out-Null
+          Invoke-WebRequest -Uri "https://github.com/pal1000/mesa-dist-win/releases/download/26.2.4/mesa3d-26.2.4-release-msvc.7z" `
+            -OutFile "$mesa\mesa.7z"
+          $sevenZip = "C:\Program Files\7-Zip\7z.exe"
+          if (Test-Path $sevenZip) { & $sevenZip x "$mesa\mesa.7z" -o"$mesa\dist" -y | Out-Null }
+          else { tar -xf "$mesa\mesa.7z" -C "$mesa\dist" }
+          $icd = Get-ChildItem "$mesa\dist" -Recurse -Filter "lvp_icd*.json" | Select-Object -First 1
+          if (-not $icd) { throw "no lavapipe ICD in the mesa package" }
+          $env:VK_DRIVER_FILES = $icd.FullName
+          $env:VK_ICD_FILENAMES = $icd.FullName
+          $env:PATH = "$(Split-Path $icd.FullName);$env:PATH"
+          $loader = Get-ChildItem "$mesa\dist" -Recurse -Filter "vulkan-1.dll" | Select-Object -First 1
+          if (-not $loader -and $env:VULKAN_SDK) {
+            $loader = Get-ChildItem "$env:VULKAN_SDK" -Recurse -Filter "vulkan-1.dll" -ErrorAction SilentlyContinue |
+              Where-Object { $_.DirectoryName -match "Bin" } | Select-Object -First 1
+          }
+          if (-not $loader) { throw "no vulkan-1.dll for the player to load" }
+          mkdir renders -Force | Out-Null
+          foreach ($game in @(@("lantern-run", "lantern-run-windows"), @("afterglow", "afterglow-windows"))) {
+            Push-Location "dist\$($game[1])"
+            Copy-Item $loader.FullName .
+            ./ukiyo_player.exe --project "games/$($game[0])" --build Build/build.json --shaders shaders --backend vk `
+              --headless --seconds 4 --shot "$env:GITHUB_WORKSPACE\renders\$($game[0])-windows.png"
+            Pop-Location
+          }
+          python tools/frame_check.py renders/lantern-run-windows.png
+          python tools/frame_check.py renders/afterglow-windows.png
+      - name: Upload the Windows frames
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-frames
+          path: |
+            renders/lantern-run-windows.png
+            renders/afterglow-windows.png
+          if-no-files-found: warn
       - name: Upload Afterglow for Windows
         uses: actions/upload-artifact@v4
         with:
@@ -1236,12 +1279,63 @@ jobs:
           name: afterglow-android
           path: Afterglow.apk
 
+      # Install it on a real Android and photograph what the user sees: the emulator boots API 33 on a software GPU,
+      # the signed APK installs, the launcher starts the NativeActivity, the first launch stages the APK's assets
+      # and opens the village, and screencap captures it. A process that dies leaves a pid-less shell, a logcat tail
+      # in the annotations, and a red run -- the same promise the desktop frames make.
+      - name: Boot Afterglow in an emulator and photograph it
+        timeout-minutes: 35
+        run: |
+          set -euo pipefail
+          sdk="${ANDROID_SDK_ROOT:-/usr/local/lib/android/sdk}"
+          "$sdk/cmdline-tools/latest/bin/sdkmanager" --install "system-images;android-33;google_apis;x86_64" \
+            "emulator" "platform-tools" > /tmp/sdkmanager.log 2>&1 || { tail -20 /tmp/sdkmanager.log; exit 1; }
+          echo no | "$sdk/cmdline-tools/latest/bin/avdmanager" create avd -n afterglow \
+            -k "system-images;android-33;google_apis;x86_64" -d pixel_5 --force
+          accel="off"
+          if [ -w /dev/kvm ]; then accel="on"; echo "KVM: on"; else echo "::warning::no /dev/kvm -- the emulator runs unaccelerated and slow"; fi
+          "$sdk/emulator/emulator" -avd afterglow -no-window -no-audio -no-boot-anim -no-snapshot \
+            -gpu swiftshader_indirect -accel $accel -memory 3072 -no-boot-anim > /tmp/emulator.log 2>&1 &
+          adb="$sdk/platform-tools/adb"
+          "$adb" wait-for-device
+          for i in $(seq 1 90); do
+            boot="$("$adb" shell getprop sys.boot_completed 2>/dev/null | tr -d '\r')"
+            [ "$boot" = "1" ] && break
+            sleep 5
+          done
+          boot="$("$adb" shell getprop sys.boot_completed 2>/dev/null | tr -d '\r')"
+          if [ "$boot" != "1" ]; then echo "::error::the emulator never finished booting"; tail -30 /tmp/emulator.log; exit 1; fi
+          "$adb" install -r Afterglow.apk
+          "$adb" shell monkey -p dev.ukiyo.lanternrun -c android.intent.category.LAUNCHER 1
+          sleep 30   # first launch stages the APK's assets into the app's storage and opens the village
+          "$adb" exec-out screencap -p > renders/afterglow-android.png
+          pid="$("$adb" shell pidof dev.ukiyo.lanternrun 2>/dev/null | tr -d '\r' || true)"
+          "$adb" logcat -d > /tmp/logcat.txt || true
+          grep -E "ukiyo|afterglow|lanternrun" /tmp/logcat.txt > renders/afterglow-android-logcat.txt || true
+          if [ -z "$pid" ]; then
+            echo "::error::the app is not running after launch; logcat tail:"
+            tail -40 /tmp/logcat.txt | while IFS= read -r line; do echo "::error::$line"; done
+            exit 1
+          fi
+          echo "app is running as pid $pid"
+          python3 tools/frame_check.py renders/afterglow-android.png
+
+      - name: Upload the Android frame
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: afterglow-android-frame
+          path: |
+            renders/afterglow-android.png
+            renders/afterglow-android-logcat.txt
+          if-no-files-found: warn
+
   # The first game's frame comes from the gpu job, which is where a device exists, so it is published here rather than
   # in the Linux job: the artifact is downloaded, copied into docs/ and committed the same way the hub screenshots are.
   # A picture of the game in the repository is part of the deliverable; a frame inside an artifact nobody downloads is not.
   publish-game-frame:
     runs-on: ubuntu-latest
-    needs: [gpu]
+    needs: [gpu, windows, android]
     if: github.event_name == 'push'
     steps:
       - uses: actions/checkout@v4
@@ -1253,15 +1347,29 @@ jobs:
         with:
           name: afterglow-frame
           path: renders
+      - uses: actions/download-artifact@v4
+        with:
+          name: windows-frames
+          path: renders
+        continue-on-error: true
+      - uses: actions/download-artifact@v4
+        with:
+          name: afterglow-android-frame
+          path: renders
+        continue-on-error: true
       - name: Publish the games' frames
         run: |
           test -f renders/lantern-run.png
           test -f renders/afterglow.png
           cp renders/lantern-run.png docs/lantern-run.png
           cp renders/afterglow.png docs/afterglow.png
+          for f in lantern-run-windows.png afterglow-windows.png afterglow-android.png; do
+            # A platform CI could not photograph is not a failure of the publish: the desktop frames still travel.
+            [ -f "renders/$f" ] && cp "renders/$f" "docs/$f" || echo "no $f this run"
+          done
           git config user.name "ukiyo-ci"
           git config user.email "ci@ukiyo.invalid"
-          git add docs/lantern-run.png docs/afterglow.png
+          git add docs/lantern-run.png docs/afterglow.png docs/*-windows.png docs/afterglow-android.png 2>/dev/null || git add docs/
           if git diff --cached --quiet; then echo "no change"; exit 0; fi
           branch="${GITHUB_REF_NAME}"
           git commit -m "Game frames from CI [skip ci]"
