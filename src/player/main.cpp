@@ -225,11 +225,13 @@ int main(int argc, char** argv) {
                     app.scene().lights.size() == 1 ? "" : "s");
 
         // The scene's environment (docs/IBL.md), when it asked for one. A failed panorama is a load problem worth
-        // stopping for: the game would render with the hemisphere ambient and the log would be the only trace.
-        ukiyo::resolveEnvironmentPaths(frameSettings, app.projectRoot());
+        // stopping for: the game would render with the hemisphere ambient and the log would be the only trace. The
+        // frame's own settings are declared further down; the environment reads the scene's directly.
         {
+            ukiyo::RenderSettings sceneSettings = app.scene().settings;
+            ukiyo::resolveEnvironmentPaths(sceneSettings, app.projectRoot());
             std::string envErr;
-            if (!renderer.setEnvironment(frameSettings, &envErr)) {
+            if (!renderer.setEnvironment(sceneSettings, &envErr)) {
                 std::fprintf(stderr, "player: environment failed: %s\n", envErr.c_str());
                 return 1;
             }
