@@ -924,10 +924,19 @@ jobs:
                   if (-not $found) { Add-Content windows-diagnosis.txt "dump: $($dump.Name), no exception stream" }
                 }
                 Add-Content windows-diagnosis.txt "script_test exit code $code"
-                # The frames go to the artifact, where there is room for them.
+                # The frames go to the diagnosis with the map's names beside them: the faulting function is
+                # already resolved above, and it is the caller of that function -- whose string died -- that says
+                # which scope the rot is in.
                 if ($trace.Count -gt 0) {
-                  $trace | Select-String -Pattern "^CRASH frame" | Select-Object -First 20 |
-                    ForEach-Object { Add-Content windows-diagnosis.txt "frame: $($_.Line)" }
+                  $trace | Select-String -Pattern "^CRASH frame" | Select-Object -First 20 | ForEach-Object {
+                    $entry = $_.Line
+                    $hex = [regex]::Match($entry, "script_test\.exe\+0x([0-9a-f]+)")
+                    if ($hex.Success) {
+                      $symbol = Resolve-UkiyoOffset $hex.Groups[1].Value
+                      if ($symbol) { $entry = "$entry  ==  $symbol" }
+                    }
+                    Add-Content windows-diagnosis.txt "frame: $entry"
+                  }
                 }
               } else {
                 # The failing assertions first, then the summary line, then the tail: a test can print hundreds of PASS
@@ -954,6 +963,18 @@ jobs:
           if (Test-Path windows-diagnosis.txt) {
             Get-Content windows-diagnosis.txt | Select-Object -First 9 | ForEach-Object { Write-Host "::error::$_" }
           }
+      - name: Announce the Windows crash, part two
+        if: always()
+        run: |
+          if (Test-Path windows-diagnosis.txt) {
+            Get-Content windows-diagnosis.txt | Select-Object -Skip 9 -First 9 | ForEach-Object { Write-Host "::error::$_" }
+          }
+      - name: Announce the Windows crash, part three
+        if: always()
+        run: |
+          if (Test-Path windows-diagnosis.txt) {
+            Get-Content windows-diagnosis.txt | Select-Object -Skip 18 -First 9 | ForEach-Object { Write-Host "::error::$_" }
+          }
 
       # The same evidence, committed onto the branch: annotations carry ten lines, an artifact needs a download
       # path this workspace cannot reach, and the diagnosis -- the whole trace, the map, the exception record --
@@ -961,27 +982,33 @@ jobs:
       - name: Commit the crash evidence
         if: failure()
         run: |
-          if (-not (Test-Path windows-diagnosis.txt)) { echo "no diagnosis to commit"; exit 0 }
-          New-Item -ItemType Directory -Force -Path "ci/windows-crash" | Out-Null
-          Copy-Item windows-diagnosis.txt ci/windows-crash/
-          Copy-Item "*.trace.log" ci/windows-crash/ -ErrorAction SilentlyContinue
-          Copy-Item "script_test.stdout.log" ci/windows-crash/ -ErrorAction SilentlyContinue
-          Copy-Item "build/script_test.map" ci/windows-crash/ -ErrorAction SilentlyContinue
-          git config user.name "ukiyo-ci"
-          git config user.email "ci@ukiyo.invalid"
-          git add ci/windows-crash
-          if (git diff --cached --quiet) { echo "nothing new"; exit 0 }
-          $branch = $env:GITHUB_REF_NAME
-          git commit -m "Windows crash evidence [skip ci]"
-          foreach ($attempt in 1..3) {
-            git fetch origin "+refs/heads/$branch`:refs/remotes/origin/$branch"
-            git rebase "origin/$branch"
-            if ($LASTEXITCODE -ne 0) { git rebase --abort; continue }
-            if (git push origin "HEAD:$branch") { exit 0 }
-            Start-Sleep -Seconds 5
+          try {
+            if (-not (Test-Path windows-diagnosis.txt)) { Write-Host "no diagnosis to commit"; exit 0 }
+            New-Item -ItemType Directory -Force -Path "ci/windows-crash" | Out-Null
+            if (Test-Path "*.trace.log") { Copy-Item "*.trace.log" ci/windows-crash/ -Force }
+            if (Test-Path "script_test.stdout.log") { Copy-Item "script_test.stdout.log" ci/windows-crash/ -Force }
+            if (Test-Path "build/script_test.map") { Copy-Item "build/script_test.map" ci/windows-crash/ -Force }
+            git config user.name "ukiyo-ci"
+            git config user.email "ci@ukiyo.invalid"
+            git add ci/windows-crash
+            $staged = git diff --cached --name-only
+            if (-not $staged) { Write-Host "nothing new"; exit 0 }
+            $branch = $env:GITHUB_REF_NAME
+            git commit -m "Windows crash evidence from run $env:GITHUB_RUN_NUMBER"
+            $pushed = $false
+            foreach ($attempt in 1..3) {
+              git pull --rebase origin "$branch" 2>&1 | Out-Null
+              if ($LASTEXITCODE -eq 0 -and (git push origin "HEAD:$branch" 2>&1)) { $pushed = $true; break }
+              Start-Sleep -Seconds 5
+            }
+            if ($pushed) { Write-Host "evidence published" } else {
+              Add-Content windows-diagnosis.txt "evidence: the commit step could not push"
+              Write-Host "could not publish the evidence"
+            }
+          } catch {
+            Write-Host "evidence step failed: $_"
           }
-          echo "could not publish the evidence" >&2
-          exit 1
+          exit 0
 
       # The player, booting the fixture project with no window and no device (docs/PLAYER.md).
       - name: Run Player Self-Test
